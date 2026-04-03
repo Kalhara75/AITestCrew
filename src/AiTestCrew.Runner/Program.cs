@@ -6,11 +6,64 @@ using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Spectre.Console;
 using AiTestCrew.Agents.ApiAgent;
+using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
 using AiTestCrew.Orchestrator;
 using AiTestCrew.Runner;
+
+// ── Banner ──
+AnsiConsole.Write(new FigletText("AI Test Crew").Color(Color.Cyan1));
+
+// ── Parse CLI arguments ──
+var cli = ParseArgs(args);
+
+// ── --list mode: no LLM needed, short-circuit before building host ──
+if (cli.Mode == RunMode.List)
+{
+    var repo = new TestSetRepository(AppContext.BaseDirectory);
+    var sets = repo.ListAll();
+
+    if (sets.Count == 0)
+    {
+        AnsiConsole.MarkupLine("[grey]No saved test sets found.[/]");
+        AnsiConsole.MarkupLine($"[grey]Test sets directory: {repo.Directory}[/]");
+        return;
+    }
+
+    var listTable = new Table()
+        .Border(TableBorder.Rounded)
+        .AddColumn("[bold]ID[/]")
+        .AddColumn("[bold]Objective[/]")
+        .AddColumn("[bold]Tasks[/]")
+        .AddColumn("[bold]Cases[/]")
+        .AddColumn("[bold]Created (UTC)[/]")
+        .AddColumn("[bold]Last Run (UTC)[/]")
+        .AddColumn("[bold]Runs[/]");
+
+    foreach (var s in sets)
+    {
+        var shortObjective = s.Objective.Length > 55
+            ? s.Objective[..55] + "…"
+            : s.Objective;
+        listTable.AddRow(
+            s.Id,
+            shortObjective,
+            s.Tasks.Count.ToString(),
+            s.Tasks.Sum(t => t.TestCases.Count).ToString(),
+            s.CreatedAt.ToString("yyyy-MM-dd HH:mm"),
+            s.LastRunAt.ToString("yyyy-MM-dd HH:mm"),
+            s.RunCount.ToString()
+        );
+    }
+
+    AnsiConsole.Write(listTable);
+    AnsiConsole.MarkupLine($"\n[grey]Test sets directory: {repo.Directory}[/]");
+    AnsiConsole.MarkupLine("[grey]Re-run a saved set:  dotnet run -- --reuse <id>[/]");
+    AnsiConsole.MarkupLine("[grey]Regenerate & resave: dotnet run -- --rebaseline \"<objective>\"[/]");
+    return;
+}
 
 // ── Build host ──
 // Use AppContext.BaseDirectory (the binary output dir) as content root so that
@@ -55,7 +108,10 @@ builder.Services.AddSingleton<ApiTestAgent>(sp => new ApiTestAgent(
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<ApiTestAgent>());
 
-// Orchestrator (receives IEnumerable<ITestAgent> from DI automatically)
+// Test set persistence
+builder.Services.AddSingleton(new TestSetRepository(AppContext.BaseDirectory));
+
+// Orchestrator (receives IEnumerable<ITestAgent> and TestSetRepository from DI automatically)
 builder.Services.AddSingleton<TestOrchestrator>();
 
 // ── Logging ──
@@ -86,8 +142,7 @@ builder.Logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProv
 
 var host = builder.Build();
 
-// ── Banner ──
-AnsiConsole.Write(new FigletText("AI Test Crew").Color(Color.Cyan1));
+// ── Provider label ──
 var providerLabel = envConfig.LlmProvider.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
     ? $"Claude ({envConfig.LlmModel})"
     : $"OpenAI ({envConfig.LlmModel})";
@@ -95,9 +150,23 @@ AnsiConsole.MarkupLine($"[grey]Powered by Semantic Kernel + {providerLabel}[/]")
 AnsiConsole.MarkupLine($"[grey]Detailed log → {logFile}[/]\n");
 
 // ── Objective ──
-var objective = args.Length > 0
-    ? string.Join(" ", args)
-    : AnsiConsole.Ask<string>("[yellow]Enter test objective:[/]");
+// In reuse mode the objective is loaded from the saved test set inside the orchestrator;
+// no prompt needed here.
+var objective = cli.Mode == RunMode.Reuse
+    ? string.Empty
+    : cli.Objective ?? AnsiConsole.Ask<string>("[yellow]Enter test objective:[/]");
+
+// ── Mode label ──
+var modeLabel = cli.Mode switch
+{
+    RunMode.Reuse      => $"[cyan]REUSE[/] (test set: [bold]{cli.ReuseId}[/])",
+    RunMode.Rebaseline => "[yellow]REBASELINE[/] (regenerating test cases)",
+    _                  => "[green]NORMAL[/] (generating new test cases)"
+};
+AnsiConsole.MarkupLine($"[grey]Mode:[/] {modeLabel}");
+if (cli.Mode != RunMode.Reuse)
+    AnsiConsole.MarkupLine($"[grey]Objective:[/] {objective}");
+AnsiConsole.WriteLine();
 
 // ── Run ──
 var orchestrator = host.Services.GetRequiredService<TestOrchestrator>();
@@ -107,8 +176,12 @@ await AnsiConsole.Status()
     .Spinner(Spinner.Known.Dots)
     .StartAsync("Running test suite...", async ctx =>
     {
-        ctx.Status("Decomposing objective...");
-        suiteResult = await orchestrator.RunAsync(objective);
+        if (cli.Mode == RunMode.Reuse)
+            ctx.Status($"Loading saved test set '{cli.ReuseId}'...");
+        else
+            ctx.Status("Decomposing objective...");
+
+        suiteResult = await orchestrator.RunAsync(objective, cli.Mode, cli.ReuseId);
     });
 
 // ── Results table ──
@@ -149,3 +222,38 @@ AnsiConsole.MarkupLine(
     $"in {suiteResult.TotalDuration:mm\\:ss}");
 
 AnsiConsole.MarkupLine($"\n[italic grey]{suiteResult.Summary}[/]");
+
+// ── Test set save notification ──
+if (cli.Mode is RunMode.Normal or RunMode.Rebaseline)
+{
+    var repoForDisplay = host.Services.GetRequiredService<TestSetRepository>();
+    var slug = TestSetRepository.SlugFromObjective(objective);
+    var savedPath = repoForDisplay.FilePath(slug);
+    if (File.Exists(savedPath))
+    {
+        var action = cli.Mode == RunMode.Rebaseline ? "Rebaselined" : "Saved";
+        AnsiConsole.MarkupLine($"\n[grey]{action} test set → {savedPath}[/]");
+        AnsiConsole.MarkupLine($"[grey]Re-run later:  dotnet run -- --reuse {slug}[/]");
+        AnsiConsole.MarkupLine($"[grey]Regenerate:    dotnet run -- --rebaseline \"{objective}\"[/]");
+    }
+}
+
+// ── Local functions ──
+
+static CliArgs ParseArgs(string[] args) => args.Length == 0
+    ? new(RunMode.Normal, null, null)
+    : args[0].ToLowerInvariant() switch
+    {
+        "--list"       => new(RunMode.List, null, null),
+        "--reuse"      => args.Length > 1
+                            ? new(RunMode.Reuse, null, args[1])
+                            : throw new ArgumentException("--reuse requires a <id> argument. Use --list to see saved test sets."),
+        "--rebaseline" => args.Length > 1
+                            ? new(RunMode.Rebaseline, string.Join(" ", args[1..]), null)
+                            : throw new ArgumentException("--rebaseline requires an objective string."),
+        _              => new(RunMode.Normal, string.Join(" ", args), null)
+    };
+
+// ── Types ──
+
+record CliArgs(RunMode Mode, string? Objective, string? ReuseId);

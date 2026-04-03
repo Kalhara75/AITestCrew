@@ -1,8 +1,10 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
+using AiTestCrew.Agents.ApiAgent;
+using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
@@ -14,6 +16,11 @@ namespace AiTestCrew.Orchestrator;
 /// decomposes it into tasks, routes each to the right agent,
 /// and aggregates results.
 ///
+/// Supports three run modes:
+/// - Normal: decompose via LLM, generate test cases, save test set, execute
+/// - Reuse: load saved test set, execute without LLM generation
+/// - Rebaseline: decompose via LLM, generate fresh test cases, overwrite saved test set, execute
+///
 /// In later phases, this will handle parallel execution,
 /// dependency ordering, retry logic, and adaptive re-planning.
 /// </summary>
@@ -22,17 +29,20 @@ public class TestOrchestrator
     private readonly List<ITestAgent> _agents;
     private readonly Kernel _kernel;
     private readonly TestEnvironmentConfig _config;
+    private readonly TestSetRepository _testSetRepo;
     private readonly ILogger<TestOrchestrator> _logger;
 
     public TestOrchestrator(
         IEnumerable<ITestAgent> agents,
         Kernel kernel,
         TestEnvironmentConfig config,
+        TestSetRepository testSetRepo,
         ILogger<TestOrchestrator> logger)
     {
         _agents = agents.ToList();
         _kernel = kernel;
         _config = config;
+        _testSetRepo = testSetRepo;
         _logger = logger;
     }
 
@@ -40,26 +50,82 @@ public class TestOrchestrator
     /// Run the full test flow: decompose → route → execute → report.
     /// </summary>
     public async Task<TestSuiteResult> RunAsync(
-        string objective, CancellationToken ct = default)
+        string objective,
+        RunMode mode = RunMode.Normal,
+        string? reuseId = null,
+        CancellationToken ct = default)
     {
         var sw = Stopwatch.StartNew();
         _logger.LogInformation("╔══════════════════════════════════════════╗");
         _logger.LogInformation("║  AI TEST CREW - Starting Test Run        ║");
         _logger.LogInformation("╚══════════════════════════════════════════╝");
         _logger.LogInformation("Objective: {Obj}", objective);
+        _logger.LogInformation("Mode: {Mode}", mode);
         _logger.LogInformation("Available agents: {Agents}",
             string.Join(", ", _agents.Select(a => a.Name)));
 
-        // ── 1. Decompose the objective into tasks ──
-        var tasks = await DecomposeObjectiveAsync(objective, ct);
-        _logger.LogInformation("Decomposed into {Count} tasks:", tasks.Count);
-        foreach (var t in tasks)
+        List<TestTask> tasks;
+
+        // ── Reuse mode: load saved test set, skip LLM decomposition ──
+        if (mode == RunMode.Reuse)
         {
-            _logger.LogInformation("  [{Id}] {Target}: {Desc}",
-                t.Id, t.Target, t.Description);
+            var saved = await _testSetRepo.LoadAsync(reuseId!);
+            if (saved is null)
+            {
+                var available = _testSetRepo.ListAll();
+                var availableIds = available.Count > 0
+                    ? string.Join(", ", available.Select(s => s.Id))
+                    : "(none)";
+                var errorMsg = $"Test set '{reuseId}' not found. Available IDs: {availableIds}";
+                _logger.LogError(errorMsg);
+                return new TestSuiteResult
+                {
+                    Objective = objective,
+                    Results =
+                    [
+                        new TestResult
+                        {
+                            TaskId = "n/a",
+                            AgentName = "Orchestrator",
+                            Status = TestStatus.Error,
+                            Summary = errorMsg
+                        }
+                    ],
+                    Summary = errorMsg,
+                    TotalDuration = sw.Elapsed
+                };
+            }
+
+            // Use the original objective stored in the test set
+            objective = saved.Objective;
+            _logger.LogInformation("Reuse mode: loaded test set '{Id}' (run #{Run}, {Count} tasks)",
+                saved.Id, saved.RunCount + 1, saved.Tasks.Count);
+
+            // Restore tasks with pre-loaded test cases injected into Parameters
+            tasks = saved.Tasks.Select(entry => new TestTask
+            {
+                Id = entry.TaskId,
+                Description = entry.TaskDescription,
+                Target = TestTargetType.API_REST,
+                Parameters = new Dictionary<string, object>
+                {
+                    ["PreloadedTestCases"] = entry.TestCases
+                }
+            }).ToList();
+        }
+        else
+        {
+            // ── Normal / Rebaseline: decompose via LLM ──
+            tasks = await DecomposeObjectiveAsync(objective, ct);
+            _logger.LogInformation("Decomposed into {Count} tasks:", tasks.Count);
+            foreach (var t in tasks)
+            {
+                _logger.LogInformation("  [{Id}] {Target}: {Desc}",
+                    t.Id, t.Target, t.Description);
+            }
         }
 
-        // ── 2. Execute each task (sequential in Phase 1) ──
+        // ── Execute each task (sequential in Phase 1) ──
         var results = new List<TestResult>();
         bool endpointUnreachable = false; // fail-fast flag
 
@@ -143,7 +209,19 @@ public class TestOrchestrator
             }
         }
 
-        // ── 3. Generate summary ──
+        // ── Persist test set (Normal and Rebaseline modes) ──
+        if (mode is RunMode.Normal or RunMode.Rebaseline)
+        {
+            await SaveTestSetAsync(objective, tasks, results);
+        }
+
+        // ── Update run statistics (Reuse mode) ──
+        if (mode == RunMode.Reuse && reuseId is not null)
+        {
+            await _testSetRepo.UpdateRunStatsAsync(reuseId);
+        }
+
+        // ── Generate summary ──
         var summary = await GenerateSummaryAsync(objective, results, ct);
 
         _logger.LogInformation("╔══════════════════════════════════════════╗");
@@ -159,6 +237,51 @@ public class TestOrchestrator
             TotalDuration = sw.Elapsed
         };
     }
+
+    // ─────────────────────────────────────────────────────
+    // Persistence
+    // ─────────────────────────────────────────────────────
+
+    private async Task SaveTestSetAsync(
+        string objective, List<TestTask> tasks, List<TestResult> results)
+    {
+        var entries = results
+            .Where(r => r.Metadata.TryGetValue("generatedTestCases", out var v)
+                        && v is List<ApiTestCase> { Count: > 0 })
+            .Select(r => new PersistedTaskEntry
+            {
+                TaskId = r.TaskId,
+                TaskDescription = tasks.FirstOrDefault(t => t.Id == r.TaskId)?.Description
+                                  ?? r.TaskId,
+                AgentName = r.AgentName,
+                TestCases = (List<ApiTestCase>)r.Metadata["generatedTestCases"]
+            })
+            .ToList();
+
+        if (entries.Count == 0)
+        {
+            _logger.LogWarning("No test cases were generated — test set will not be saved.");
+            return;
+        }
+
+        var slug = TestSetRepository.SlugFromObjective(objective);
+        var testSet = new PersistedTestSet
+        {
+            Id = slug,
+            Objective = objective,
+            CreatedAt = DateTime.UtcNow,
+            LastRunAt = DateTime.UtcNow,
+            RunCount = 1,
+            Tasks = entries
+        };
+
+        await _testSetRepo.SaveAsync(testSet);
+        _logger.LogInformation("Test set saved: {Id} ({Dir})", slug, _testSetRepo.Directory);
+    }
+
+    // ─────────────────────────────────────────────────────
+    // LLM helpers
+    // ─────────────────────────────────────────────────────
 
     /// <summary>
     /// Use the LLM to decompose a natural language objective

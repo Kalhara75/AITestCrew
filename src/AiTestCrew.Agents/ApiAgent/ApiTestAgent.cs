@@ -54,46 +54,61 @@ public class ApiTestAgent : BaseTestAgent
 
         try
         {
-            // ── 1. Load OpenAPI spec if available ──
-            string? apiSpec = null;
-            if (!string.IsNullOrEmpty(_config.OpenApiSpecUrl))
+            // ── Check for pre-loaded test cases (reuse mode — skip LLM generation) ──
+            List<ApiTestCase>? testCases = null;
+            if (task.Parameters.TryGetValue("PreloadedTestCases", out var preloaded)
+                && preloaded is List<ApiTestCase> saved)
             {
-                apiSpec = await TryLoadOpenApiSpecAsync(ct);
-                steps.Add(apiSpec is not null
-                    ? TestStep.Pass("load-spec", "Loaded OpenAPI specification")
-                    : TestStep.Pass("load-spec", "No OpenAPI spec available, using LLM inference"));
+                testCases = saved;
+                steps.Add(TestStep.Pass("load-cases",
+                    $"Loaded {testCases.Count} saved test cases (reuse mode — skipping LLM generation)"));
+                Logger.LogInformation("[{Agent}] Reuse mode: using {Count} saved test cases, skipping LLM generation",
+                    Name, testCases.Count);
             }
 
-            // ── 2. Discovery call — hit the primary endpoint once to capture the
-            //       real response shape so Claude can generate accurate field assertions ──
-            var discovery = await DiscoverEndpointAsync(task, ct);
-            if (discovery is not null)
+            if (testCases is null)
             {
-                steps.Add(TestStep.Pass("discovery",
-                    $"Discovery call: {discovery.StatusCode} — captured {discovery.BodySample.Length} chars, " +
-                    $"fields: {discovery.TopLevelFields}"));
-                Logger.LogInformation("[{Agent}] Discovery: {Status}, fields detected: {Fields}",
-                    Name, discovery.StatusCode, discovery.TopLevelFields);
-            }
-
-            // ── 3. Ask LLM to generate test cases ──
-            var testCases = await GenerateTestCasesAsync(task, apiSpec, discovery, ct);
-            if (testCases is null || testCases.Count == 0)
-            {
-                return new TestResult
+                // ── 1. Load OpenAPI spec if available ──
+                string? apiSpec = null;
+                if (!string.IsNullOrEmpty(_config.OpenApiSpecUrl))
                 {
-                    TaskId = task.Id,
-                    AgentName = Name,
-                    Status = TestStatus.Error,
-                    Summary = "LLM failed to generate test cases",
-                    Steps = steps,
-                    Duration = sw.Elapsed
-                };
-            }
+                    apiSpec = await TryLoadOpenApiSpecAsync(ct);
+                    steps.Add(apiSpec is not null
+                        ? TestStep.Pass("load-spec", "Loaded OpenAPI specification")
+                        : TestStep.Pass("load-spec", "No OpenAPI spec available, using LLM inference"));
+                }
 
-            steps.Add(TestStep.Pass("generate-cases",
-                $"Generated {testCases.Count} test cases"));
-            Logger.LogInformation("[{Agent}] Generated {Count} test cases", Name, testCases.Count);
+                // ── 2. Discovery call — hit the primary endpoint once to capture the
+                //       real response shape so Claude can generate accurate field assertions ──
+                var discovery = await DiscoverEndpointAsync(task, ct);
+                if (discovery is not null)
+                {
+                    steps.Add(TestStep.Pass("discovery",
+                        $"Discovery call: {discovery.StatusCode} — captured {discovery.BodySample.Length} chars, " +
+                        $"fields: {discovery.TopLevelFields}"));
+                    Logger.LogInformation("[{Agent}] Discovery: {Status}, fields detected: {Fields}",
+                        Name, discovery.StatusCode, discovery.TopLevelFields);
+                }
+
+                // ── 3. Ask LLM to generate test cases ──
+                testCases = await GenerateTestCasesAsync(task, apiSpec, discovery, ct);
+                if (testCases is null || testCases.Count == 0)
+                {
+                    return new TestResult
+                    {
+                        TaskId = task.Id,
+                        AgentName = Name,
+                        Status = TestStatus.Error,
+                        Summary = "LLM failed to generate test cases",
+                        Steps = steps,
+                        Duration = sw.Elapsed
+                    };
+                }
+
+                steps.Add(TestStep.Pass("generate-cases",
+                    $"Generated {testCases.Count} test cases"));
+                Logger.LogInformation("[{Agent}] Generated {Count} test cases", Name, testCases.Count);
+            }
 
             // ── 4. Execute each test case ──
             foreach (var tc in testCases)
@@ -127,7 +142,8 @@ public class ApiTestAgent : BaseTestAgent
                 Metadata = new Dictionary<string, object>
                 {
                     ["totalCases"] = testCases.Count,
-                    ["baseUrl"] = _config.ApiBaseUrl
+                    ["baseUrl"] = _config.ApiBaseUrl,
+                    ["generatedTestCases"] = testCases
                 }
             };
         }
