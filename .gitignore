@@ -39,6 +39,10 @@ appsettings.*.json
 ## Claude Code local settings (may contain paths / personal prefs)
 .claude/settings.local.json
 
+## React UI
+ui/node_modules/
+ui/dist/
+
 ## OS
 .DS_Store
 Thumbs.db

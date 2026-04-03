@@ -20,26 +20,32 @@ Use this guide to determine where the code belongs:
 | What you're adding | Where it lives |
 |---|---|
 | New CLI flag or console output change | `src/AiTestCrew.Runner/Program.cs` |
+| New REST API endpoint | `src/AiTestCrew.WebApi/Endpoints/` + register in `Program.cs` |
+| New React UI page or component | `ui/src/pages/` or `ui/src/components/` |
 | New run mode or test set management | `src/AiTestCrew.Orchestrator/TestOrchestrator.cs` |
 | New test execution capability for APIs | `src/AiTestCrew.Agents/ApiAgent/ApiTestAgent.cs` |
 | New test agent for a different target type | `src/AiTestCrew.Agents/{Type}Agent/` (use `/add-agent` skill) |
 | New validation rule | Use `/add-validation` skill |
 | New shared model | `src/AiTestCrew.Core/Models/` |
 | New configuration setting | `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` + `appsettings.json` |
-| New persistence operation | `src/AiTestCrew.Agents/Persistence/TestSetRepository.cs` |
+| New persistence operation | `src/AiTestCrew.Agents/Persistence/` |
+| New execution history feature | `src/AiTestCrew.Agents/Persistence/ExecutionHistoryRepository.cs` |
 
 ### Step 3 — Check the dependency rules
 
 The layering is strict:
 ```
-Runner → Orchestrator → Agents → Core
+Runner/WebApi → Orchestrator → Agents → Core
 ```
 - `Core` has no project references — keep it that way
 - `Agents` can reference `Core` only
 - `Orchestrator` can reference `Core` and `Agents`
-- `Runner` can reference everything
+- `Runner` and `WebApi` can reference everything below them
+- `Runner` and `WebApi` are at the same layer — neither references the other
 
 Do not introduce circular dependencies or upward references.
+
+**Important:** If you add a new service or DI registration, you must register it in **both** `src/AiTestCrew.Runner/Program.cs` and `src/AiTestCrew.WebApi/Program.cs`.
 
 ### Step 4 — Implement minimally
 

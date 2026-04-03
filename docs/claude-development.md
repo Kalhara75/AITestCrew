@@ -157,6 +157,34 @@ Automatically fixes any Critical issues found. Reports Important and Minor issue
 
 ## Common Development Workflows
 
+### Starting the Web UI for development
+
+```bash
+# Terminal 1 — API server
+dotnet run --project src/AiTestCrew.WebApi
+
+# Terminal 2 — React dev server (hot reload)
+cd ui && npm run dev
+```
+
+Open `http://localhost:5173`. The WebApi runs on port 5050; the React dev server proxies API calls to it.
+
+### Adding a new REST API endpoint
+
+1. Create or edit a file in `src/AiTestCrew.WebApi/Endpoints/`
+2. Register the route group in `src/AiTestCrew.WebApi/Program.cs`
+3. Add corresponding TypeScript types in `ui/src/types/index.ts`
+4. Add API client functions in `ui/src/api/`
+5. Create or update React pages/components in `ui/src/pages/` and `ui/src/components/`
+
+### Adding a new React page
+
+1. Create the page in `ui/src/pages/YourPage.tsx`
+2. Add a route in `ui/src/App.tsx`
+3. Add a nav link in `ui/src/components/Layout.tsx` if it should appear in the header
+
+---
+
 ### Adding a new test agent type
 
 ```
@@ -216,6 +244,13 @@ Pick the test set ID, then:
 | `.claude/commands/add-validation.md` | Slash command: add a validation rule |
 | `.claude/commands/implement-feature.md` | Slash command: implement any feature |
 | `.claude/commands/review-agent.md` | Slash command: quality review of an agent |
+| `src/AiTestCrew.WebApi/Program.cs` | WebApi DI wiring and endpoint registration |
+| `src/AiTestCrew.WebApi/Endpoints/` | REST API endpoint definitions |
+| `ui/src/App.tsx` | React Router route definitions |
+| `ui/src/api/` | TypeScript API client functions |
+| `ui/src/pages/` | React page components |
+| `ui/src/components/` | Reusable React UI components |
+| `ui/src/types/index.ts` | TypeScript interfaces matching API responses |
 
 ---
 

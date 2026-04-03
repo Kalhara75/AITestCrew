@@ -61,7 +61,7 @@ The `Metadata["generatedTestCases"]` key is required so the orchestrator can per
 
 ### Step 5 — Register the agent in DI
 
-In `src/AiTestCrew.Runner/Program.cs`, add registrations immediately after the `ApiTestAgent` registrations, following the same two-line pattern:
+Register the agent in **both** `src/AiTestCrew.Runner/Program.cs` and `src/AiTestCrew.WebApi/Program.cs`. Add registrations immediately after the `ApiTestAgent` registrations, following the same two-line pattern:
 
 ```csharp
 builder.Services.AddSingleton<{TargetType}TestAgent>(sp => new {TargetType}TestAgent(
@@ -71,6 +71,8 @@ builder.Services.AddSingleton<{TargetType}TestAgent>(sp => new {TargetType}TestA
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<{TargetType}TestAgent>());
 ```
+
+**Important:** Both Runner and WebApi must have identical agent registrations so the same test types work from CLI and web UI.
 
 ### Step 6 — Persistence support
 

@@ -30,6 +30,7 @@ public class TestOrchestrator
     private readonly Kernel _kernel;
     private readonly TestEnvironmentConfig _config;
     private readonly TestSetRepository _testSetRepo;
+    private readonly ExecutionHistoryRepository _historyRepo;
     private readonly ILogger<TestOrchestrator> _logger;
 
     public TestOrchestrator(
@@ -37,12 +38,14 @@ public class TestOrchestrator
         Kernel kernel,
         TestEnvironmentConfig config,
         TestSetRepository testSetRepo,
+        ExecutionHistoryRepository historyRepo,
         ILogger<TestOrchestrator> logger)
     {
         _agents = agents.ToList();
         _kernel = kernel;
         _config = config;
         _testSetRepo = testSetRepo;
+        _historyRepo = historyRepo;
         _logger = logger;
     }
 
@@ -53,9 +56,11 @@ public class TestOrchestrator
         string objective,
         RunMode mode = RunMode.Normal,
         string? reuseId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? externalRunId = null)
     {
         var sw = Stopwatch.StartNew();
+        var startedAt = DateTime.UtcNow;
         _logger.LogInformation("╔══════════════════════════════════════════╗");
         _logger.LogInformation("║  AI TEST CREW - Starting Test Run        ║");
         _logger.LogInformation("╚══════════════════════════════════════════╝");
@@ -229,13 +234,33 @@ public class TestOrchestrator
         _logger.LogInformation("╚══════════════════════════════════════════╝");
         _logger.LogInformation("Duration: {Dur}", sw.Elapsed);
 
-        return new TestSuiteResult
+        var suiteResult = new TestSuiteResult
         {
             Objective = objective,
             Results = results,
             Summary = summary,
             TotalDuration = sw.Elapsed
         };
+
+        // ── Persist execution history (all modes) ──
+        try
+        {
+            var testSetId = mode == RunMode.Reuse && reuseId is not null
+                ? reuseId
+                : TestSetRepository.SlugFromObjective(objective);
+            var executionRun = PersistedExecutionRun.FromSuiteResult(suiteResult, testSetId, mode, startedAt);
+            if (externalRunId is not null)
+                executionRun.RunId = externalRunId;
+            await _historyRepo.SaveAsync(executionRun);
+            _logger.LogInformation("Execution history saved: {RunId} → {Dir}",
+                executionRun.RunId, _historyRepo.Directory);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to save execution history (non-fatal)");
+        }
+
+        return suiteResult;
     }
 
     // ─────────────────────────────────────────────────────

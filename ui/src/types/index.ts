@@ -1,0 +1,115 @@
+export interface TestSetListItem {
+  id: string;
+  objective: string;
+  taskCount: number;
+  testCaseCount: number;
+  createdAt: string;
+  lastRunAt: string;
+  runCount: number;
+  lastRunStatus: string | null;
+}
+
+export interface TestSetDetail {
+  id: string;
+  objective: string;
+  createdAt: string;
+  lastRunAt: string;
+  runCount: number;
+  lastRunStatus: string | null;
+  tasks: TaskEntry[];
+}
+
+export interface TaskEntry {
+  taskId: string;
+  taskDescription: string;
+  agentName: string;
+  testCases: ApiTestCase[];
+}
+
+export interface ApiTestCase {
+  name: string;
+  method: string;
+  endpoint: string;
+  headers: Record<string, string>;
+  queryParams: Record<string, string>;
+  body: unknown;
+  expectedStatus: number;
+  expectedBodyContains: string[];
+  expectedBodyNotContains: string[];
+  isFuzzTest: boolean;
+}
+
+export interface RunSummary {
+  runId: string;
+  mode: string;
+  status: string;
+  startedAt: string;
+  completedAt: string | null;
+  totalDuration: string;
+  totalTasks: number;
+  passedTasks: number;
+  failedTasks: number;
+  errorTasks: number;
+}
+
+export interface ExecutionRun {
+  runId: string;
+  testSetId: string;
+  objective: string;
+  mode: string;
+  status: string;
+  startedAt: string;
+  completedAt: string | null;
+  totalDuration: string;
+  summary: string;
+  totalTasks: number;
+  passedTasks: number;
+  failedTasks: number;
+  errorTasks: number;
+  taskResults: TaskResult[];
+}
+
+export interface TaskResult {
+  taskId: string;
+  agentName: string;
+  status: string;
+  summary: string;
+  duration: string;
+  completedAt: string;
+  passedSteps: number;
+  failedSteps: number;
+  totalSteps: number;
+  steps: StepResult[];
+}
+
+export interface StepResult {
+  action: string;
+  summary: string;
+  status: string;
+  detail: string | null;
+  duration: string;
+  timestamp: string;
+}
+
+export interface RunStatusResponse {
+  runId: string;
+  objective: string;
+  mode: string;
+  testSetId: string | null;
+  status: string;
+  startedAt: string;
+  completedAt: string | null;
+  error: string | null;
+}
+
+export interface TriggerRunRequest {
+  objective?: string;
+  mode: string;
+  testSetId?: string;
+}
+
+export interface TriggerRunResponse {
+  runId: string;
+  status: string;
+  startedAt: string;
+}

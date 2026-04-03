@@ -1,0 +1,95 @@
+using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.ChatCompletion;
+using AiTestCrew.Agents.ApiAgent;
+using AiTestCrew.Agents.Persistence;
+using AiTestCrew.Core.Configuration;
+using AiTestCrew.Core.Interfaces;
+using AiTestCrew.Orchestrator;
+using AiTestCrew.WebApi;
+using AiTestCrew.WebApi.Endpoints;
+using AiTestCrew.WebApi.Services;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// ── Shared config: look for Runner's appsettings.json so both projects use the same API keys.
+//    Works with `dotnet run --project src/AiTestCrew.WebApi` from the repo root.
+var runnerDir = Path.Combine(builder.Environment.ContentRootPath, "..", "AiTestCrew.Runner");
+builder.Configuration.AddJsonFile(Path.Combine(runnerDir, "appsettings.json"), optional: true, reloadOnChange: false);
+
+// ── TestEnvironmentConfig ──
+var envConfig = builder.Configuration
+    .GetSection("TestEnvironment")
+    .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
+builder.Services.AddSingleton(envConfig);
+
+// ── Semantic Kernel + LLM provider ──
+var kernelBuilder = Kernel.CreateBuilder();
+
+if (envConfig.LlmProvider.Equals("Anthropic", StringComparison.OrdinalIgnoreCase))
+{
+    kernelBuilder.Services.AddSingleton<IChatCompletionService>(
+        new AnthropicChatCompletionService(envConfig.LlmApiKey, envConfig.LlmModel));
+}
+else
+{
+    kernelBuilder.AddOpenAIChatCompletion(envConfig.LlmModel, envConfig.LlmApiKey);
+}
+
+var kernel = kernelBuilder.Build();
+builder.Services.AddSingleton(kernel);
+
+// ── HttpClient + API Agent ──
+builder.Services.AddHttpClient();
+builder.Services.AddSingleton<ApiTestAgent>(sp => new ApiTestAgent(
+    sp.GetRequiredService<Kernel>(),
+    sp.GetRequiredService<ILogger<ApiTestAgent>>(),
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
+    sp.GetRequiredService<TestEnvironmentConfig>()
+));
+builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<ApiTestAgent>());
+
+// ── Persistence — share the same data directory as the Runner ──
+var runnerBinDir = Path.GetFullPath(Path.Combine(runnerDir, "bin", "Debug", "net8.0"));
+var dataDir = Directory.Exists(Path.Combine(runnerBinDir, "testsets"))
+    ? runnerBinDir
+    : AppContext.BaseDirectory;
+builder.Services.AddSingleton(new TestSetRepository(dataDir));
+builder.Services.AddSingleton(new ExecutionHistoryRepository(dataDir));
+
+// ── Orchestrator ──
+builder.Services.AddSingleton<TestOrchestrator>();
+
+// ── Run tracker (in-memory active runs) ──
+builder.Services.AddSingleton<RunTracker>();
+
+// ── CORS (allow Vite dev server) ──
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        policy.WithOrigins("http://localhost:5173", "http://localhost:3000")
+              .AllowAnyHeader()
+              .AllowAnyMethod();
+    });
+});
+
+// ── JSON serialisation ──
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
+    options.SerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
+});
+
+var app = builder.Build();
+
+app.UseCors();
+
+// ── Map endpoints ──
+app.MapGroup("/api/testsets").MapTestSetEndpoints();
+app.MapGroup("/api/runs").MapRunEndpoints();
+
+// ── Health check ──
+app.MapGet("/api/health", () => Results.Ok(new { status = "ok", timestamp = DateTime.UtcNow }));
+
+app.Urls.Add("http://localhost:5050");
+app.Run();

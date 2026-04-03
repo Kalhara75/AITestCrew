@@ -194,6 +194,72 @@ If more than 75% of test steps in the first API task return HTTP 404 with zero p
 
 ---
 
+## Web Dashboard
+
+AITestCrew includes a React-based web dashboard for browsing test sets, viewing test cases, inspecting execution history, and triggering re-runs.
+
+### Starting the Web UI
+
+1. **Start the API server:**
+   ```
+   dotnet run --project src/AiTestCrew.WebApi
+   ```
+   Listens on `http://localhost:5050`.
+
+2. **Start the React dev server:**
+   ```
+   cd ui
+   npm run dev
+   ```
+   Opens at `http://localhost:5173`.
+
+### Dashboard
+
+The home page shows all saved test sets as cards. Each card displays:
+- Test objective
+- Last run status (colour-coded badge)
+- Number of tasks, test cases, and runs
+- Last run date
+
+Click a card to view its details.
+
+### Test Set Detail
+
+Shows the full test set with:
+- **Test cases table** — HTTP method (colour-coded), endpoint, test name, expected status code
+- **Execution history** — all previous runs with status, pass/fail counts, duration, and date
+- **Trigger buttons** — "Re-run Tests" (reuse mode) and "Rebaseline" (regenerate tests)
+
+### Execution Detail
+
+Shows a single run's results:
+- Overall status, duration, and task pass/fail counts
+- LLM-generated summary
+- Expandable task sections, each showing individual test steps
+- Click a step to expand its full response detail
+
+### Triggering Runs from the UI
+
+Click "Re-run Tests" or "Rebaseline" on a test set detail page. The UI:
+1. Sends a POST to `/api/runs`
+2. Shows a spinner while polling every 3 seconds
+3. Automatically navigates to the results page when the run completes
+
+Only one run can be active at a time (the API returns 409 if another is in progress).
+
+---
+
+## Execution History
+
+Every test run (regardless of mode) is automatically persisted to `executions/{testSetId}/{runId}.json`. This enables:
+- Viewing run history in the web dashboard
+- Comparing pass/fail trends across runs
+- Inspecting detailed step-by-step results from past executions
+
+History is saved in a try/catch wrapper — if persistence fails, the CLI output and test execution are unaffected.
+
+---
+
 ## Planned Future Capabilities
 
 The following are scaffolded in the codebase but not yet active:

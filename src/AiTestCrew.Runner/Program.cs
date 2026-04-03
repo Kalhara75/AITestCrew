@@ -108,8 +108,9 @@ builder.Services.AddSingleton<ApiTestAgent>(sp => new ApiTestAgent(
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<ApiTestAgent>());
 
-// Test set persistence
+// Test set persistence + execution history
 builder.Services.AddSingleton(new TestSetRepository(AppContext.BaseDirectory));
+builder.Services.AddSingleton(new ExecutionHistoryRepository(AppContext.BaseDirectory));
 
 // Orchestrator (receives IEnumerable<ITestAgent> and TestSetRepository from DI automatically)
 builder.Services.AddSingleton<TestOrchestrator>();

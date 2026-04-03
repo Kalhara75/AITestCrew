@@ -50,4 +50,6 @@ After running, summarise:
 
 - The runner requires a valid `appsettings.json` in `src/AiTestCrew.Runner/` with `LlmApiKey`, `ApiBaseUrl`, and `AuthToken` configured.
 - Saved test sets are written to the `testsets/` directory next to the compiled binary (typically `src/AiTestCrew.Runner/bin/Debug/net8.0/testsets/`).
+- Execution history is written to `executions/{testSetId}/{runId}.json` in the same directory.
 - Full request/response logs are written to `logs/testrun_{timestamp}.log` in the same directory.
+- The WebApi project shares the Runner's `appsettings.json` and data directories. Tests run via the Web UI produce results visible from both CLI and UI.

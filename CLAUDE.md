@@ -8,12 +8,14 @@ An AI-powered test automation framework that uses LLMs (Claude via Anthropic SDK
 
 ```
 AiTestCrew.Runner          ← CLI entry point, DI, Spectre.Console output
+AiTestCrew.WebApi          ← REST API backend for the React UI (port 5050)
 AiTestCrew.Orchestrator    ← Objective decomposition, task routing, aggregation
 AiTestCrew.Agents          ← Agent implementations + persistence layer
 AiTestCrew.Core            ← Models, interfaces, config — no external dependencies
+ui/                        ← React 18 + TypeScript + Vite frontend (port 5173)
 ```
 
-Dependency direction is strict: `Runner → Orchestrator → Agents → Core`. Never introduce upward references.
+Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → Core`. Never introduce upward references. Runner and WebApi are at the same layer — neither references the other.
 
 ## Key files
 
@@ -24,6 +26,10 @@ Dependency direction is strict: `Runner → Orchestrator → Agents → Core`. N
 | `src/AiTestCrew.Agents/ApiAgent/ApiTestAgent.cs` | REST API test generation and execution |
 | `src/AiTestCrew.Agents/Base/BaseTestAgent.cs` | `AskLlmAsync`, `AskLlmForJsonAsync`, `SummariseResultsAsync` |
 | `src/AiTestCrew.Agents/Persistence/TestSetRepository.cs` | Save/load/list test sets as JSON in `testsets/` |
+| `src/AiTestCrew.Agents/Persistence/ExecutionHistoryRepository.cs` | Save/load execution runs in `executions/` |
+| `src/AiTestCrew.Agents/Persistence/PersistedExecutionRun.cs` | Execution history models |
+| `src/AiTestCrew.WebApi/Program.cs` | WebApi DI wiring, CORS, minimal API endpoints |
+| `src/AiTestCrew.WebApi/Endpoints/` | REST endpoint definitions |
 | `src/AiTestCrew.Core/Models/` | `TestTask`, `TestStep`, `TestResult`, `TestSuiteResult`, `RunMode` |
 | `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` | Bound from `appsettings.json → TestEnvironment` |
 
@@ -52,6 +58,8 @@ All agents extend `BaseTestAgent` and implement `ITestAgent`:
 - JSON serialisation: `PropertyNamingPolicy = CamelCase`, `PropertyNameCaseInsensitive = true`
 - New config settings go in `TestEnvironmentConfig` + `appsettings.example.json` (not `appsettings.json`)
 - Saved test set models (`PersistedTestSet`, `PersistedTaskEntry`) live in `AiTestCrew.Agents/Persistence/`
+- Execution history models (`PersistedExecutionRun`, `PersistedTaskResult`, `PersistedStepResult`) also in `Persistence/`
+- WebApi uses the same DI wiring pattern as Runner — if you add a new service, register it in both `Program.cs` files
 
 ## Available slash commands
 

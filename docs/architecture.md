@@ -2,17 +2,28 @@
 
 ## Solution Structure
 
-The solution (`AiTestCrew.slnx`) contains four .NET 8 projects with a strict layered dependency graph — each layer only references layers below it.
+The solution (`AiTestCrew.slnx`) contains five .NET 8 projects with a strict layered dependency graph — each layer only references layers below it. A React frontend communicates with the WebApi over REST.
 
 ```
-AiTestCrew.Runner          (CLI entry point, DI wiring, console output)
-       │
-AiTestCrew.Orchestrator    (objective decomposition, task routing, result aggregation)
-       │
-AiTestCrew.Agents          (agent implementations, test execution, persistence)
-       │
-AiTestCrew.Core            (models, interfaces, configuration — no external dependencies)
+┌──────────────┐     ┌──────────────────┐
+│  React UI    │────▶│  AiTestCrew      │
+│  (Vite+TS)   │ HTTP│  .WebApi (REST)  │──┐
+│  Port 5173   │◀────│  Port 5050       │  │
+└──────────────┘     └──────────────────┘  │
+                                           │
+┌──────────────────┐                       │
+│  AiTestCrew      │──┐                   │
+│  .Runner (CLI)   │  │                   │
+└──────────────────┘  │                   │
+                      ▼                   ▼
+              AiTestCrew.Orchestrator
+                      │
+              AiTestCrew.Agents
+                      │
+              AiTestCrew.Core
 ```
+
+Both Runner (CLI) and WebApi reference the same Orchestrator/Agents/Core layers. They share the same `testsets/` and `executions/` file storage.
 
 ---
 
@@ -42,13 +53,15 @@ Contains agent implementations and test set persistence. References Core only.
 ```
 Agents/
   ApiAgent/
-    ApiTestAgent.cs      — REST/GraphQL test execution (544 lines)
-    ApiTestCase.cs       — LLM-generated test case model + validation verdict
+    ApiTestAgent.cs               — REST/GraphQL test execution
+    ApiTestCase.cs                — LLM-generated test case model + validation verdict
   Base/
-    BaseTestAgent.cs     — Shared LLM communication and JSON utilities
+    BaseTestAgent.cs              — Shared LLM communication and JSON utilities
   Persistence/
-    PersistedTestSet.cs  — JSON envelope model for saved test sets
-    TestSetRepository.cs — File I/O service for testsets/ directory
+    PersistedTestSet.cs           — JSON envelope model for saved test sets
+    TestSetRepository.cs          — File I/O service for testsets/ directory
+    PersistedExecutionRun.cs      — Execution history models (run, task, step results)
+    ExecutionHistoryRepository.cs — File I/O for executions/{testSetId}/{runId}.json
 ```
 
 ---
@@ -75,6 +88,66 @@ Runner/
   FileLoggerProvider.cs            — Writes all log messages to a timestamped file in logs/
   appsettings.json                 — Runtime configuration (copied to output directory on build)
   appsettings.example.json         — Template with placeholder values for source control
+```
+
+---
+
+### AiTestCrew.WebApi
+
+REST API backend for the React UI. Mirrors Runner's DI wiring but exposes HTTP endpoints instead of a CLI.
+
+```
+WebApi/
+  Program.cs                       — DI wiring, CORS, minimal API endpoints
+  AnthropicChatCompletionService.cs — Copy of Runner's bridge (same layer, can't reference Runner)
+  Endpoints/
+    TestSetEndpoints.cs            — GET /api/testsets, GET /api/testsets/{id}, runs endpoints
+    RunEndpoints.cs                — POST /api/runs (trigger), GET /api/runs/{id}/status (poll)
+  Services/
+    RunTracker.cs                  — ConcurrentDictionary tracking active/completed runs
+  appsettings.example.json         — Template config
+```
+
+**REST API endpoints:**
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `GET` | `/api/testsets` | List all test sets with last-run status |
+| `GET` | `/api/testsets/{id}` | Full test set detail with test cases |
+| `GET` | `/api/testsets/{id}/runs` | Execution history for a test set |
+| `GET` | `/api/testsets/{id}/runs/{runId}` | Full execution detail with steps |
+| `POST` | `/api/runs` | Trigger a test run (returns 202, async) |
+| `GET` | `/api/runs/{runId}/status` | Poll run progress |
+| `GET` | `/api/health` | Health check |
+
+---
+
+### React Frontend (`ui/`)
+
+Single-page application built with React 18, TypeScript, and Vite. Communicates with WebApi over REST.
+
+```
+ui/src/
+  main.tsx                    — React root + QueryClientProvider + BrowserRouter
+  App.tsx                     — Route definitions with Layout wrapper
+  api/
+    client.ts                 — fetch wrapper with base URL + error handling
+    testSets.ts               — API functions for test sets and runs
+    runs.ts                   — API functions for triggering and polling runs
+  pages/
+    DashboardPage.tsx         — Card grid of all test sets
+    TestSetDetailPage.tsx     — Test cases table + run history + trigger button
+    ExecutionDetailPage.tsx   — Task results with expandable step details
+  components/
+    Layout.tsx                — Header, nav, content area
+    StatusBadge.tsx           — Color-coded Passed/Failed/Error/Running badge
+    TestSetCard.tsx           — Test set summary card for dashboard
+    TestCaseTable.tsx         — HTTP method, endpoint, expected status table
+    RunHistoryTable.tsx       — Run list with status, duration, date
+    StepList.tsx              — Expandable task/step rows with detail
+    TriggerRunButton.tsx      — Mode selector + trigger + progress polling
+  types/
+    index.ts                  — TypeScript interfaces matching API responses
 ```
 
 ---
@@ -255,6 +328,54 @@ The slug is deterministic — the same objective always produces the same filena
 }
 ```
 
+### Execution History Storage
+
+Every test run (Normal, Reuse, Rebaseline) is persisted as a JSON file in `executions/{testSetId}/{runId}.json`.
+
+**`PersistedExecutionRun` schema:**
+```json
+{
+  "runId": "a1b2c3d4e5f6",
+  "testSetId": "test-get-api-products-endpoint",
+  "objective": "Test GET /api/products endpoint",
+  "mode": "Reuse",
+  "status": "Passed",
+  "startedAt": "2026-04-04T14:30:00Z",
+  "completedAt": "2026-04-04T14:31:42Z",
+  "totalDuration": "00:01:42",
+  "summary": "All 7 test cases passed...",
+  "totalTasks": 1,
+  "passedTasks": 1,
+  "failedTasks": 0,
+  "errorTasks": 0,
+  "taskResults": [
+    {
+      "taskId": "a1b2c3d4",
+      "agentName": "API Agent",
+      "status": "Passed",
+      "summary": "...",
+      "passedSteps": 7,
+      "failedSteps": 0,
+      "totalSteps": 7,
+      "steps": [
+        {
+          "action": "GET /api/products",
+          "summary": "Happy path - 200 OK",
+          "status": "Passed",
+          "detail": "Response body: {...}",
+          "duration": "00:00:00.342",
+          "timestamp": "2026-04-04T14:30:05Z"
+        }
+      ]
+    }
+  ]
+}
+```
+
+The orchestrator saves execution history after every run (wrapped in try/catch so failures are non-fatal). `ExecutionHistoryRepository` provides `SaveAsync`, `GetRunAsync`, `ListRuns`, and `GetLatestRun`.
+
+---
+
 ### How Reuse Works
 
 In reuse mode, saved `ApiTestCase` objects are placed into `TestTask.Parameters["PreloadedTestCases"]` before the task reaches the agent. `ApiTestAgent.ExecuteAsync` checks for this key at the very start and, if found, skips the discovery call and all LLM generation, proceeding directly to HTTP execution of the saved cases.
@@ -336,7 +457,9 @@ IChatCompletionService      → Singleton (AnthropicChatCompletionService or Ope
 IHttpClientFactory          → Managed by AddHttpClient()
 ApiTestAgent                → Singleton (concrete + ITestAgent)
 TestSetRepository           → Singleton (new instance, baseDir = AppContext.BaseDirectory)
-TestOrchestrator            → Singleton (receives IEnumerable<ITestAgent> + TestSetRepository)
+ExecutionHistoryRepository  → Singleton (new instance, baseDir = AppContext.BaseDirectory)
+TestOrchestrator            → Singleton (receives IEnumerable<ITestAgent> + repos)
+RunTracker                  → Singleton (WebApi only — tracks async run state)
 ```
 
 ---
