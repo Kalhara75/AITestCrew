@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AiTestCrew.Agents/AiTestCrew.Agents.csproj" />
+    <Project Path="src/AiTestCrew.Core/AiTestCrew.Core.csproj" />
+    <Project Path="src/AiTestCrew.Orchestrator/AiTestCrew.Orchestrator.csproj" />
+    <Project Path="src/AiTestCrew.Runner/AiTestCrew.Runner.csproj" />
+  </Folder>
+</Solution>
