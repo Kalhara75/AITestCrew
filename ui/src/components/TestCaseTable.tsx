@@ -1,4 +1,6 @@
-import type { TaskEntry } from '../types';
+import { useState } from 'react';
+import { EditTestCaseDialog } from './EditTestCaseDialog';
+import type { TaskEntry, ApiTestCase } from '../types';
 
 const methodColor: Record<string, { fg: string; bg: string }> = {
   GET:    { fg: '#166534', bg: '#dcfce7' },
@@ -8,10 +10,28 @@ const methodColor: Record<string, { fg: string; bg: string }> = {
   DELETE: { fg: '#991b1b', bg: '#fee2e2' },
 };
 
-export function TestCaseTable({ tasks }: { tasks: TaskEntry[] }) {
+interface Props {
+  tasks: TaskEntry[];
+  moduleId?: string;
+  testSetId?: string;
+  onTestCaseUpdated?: () => void;
+}
+
+export function TestCaseTable({ tasks, moduleId, testSetId, onTestCaseUpdated }: Props) {
+  const [editing, setEditing] = useState<{
+    tc: ApiTestCase; taskId: string; caseIndex: number;
+  } | null>(null);
+
   const allCases = tasks.flatMap(t =>
-    t.testCases.map(tc => ({ ...tc, taskDescription: t.taskDescription }))
+    t.testCases.map((tc, idx) => ({
+      ...tc,
+      taskId: t.taskId,
+      taskDescription: t.taskDescription,
+      caseIndex: idx,
+    }))
   );
+
+  const editable = !!moduleId && !!testSetId;
 
   return (
     <div style={{ overflowX: 'auto' }}>
@@ -22,13 +42,15 @@ export function TestCaseTable({ tasks }: { tasks: TaskEntry[] }) {
             <th style={thStyle}>Endpoint</th>
             <th style={thStyle}>Test Name</th>
             <th style={thStyle}>Expected</th>
+            {editable && <th style={{ ...thStyle, width: 40 }}></th>}
           </tr>
         </thead>
         <tbody>
           {allCases.map((tc, i) => (
-            <tr key={i} style={{ borderBottom: '1px solid #f1f5f9' }}
+            <tr key={i} style={{ borderBottom: '1px solid #f1f5f9', cursor: editable ? 'pointer' : undefined }}
               onMouseEnter={e => (e.currentTarget.style.background = '#f8fafc')}
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+              onClick={editable ? () => setEditing({ tc, taskId: tc.taskId, caseIndex: tc.caseIndex }) : undefined}
             >
               <td style={tdStyle}>
                 {(() => {
@@ -36,12 +58,8 @@ export function TestCaseTable({ tasks }: { tasks: TaskEntry[] }) {
                   const c = methodColor[m] || { fg: '#64748b', bg: '#f1f5f9' };
                   return (
                     <span style={{
-                      fontWeight: 700,
-                      fontSize: 11,
-                      padding: '3px 8px',
-                      borderRadius: 4,
-                      color: c.fg,
-                      background: c.bg,
+                      fontWeight: 700, fontSize: 11, padding: '3px 8px', borderRadius: 4,
+                      color: c.fg, background: c.bg,
                       fontFamily: 'ui-monospace, Consolas, monospace',
                     }}>
                       {m}
@@ -53,19 +71,37 @@ export function TestCaseTable({ tasks }: { tasks: TaskEntry[] }) {
               <td style={{ ...tdStyle, color: '#475569' }}>{tc.name}</td>
               <td style={tdStyle}>
                 <span style={{
-                  fontFamily: 'ui-monospace, Consolas, monospace',
-                  fontSize: 13,
-                  fontWeight: 600,
+                  fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 13, fontWeight: 600,
                   color: tc.expectedStatus >= 200 && tc.expectedStatus < 300 ? '#166534' :
                          tc.expectedStatus >= 400 ? '#991b1b' : '#475569',
                 }}>
                   {tc.expectedStatus}
                 </span>
               </td>
+              {editable && (
+                <td style={tdStyle}>
+                  <span style={{ fontSize: 12, color: '#94a3b8' }} title="Edit test case">
+                    &#9998;
+                  </span>
+                </td>
+              )}
             </tr>
           ))}
         </tbody>
       </table>
+
+      {editing && moduleId && testSetId && (
+        <EditTestCaseDialog
+          open
+          testCase={editing.tc}
+          taskId={editing.taskId}
+          caseIndex={editing.caseIndex}
+          moduleId={moduleId}
+          testSetId={testSetId}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); onTestCaseUpdated?.(); }}
+        />
+      )}
     </div>
   );
 }

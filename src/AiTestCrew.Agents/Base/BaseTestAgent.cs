@@ -17,12 +17,7 @@ public abstract class BaseTestAgent : ITestAgent
     protected readonly Kernel Kernel;
     protected readonly ILogger Logger;
 
-    private static readonly JsonSerializerOptions JsonOpts = new()
-    {
-        PropertyNameCaseInsensitive = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = false
-    };
+    private static readonly JsonSerializerOptions JsonOpts = LlmJsonHelper.JsonOpts;
 
     public abstract string Name { get; }
     public abstract string Role { get; }
@@ -74,18 +69,13 @@ public abstract class BaseTestAgent : ITestAgent
     protected async Task<T?> AskLlmForJsonAsync<T>(string prompt, CancellationToken ct = default)
     {
         var raw = await AskLlmAsync(prompt, ct);
-        var cleaned = CleanJsonResponse(raw);
-
-        try
+        var result = LlmJsonHelper.DeserializeLlmResponse<T>(raw);
+        if (result is null)
         {
-            return JsonSerializer.Deserialize<T>(cleaned, JsonOpts);
+            Logger.LogWarning("[{Agent}] Failed to parse LLM JSON response. Raw: {Raw}",
+                Name, raw[..Math.Min(500, raw.Length)]);
         }
-        catch (JsonException ex)
-        {
-            Logger.LogWarning("[{Agent}] Failed to parse LLM JSON: {Error}\nRaw: {Raw}",
-                Name, ex.Message, cleaned[..Math.Min(500, cleaned.Length)]);
-            return default;
-        }
+        return result;
     }
 
     /// <summary>
@@ -117,27 +107,8 @@ public abstract class BaseTestAgent : ITestAgent
     // JSON cleaning utilities
     // ─────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Strips markdown fences, leading/trailing text, and extracts
-    /// the JSON array or object from an LLM response.
-    /// </summary>
-    protected static string CleanJsonResponse(string raw)
-    {
-        // Remove markdown code fences
-        var cleaned = Regex.Replace(raw, @"```(?:json)?\s*", "");
-        cleaned = cleaned.Replace("```", "").Trim();
-
-        // Find the first [ or { and the last ] or }
-        var firstBracket = cleaned.IndexOfAny(['{', '[']);
-        var lastBracket = cleaned.LastIndexOfAny(['}', ']']);
-
-        if (firstBracket >= 0 && lastBracket > firstBracket)
-        {
-            cleaned = cleaned[firstBracket..(lastBracket + 1)];
-        }
-
-        return cleaned;
-    }
+    protected static string CleanJsonResponse(string raw) =>
+        LlmJsonHelper.CleanJsonResponse(raw);
 
     protected static JsonSerializerOptions GetJsonOptions() => JsonOpts;
 }

@@ -1,4 +1,10 @@
+using System.Text.Json;
+using AiTestCrew.Agents.ApiAgent;
+using AiTestCrew.Agents.Base;
 using AiTestCrew.Agents.Persistence;
+using AiTestCrew.Orchestrator;
+using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.ChatCompletion;
 
 namespace AiTestCrew.WebApi.Endpoints;
 
@@ -257,6 +263,148 @@ public static class ModuleEndpoints
             }
         });
 
+        // PUT /api/modules/{moduleId}/testsets/{tsId}/tasks/{taskId}/testcases/{index} — update a single test case
+        group.MapPut("/{moduleId}/testsets/{tsId}/tasks/{taskId}/testcases/{index:int}",
+            async (string moduleId, string tsId, string taskId, int index,
+                ApiTestCase updated, TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+        {
+            var testSet = await tsRepo.LoadAsync(moduleId, tsId);
+            if (testSet is null)
+                return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
+
+            var task = testSet.Tasks.FirstOrDefault(t => t.TaskId == taskId);
+            if (task is null)
+                return Results.NotFound(new { error = $"Task '{taskId}' not found in test set '{tsId}'" });
+
+            if (index < 0 || index >= task.TestCases.Count)
+                return Results.BadRequest(new { error = $"Test case index {index} out of range (0-{task.TestCases.Count - 1})" });
+
+            task.TestCases[index] = updated;
+            await tsRepo.SaveAsync(testSet, moduleId);
+
+            var latestRun = historyRepo.GetLatestRun(tsId);
+            return Results.Ok(new
+            {
+                testSet.Id, testSet.Name, testSet.ModuleId,
+                testSet.Objectives, testSet.ObjectiveNames,
+                Objective = testSet.Objective,
+                testSet.CreatedAt, testSet.LastRunAt, testSet.RunCount,
+                LastRunStatus = latestRun?.Status,
+                testSet.Tasks
+            });
+        });
+
+        // POST /api/modules/{moduleId}/testsets/{tsId}/ai-patch — preview LLM-applied changes
+        group.MapPost("/{moduleId}/testsets/{tsId}/ai-patch",
+            async (string moduleId, string tsId, AiPatchRequest request,
+                TestSetRepository tsRepo, Kernel kernel, ILogger<TestOrchestrator> logger) =>
+        {
+            if (string.IsNullOrWhiteSpace(request.Instruction))
+                return Results.BadRequest(new { error = "instruction is required" });
+
+            var testSet = await tsRepo.LoadAsync(moduleId, tsId);
+            if (testSet is null)
+                return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
+
+            // Build the scoped list of test cases to send to the LLM
+            var entries = new List<TestCasePatchEntry>();
+            foreach (var task in testSet.Tasks)
+            {
+                if (request.Scope?.TaskId is not null && task.TaskId != request.Scope.TaskId)
+                    continue;
+
+                for (int i = 0; i < task.TestCases.Count; i++)
+                {
+                    if (request.Scope?.CaseIndex is not null && i != request.Scope.CaseIndex)
+                        continue;
+                    entries.Add(new TestCasePatchEntry(task.TaskId, i, task.TestCases[i]));
+                }
+            }
+
+            if (entries.Count == 0)
+                return Results.BadRequest(new { error = "No test cases match the specified scope" });
+
+            // Serialize only the test cases for the LLM prompt
+            var casesForLlm = entries.Select(e => e.TestCase).ToList();
+            var casesJson = JsonSerializer.Serialize(casesForLlm, LlmJsonHelper.JsonOpts);
+
+            var prompt = $"""
+                Here are the current API test cases as a JSON array:
+                {casesJson}
+
+                Instruction: {request.Instruction}
+
+                Apply the instruction to the test cases and return the modified JSON array.
+                Return ONLY a valid JSON array with the same number of elements.
+                Preserve all fields exactly as-is unless the instruction specifically asks to change them.
+                """;
+
+            try
+            {
+                var chatService = kernel.GetRequiredService<IChatCompletionService>();
+                var history = new ChatHistory();
+                history.AddSystemMessage(
+                    "You are an API test case editor. You receive a JSON array of test cases and a natural language instruction. " +
+                    "Apply the instruction and return the modified array. Return ONLY valid JSON. " +
+                    "Do not include markdown fences, explanation, or any text outside the JSON array. " +
+                    "Preserve the exact number of elements unless explicitly told to add or remove.");
+                history.AddUserMessage(prompt);
+
+                var response = await chatService.GetChatMessageContentAsync(history);
+                var patched = LlmJsonHelper.DeserializeLlmResponse<List<ApiTestCase>>(response.Content ?? "");
+
+                if (patched is null || patched.Count != entries.Count)
+                    return Results.UnprocessableEntity(new
+                    {
+                        error = $"LLM returned an invalid response (expected {entries.Count} test cases, got {patched?.Count ?? 0})"
+                    });
+
+                var patchedEntries = entries.Select((e, idx) =>
+                    new TestCasePatchEntry(e.TaskId, e.CaseIndex, patched[idx])).ToList();
+
+                return Results.Ok(new AiPatchPreview(entries, patchedEntries));
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "AI patch failed for {Module}/{TestSet}", moduleId, tsId);
+                return Results.UnprocessableEntity(new { error = $"LLM call failed: {ex.Message}" });
+            }
+        });
+
+        // POST /api/modules/{moduleId}/testsets/{tsId}/ai-patch/apply — apply previewed patches
+        group.MapPost("/{moduleId}/testsets/{tsId}/ai-patch/apply",
+            async (string moduleId, string tsId, AiPatchApplyRequest request,
+                TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+        {
+            if (request.Patches is null || request.Patches.Count == 0)
+                return Results.BadRequest(new { error = "patches array is required" });
+
+            var testSet = await tsRepo.LoadAsync(moduleId, tsId);
+            if (testSet is null)
+                return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
+
+            foreach (var patch in request.Patches)
+            {
+                var task = testSet.Tasks.FirstOrDefault(t => t.TaskId == patch.TaskId);
+                if (task is null) continue;
+                if (patch.CaseIndex < 0 || patch.CaseIndex >= task.TestCases.Count) continue;
+                task.TestCases[patch.CaseIndex] = patch.TestCase;
+            }
+
+            await tsRepo.SaveAsync(testSet, moduleId);
+
+            var latestRun = historyRepo.GetLatestRun(tsId);
+            return Results.Ok(new
+            {
+                testSet.Id, testSet.Name, testSet.ModuleId,
+                testSet.Objectives, testSet.ObjectiveNames,
+                Objective = testSet.Objective,
+                testSet.CreatedAt, testSet.LastRunAt, testSet.RunCount,
+                LastRunStatus = latestRun?.Status,
+                testSet.Tasks
+            });
+        });
+
         return group;
     }
 }
@@ -265,3 +413,10 @@ public record CreateModuleRequest(string Name, string? Description);
 public record UpdateModuleRequest(string? Name, string? Description);
 public record CreateTestSetRequest(string Name);
 public record MoveObjectiveRequest(string Objective, string DestinationModuleId, string DestinationTestSetId);
+
+// ── Test case editing records ──
+public record AiPatchRequest(string Instruction, AiPatchScope? Scope);
+public record AiPatchScope(string? TaskId, int? CaseIndex);
+public record TestCasePatchEntry(string TaskId, int CaseIndex, ApiTestCase TestCase);
+public record AiPatchPreview(List<TestCasePatchEntry> Original, List<TestCasePatchEntry> Patched);
+public record AiPatchApplyRequest(List<TestCasePatchEntry> Patches);

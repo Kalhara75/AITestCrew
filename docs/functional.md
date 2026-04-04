@@ -45,6 +45,14 @@ dotnet run --project src/AiTestCrew.Runner -- --create-testset sdr "Controlled L
 3. Click into a module, then **+ Test Set** to create a test set.
 4. Click **Run Objective** to generate tests and add them to a test set.
 
+### Editing Test Cases
+
+Test cases can be reviewed and modified after generation via two methods:
+
+**Direct edit** — Click any test case row in the test set detail page to open an editor. All fields are editable: name, method, endpoint, headers, query params, body, expected status, and body assertions.
+
+**AI edit (natural language patch)** — Click the **AI Edit Test Cases** button above the test case table. Describe the change in plain English (e.g., *"remove the /api/v1 prefix from all endpoints"* or *"change expectedStatus to 200 for the happy path test"*). The system uses the LLM to generate a preview of changes, which you can review field-by-field before applying. Scope can be set to all test cases or a specific task.
+
 ---
 
 ## Run Modes

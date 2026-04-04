@@ -128,6 +128,31 @@ export interface RunStatusResponse {
   error: string | null;
 }
 
+export interface TestCasePatchEntry {
+  taskId: string;
+  caseIndex: number;
+  testCase: ApiTestCase;
+}
+
+export interface AiPatchScope {
+  taskId?: string;
+  caseIndex?: number;
+}
+
+export interface AiPatchRequest {
+  instruction: string;
+  scope?: AiPatchScope;
+}
+
+export interface AiPatchPreview {
+  original: TestCasePatchEntry[];
+  patched: TestCasePatchEntry[];
+}
+
+export interface AiPatchApplyRequest {
+  patches: TestCasePatchEntry[];
+}
+
 export interface TriggerRunRequest {
   objective?: string;
   objectiveName?: string;

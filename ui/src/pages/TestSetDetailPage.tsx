@@ -9,6 +9,7 @@ import { TriggerRunButton } from '../components/TriggerRunButton';
 import { StatusBadge } from '../components/StatusBadge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { MoveObjectiveDialog } from '../components/MoveObjectiveDialog';
+import { AiPatchPanel } from '../components/AiPatchPanel';
 
 export function TestSetDetailPage() {
   const { id, moduleId } = useParams<{ id: string; moduleId?: string }>();
@@ -63,6 +64,10 @@ export function TestSetDetailPage() {
   };
 
   const handleObjectiveMoved = () => {
+    queryClient.invalidateQueries({ queryKey: ['testSet', moduleId, id] });
+  };
+
+  const handleTestCaseUpdated = () => {
     queryClient.invalidateQueries({ queryKey: ['testSet', moduleId, id] });
   };
 
@@ -154,10 +159,23 @@ export function TestSetDetailPage() {
       {/* Test Cases */}
       <div style={cardStyle({ marginBottom: 24 })}>
         <SectionHeader title="Test Cases" count={totalCases} />
+        {isModuleScoped && totalCases > 0 && (
+          <AiPatchPanel
+            moduleId={moduleId!}
+            testSetId={id!}
+            tasks={testSet.tasks}
+            onApplied={handleTestCaseUpdated}
+          />
+        )}
         {totalCases === 0 ? (
           <p style={{ color: '#94a3b8', fontSize: 14 }}>No test cases in this test set.</p>
         ) : (
-          <TestCaseTable tasks={testSet.tasks} />
+          <TestCaseTable
+            tasks={testSet.tasks}
+            moduleId={moduleId}
+            testSetId={id}
+            onTestCaseUpdated={handleTestCaseUpdated}
+          />
         )}
       </div>
 

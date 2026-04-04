@@ -1,5 +1,8 @@
 import { apiFetch } from './client';
-import type { Module, TestSetListItem, TestSetDetail, RunSummary, ExecutionRun, MoveObjectiveRequest } from '../types';
+import type {
+  Module, TestSetListItem, TestSetDetail, RunSummary, ExecutionRun,
+  MoveObjectiveRequest, ApiTestCase, AiPatchRequest, AiPatchPreview, AiPatchApplyRequest,
+} from '../types';
 
 export const fetchModules = () =>
   apiFetch<Module[]>('/modules');
@@ -48,3 +51,23 @@ export const moveObjective = (moduleId: string, tsId: string, request: MoveObjec
     method: 'POST',
     body: JSON.stringify(request),
   });
+
+export const updateTestCase = (
+  moduleId: string, tsId: string, taskId: string, index: number, testCase: ApiTestCase
+) =>
+  apiFetch<TestSetDetail>(
+    `/modules/${moduleId}/testsets/${tsId}/tasks/${taskId}/testcases/${index}`,
+    { method: 'PUT', body: JSON.stringify(testCase) }
+  );
+
+export const previewAiPatch = (moduleId: string, tsId: string, request: AiPatchRequest) =>
+  apiFetch<AiPatchPreview>(
+    `/modules/${moduleId}/testsets/${tsId}/ai-patch`,
+    { method: 'POST', body: JSON.stringify(request) }
+  );
+
+export const applyAiPatch = (moduleId: string, tsId: string, request: AiPatchApplyRequest) =>
+  apiFetch<TestSetDetail>(
+    `/modules/${moduleId}/testsets/${tsId}/ai-patch/apply`,
+    { method: 'POST', body: JSON.stringify(request) }
+  );
