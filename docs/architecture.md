@@ -56,7 +56,8 @@ Agents/
     ApiTestAgent.cs               — REST/GraphQL test execution
     ApiTestCase.cs                — LLM-generated test case model + validation verdict
   Base/
-    BaseTestAgent.cs              — Shared LLM communication and JSON utilities
+    BaseTestAgent.cs              — Shared LLM communication (delegates JSON utilities to LlmJsonHelper)
+    LlmJsonHelper.cs              — Static JSON cleaning/parsing utilities (shared with WebApi endpoints)
   Persistence/
     PersistedModule.cs            — Module manifest model (id, name, description, timestamps)
     PersistedTestSet.cs           — JSON envelope model for saved test sets (supports multiple objectives)
@@ -129,6 +130,9 @@ WebApi/
 | `GET` | `/api/modules/{id}/testsets/{tsId}/runs` | Run history |
 | `GET` | `/api/modules/{id}/testsets/{tsId}/runs/{runId}` | Run detail |
 | `POST` | `/api/modules/{id}/testsets/{tsId}/move-objective` | Move objective to another test set |
+| `PUT` | `/api/modules/{id}/testsets/{tsId}/tasks/{taskId}/testcases/{index}` | Update a single test case directly |
+| `POST` | `/api/modules/{id}/testsets/{tsId}/ai-patch` | Preview LLM-applied natural language patch to test cases |
+| `POST` | `/api/modules/{id}/testsets/{tsId}/ai-patch/apply` | Apply a previewed AI patch to the test set |
 | `GET` | `/api/testsets` | List all test sets (legacy, combined view) |
 | `GET` | `/api/testsets/{id}` | Full test set detail (legacy) |
 | `GET` | `/api/testsets/{id}/runs` | Execution history (legacy) |
@@ -167,9 +171,11 @@ ui/src/
     TriggerRunButton.tsx           — Mode selector + trigger + progress polling (module-aware)
     CreateModuleDialog.tsx         — Modal form to create a module
     CreateTestSetDialog.tsx        — Modal form to create a test set within a module
-    RunObjectiveDialog.tsx         — Modal to select test set + enter objective + trigger run
+    RunObjectiveDialog.tsx         — Modal to select test set, enter objective + optional short name, trigger run
     ConfirmDialog.tsx              — Reusable confirmation modal (used for destructive actions)
     MoveObjectiveDialog.tsx        — Modal to move an objective to another module/test set
+    EditTestCaseDialog.tsx         — Modal form to directly edit all fields of a single test case
+    AiPatchPanel.tsx               — Panel for natural language AI patching of test cases with preview/apply flow
   types/
     index.ts                       — TypeScript interfaces matching API responses
 ```
@@ -349,6 +355,10 @@ On first startup, `MigrationHelper.MigrateToModulesAsync` runs automatically:
     "Test POST /api/ControlledLoadDecodes endpoint"
   ],
   "objective": "Test GET /api/ControlledLoadDecodes endpoint",
+  "objectiveNames": {
+    "Test GET /api/ControlledLoadDecodes endpoint": "Ctrl Load GET",
+    "Test POST /api/ControlledLoadDecodes endpoint": "Ctrl Load POST"
+  },
   "createdAt": "2026-04-04T14:30:00Z",
   "lastRunAt": "2026-04-04T15:45:00Z",
   "runCount": 3,
@@ -459,9 +469,11 @@ No changes required to the orchestrator, models, or any existing agents.
 Provides shared infrastructure for all agents:
 
 - `AskLlmAsync(prompt, ct)` — sends a prompt, returns raw LLM response
-- `AskLlmForJsonAsync<T>(prompt, ct)` — sends a prompt, cleans and deserialises JSON response
+- `AskLlmForJsonAsync<T>(prompt, ct)` — sends a prompt, cleans and deserialises JSON response (delegates to `LlmJsonHelper`)
 - `SummariseResultsAsync(steps, ct)` — generates a one-paragraph summary of a list of test steps
-- `CleanJson(raw)` / `ExtractJson(raw)` — utility methods for stripping markdown and extracting JSON from LLM output
+- `CleanJsonResponse(raw)` — strips markdown fences, extracts JSON from LLM output (delegates to `LlmJsonHelper`)
+
+`LlmJsonHelper` (static) provides the underlying JSON utilities (`CleanJsonResponse`, `DeserializeLlmResponse<T>`) so WebApi endpoints can also call the LLM directly without going through an agent.
 
 ---
 

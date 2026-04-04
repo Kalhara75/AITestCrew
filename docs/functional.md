@@ -140,6 +140,12 @@ All settings are in `src/AiTestCrew.Runner/appsettings.json` under the `TestEnvi
 | `LlmModel` | Model identifier | `"gpt-4o"` |
 | `BaseUrl` | Root URL of the target application | `"https://localhost:5001"` |
 | `ApiBaseUrl` | Base URL prepended to all API endpoint paths | `"https://localhost:5001/api"` |
+
+> **Important — writing objectives with the right path**: Endpoint paths in test cases are generated relative to `ApiBaseUrl`. If your `ApiBaseUrl` is `.../sdrapi/api/v1`, write objectives using paths that start after that prefix:
+> - Correct: `"Test GET /NMIDiscoveryManagement/NMIDiscoveries"`
+> - Incorrect: `"Test GET /api/v1/NMIDiscoveryManagement/NMIDiscoveries"` ← duplicates the version prefix
+>
+> Avoid pasting full URLs into objectives — they will include the base path the LLM will also prepend.
 | `OpenApiSpecUrl` | Optional URL to an OpenAPI/Swagger JSON spec | `null` |
 | `AuthToken` | Token injected into every request | `null` |
 | `AuthScheme` | `"Bearer"`, `"Basic"`, or `"None"` | `"Bearer"` |
@@ -288,8 +294,9 @@ Shows the test sets within a module as a card grid. Features:
 ### Test Set Detail
 
 Shows the full test set with:
-- **Objectives list** — all objectives that have contributed test cases, each with a **Move** button to relocate the objective (and its tasks) to a different test set/module
-- **Test cases table** — HTTP method (colour-coded), endpoint, test name, expected status code
+- **Objectives list** — all objectives that have contributed test cases. Objectives with a short name display that name with the full text as a tooltip. Each has a **Move** button to relocate the objective (and its tasks) to a different test set/module.
+- **AI Edit Test Cases button** — opens the AI patch panel for natural language corrections (see [Editing Test Cases](#editing-test-cases))
+- **Test cases table** — HTTP method (colour-coded), endpoint, test name, expected status code. Click any row to open the direct editor.
 - **Execution history** — all previous runs with status, pass/fail counts, duration, and date
 - **Trigger buttons** — "Re-run Tests" (reuse mode) and "Rebaseline" (regenerate tests)
 - **Delete Test Set** button — permanently removes the test set and all execution history after confirmation
@@ -306,10 +313,11 @@ Shows a single run's results:
 
 From a module detail page, click **Run Objective** to:
 1. Select a target test set
-2. Enter a test objective
-3. The UI sends a POST to `/api/runs` with `moduleId` and `testSetId`
-4. Shows a spinner while polling every 3 seconds
-5. Automatically navigates to the results page when the run completes
+2. Enter a test objective (use paths relative to `ApiBaseUrl`, e.g. `/NMIDiscoveryManagement/NMIDiscoveries`)
+3. Optionally enter a **Short Name** for the objective (e.g. `"NMI Discovery GET"`) — displayed in place of the full text throughout the UI
+4. The UI sends a POST to `/api/runs` with `moduleId`, `testSetId`, and optional `objectiveName`
+5. Shows a spinner while polling every 3 seconds
+6. Automatically navigates to the results page when the run completes
 
 From a test set detail page, click "Re-run Tests" or "Rebaseline" to re-execute or regenerate tests.
 
