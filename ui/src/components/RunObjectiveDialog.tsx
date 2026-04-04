@@ -14,6 +14,7 @@ interface Props {
 export function RunObjectiveDialog({ open, moduleId, testSets, onClose }: Props) {
   const navigate = useNavigate();
   const [objective, setObjective] = useState('');
+  const [objectiveName, setObjectiveName] = useState('');
   const [selectedTestSetId, setSelectedTestSetId] = useState(testSets[0]?.id ?? '');
   const [error, setError] = useState<string | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
@@ -47,6 +48,7 @@ export function RunObjectiveDialog({ open, moduleId, testSets, onClose }: Props)
       const res = await triggerRun({
         mode: 'Normal',
         objective: objective.trim(),
+        objectiveName: objectiveName.trim() || undefined,
         moduleId,
         testSetId: selectedTestSetId,
       });
@@ -100,6 +102,16 @@ export function RunObjectiveDialog({ open, moduleId, testSets, onClose }: Props)
               onChange={e => setObjective(e.target.value)}
               placeholder="e.g. Test the GET /api/ReferenceDataManagement/ControlledLoadDecodes endpoint"
               autoFocus
+            />
+
+            <label style={{ ...labelStyle, marginTop: 16 }}>Short Name <span style={{ fontWeight: 400, color: '#94a3b8' }}>(optional)</span></label>
+            <input
+              type="text"
+              style={inputStyle}
+              value={objectiveName}
+              onChange={e => setObjectiveName(e.target.value)}
+              placeholder="e.g. Ctrl Loads GET"
+              maxLength={80}
             />
 
             {error && <p style={errorStyle}>{error}</p>}

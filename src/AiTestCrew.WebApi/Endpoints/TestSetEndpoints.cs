@@ -16,6 +16,7 @@ public static class TestSetEndpoints
                 {
                     ts.Id,
                     ts.Objective,
+                    ts.ObjectiveNames,
                     TaskCount = ts.Tasks.Count,
                     TestCaseCount = ts.Tasks.Sum(t => t.TestCases.Count),
                     ts.CreatedAt,
@@ -37,6 +38,7 @@ public static class TestSetEndpoints
             {
                 testSet.Id,
                 testSet.Objective,
+                testSet.ObjectiveNames,
                 testSet.CreatedAt,
                 testSet.LastRunAt,
                 testSet.RunCount,

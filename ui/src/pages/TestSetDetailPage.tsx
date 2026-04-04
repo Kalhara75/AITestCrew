@@ -107,22 +107,25 @@ export function TestSetDetailPage() {
                   Objectives ({objectives.length})
                 </div>
                 <ul style={{ margin: 0, paddingLeft: 18, listStyle: 'disc' }}>
-                  {objectives.map((obj, i) => (
-                    <li key={i} style={{ fontSize: 13, color: '#475569', lineHeight: 1.8, display: 'list-item' }}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                        {obj}
-                        {isModuleScoped && (
-                          <button
-                            onClick={() => setMoveObjective(obj)}
-                            style={moveBtnStyle}
-                            title="Move to another test set"
-                          >
-                            Move
-                          </button>
-                        )}
-                      </span>
-                    </li>
-                  ))}
+                  {objectives.map((obj, i) => {
+                    const displayName = testSet.objectiveNames?.[obj];
+                    return (
+                      <li key={i} style={{ fontSize: 13, color: '#475569', lineHeight: 1.8, display: 'list-item' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }} title={obj}>
+                          {displayName || obj}
+                          {isModuleScoped && (
+                            <button
+                              onClick={() => setMoveObjective(obj)}
+                              style={moveBtnStyle}
+                              title="Move to another test set"
+                            >
+                              Move
+                            </button>
+                          )}
+                        </span>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             )}
@@ -181,6 +184,7 @@ export function TestSetDetailPage() {
         <MoveObjectiveDialog
           open
           objective={moveObjective}
+          objectiveDisplayName={testSet.objectiveNames?.[moveObjective]}
           sourceModuleId={moduleId!}
           sourceTestSetId={id!}
           onClose={() => setMoveObjective(null)}

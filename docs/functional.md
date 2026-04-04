@@ -62,6 +62,13 @@ dotnet run --project src/AiTestCrew.Runner -- "Test the /api/products endpoint"
 dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset controlled-loads "Test the /api/ControlledLoadDecodes endpoint"
 ```
 
+**With a short objective name** (optional):
+```
+dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset controlled-loads --obj-name "Ctrl Loads GET" "Test the /api/ControlledLoadDecodes endpoint"
+```
+
+The `--obj-name` flag assigns a short display name to the objective. This name is shown in the UI and CLI list output instead of the full objective text. If omitted, the full text is displayed (truncated where needed). In the Web UI, the "Short Name" field in the Run Objective dialog serves the same purpose.
+
 In module-scoped mode, generated test cases are **merged** into the target test set. Running another objective against the same test set accumulates tests.
 
 Output:

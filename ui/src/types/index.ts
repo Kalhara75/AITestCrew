@@ -14,6 +14,7 @@ export interface TestSetListItem {
   moduleId: string;
   objective: string;
   objectives: string[];
+  objectiveNames?: Record<string, string>;
   taskCount: number;
   testCaseCount: number;
   createdAt: string;
@@ -28,6 +29,7 @@ export interface TestSetDetail {
   moduleId: string;
   objective: string;
   objectives: string[];
+  objectiveNames?: Record<string, string>;
   createdAt: string;
   lastRunAt: string;
   runCount: number;
@@ -128,6 +130,7 @@ export interface RunStatusResponse {
 
 export interface TriggerRunRequest {
   objective?: string;
+  objectiveName?: string;
   mode: string;
   testSetId?: string;
   moduleId?: string;

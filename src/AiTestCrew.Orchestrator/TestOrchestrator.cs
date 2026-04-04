@@ -74,7 +74,8 @@ public class TestOrchestrator
         CancellationToken ct = default,
         string? externalRunId = null,
         string? moduleId = null,
-        string? targetTestSetId = null)
+        string? targetTestSetId = null,
+        string? objectiveName = null)
     {
         var sw = Stopwatch.StartNew();
         var startedAt = DateTime.UtcNow;
@@ -249,9 +250,9 @@ public class TestOrchestrator
         if (mode is RunMode.Normal or RunMode.Rebaseline)
         {
             if (isModuleScoped)
-                await SaveTestSetToModuleAsync(objective, tasks, results, moduleId!, targetTestSetId!, mode);
+                await SaveTestSetToModuleAsync(objective, tasks, results, moduleId!, targetTestSetId!, mode, objectiveName);
             else
-                await SaveTestSetAsync(objective, tasks, results);
+                await SaveTestSetAsync(objective, tasks, results, objectiveName);
         }
 
         // ─��� Update run statistics (Reuse mode) ──
@@ -309,7 +310,8 @@ public class TestOrchestrator
 
     /// <summary>Save test set to legacy flat directory.</summary>
     private async Task SaveTestSetAsync(
-        string objective, List<TestTask> tasks, List<TestResult> results)
+        string objective, List<TestTask> tasks, List<TestResult> results,
+        string? objectiveName = null)
     {
         var entries = ExtractTaskEntries(tasks, results, objective);
         if (entries.Count == 0)
@@ -330,6 +332,9 @@ public class TestOrchestrator
             Tasks = entries
         };
 
+        if (!string.IsNullOrWhiteSpace(objectiveName))
+            testSet.ObjectiveNames[objective] = objectiveName;
+
         await _testSetRepo.SaveAsync(testSet);
         _logger.LogInformation("Test set saved: {Id} ({Dir})", slug, _testSetRepo.Directory);
     }
@@ -337,7 +342,8 @@ public class TestOrchestrator
     /// <summary>Save/merge test set into a module directory.</summary>
     private async Task SaveTestSetToModuleAsync(
         string objective, List<TestTask> tasks, List<TestResult> results,
-        string moduleId, string testSetId, RunMode mode)
+        string moduleId, string testSetId, RunMode mode,
+        string? objectiveName = null)
     {
         var entries = ExtractTaskEntries(tasks, results, objective);
         if (entries.Count == 0)
@@ -362,12 +368,18 @@ public class TestOrchestrator
             if (!objectives.Contains(objective, StringComparer.OrdinalIgnoreCase))
                 objectives.Add(objective);
 
+            // Preserve existing objective names and update if new name provided
+            var objectiveNames = existing?.ObjectiveNames ?? new Dictionary<string, string>();
+            if (!string.IsNullOrWhiteSpace(objectiveName))
+                objectiveNames[objective] = objectiveName;
+
             var testSet = new PersistedTestSet
             {
                 Id = testSetId,
                 Name = existing?.Name ?? testSetId,
                 ModuleId = moduleId,
                 Objectives = objectives,
+                ObjectiveNames = objectiveNames,
                 CreatedAt = existing?.CreatedAt ?? DateTime.UtcNow,
                 LastRunAt = DateTime.UtcNow,
                 RunCount = (existing?.RunCount ?? 0) + 1,
@@ -380,7 +392,7 @@ public class TestOrchestrator
         else
         {
             // Normal: merge into existing test set
-            await _testSetRepo.MergeTasksAsync(moduleId, testSetId, entries, objective);
+            await _testSetRepo.MergeTasksAsync(moduleId, testSetId, entries, objective, objectiveName);
             _logger.LogInformation("Test cases merged into: {Module}/{Id}", moduleId, testSetId);
         }
     }

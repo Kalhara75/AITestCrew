@@ -46,8 +46,28 @@ public class PersistedTestSet
     /// <summary>Total number of times this test set has been executed.</summary>
     public int RunCount { get; set; }
 
+    /// <summary>
+    /// Maps full objective text → short display name.
+    /// Old JSON files without this field deserialize to an empty dictionary.
+    /// </summary>
+    public Dictionary<string, string> ObjectiveNames { get; set; } = new();
+
     /// <summary>One entry per decomposed task, each holding its generated test cases.</summary>
     public List<PersistedTaskEntry> Tasks { get; set; } = [];
+
+    /// <summary>
+    /// Returns the short display name for an objective if one exists,
+    /// otherwise truncates the full text to ~60 characters.
+    /// </summary>
+    public string GetDisplayName(string objectiveText)
+    {
+        if (ObjectiveNames.TryGetValue(objectiveText, out var name) && !string.IsNullOrWhiteSpace(name))
+            return name;
+
+        return objectiveText.Length <= 60
+            ? objectiveText
+            : string.Concat(objectiveText.AsSpan(0, 57), "...");
+    }
 
     /// <summary>
     /// After deserializing a legacy file that only has "objective" (no "objectives" array),

@@ -5,6 +5,7 @@ import type { Module, TestSetListItem } from '../types';
 interface Props {
   open: boolean;
   objective: string;
+  objectiveDisplayName?: string;
   sourceModuleId: string;
   sourceTestSetId: string;
   onClose: () => void;
@@ -12,7 +13,7 @@ interface Props {
 }
 
 export function MoveObjectiveDialog({
-  open, objective, sourceModuleId, sourceTestSetId,
+  open, objective, objectiveDisplayName, sourceModuleId, sourceTestSetId,
   onClose, onMoved,
 }: Props) {
   const [modules, setModules] = useState<Module[]>([]);
@@ -74,7 +75,10 @@ export function MoveObjectiveDialog({
           <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 4, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
             Objective
           </div>
-          <div style={{ fontSize: 13, color: '#0f172a', lineHeight: 1.5 }}>{objective}</div>
+          {objectiveDisplayName && (
+            <div style={{ fontSize: 14, color: '#0f172a', fontWeight: 600, marginBottom: 4 }}>{objectiveDisplayName}</div>
+          )}
+          <div style={{ fontSize: 13, color: objectiveDisplayName ? '#64748b' : '#0f172a', lineHeight: 1.5 }}>{objective}</div>
         </div>
 
         <label style={labelStyle}>Destination Module</label>

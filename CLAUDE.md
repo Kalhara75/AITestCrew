@@ -51,6 +51,7 @@ executions/{testSetId}/{runId}.json      ← Execution history
 ```bash
 dotnet run --project src/AiTestCrew.Runner -- "objective"                                    # Normal (legacy flat)
 dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset ctrl-loads "objective"   # Normal (module-scoped, merges)
+dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset ctrl-loads --obj-name "Short Name" "objective"  # With short display name
 dotnet run --project src/AiTestCrew.Runner -- --list                                         # List saved test sets
 dotnet run --project src/AiTestCrew.Runner -- --list-modules                                 # List modules
 dotnet run --project src/AiTestCrew.Runner -- --reuse <id>                                   # Reuse saved test set

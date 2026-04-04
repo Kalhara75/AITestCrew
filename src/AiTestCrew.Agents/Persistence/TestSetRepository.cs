@@ -206,7 +206,8 @@ public class TestSetRepository
     /// </summary>
     public async Task MergeTasksAsync(
         string moduleId, string testSetId,
-        List<PersistedTaskEntry> newTasks, string objective)
+        List<PersistedTaskEntry> newTasks, string objective,
+        string? objectiveName = null)
     {
         var testSet = await LoadAsync(moduleId, testSetId)
             ?? throw new InvalidOperationException(
@@ -215,6 +216,10 @@ public class TestSetRepository
         // Add objective if not already tracked
         if (!testSet.Objectives.Contains(objective, StringComparer.OrdinalIgnoreCase))
             testSet.Objectives.Add(objective);
+
+        // Store or update the short display name
+        if (!string.IsNullOrWhiteSpace(objectiveName))
+            testSet.ObjectiveNames[objective] = objectiveName;
 
         // Append tasks, deduplicating by TaskId
         var existingIds = testSet.Tasks.Select(t => t.TaskId).ToHashSet();
@@ -270,11 +275,15 @@ public class TestSetRepository
             throw new InvalidOperationException(
                 $"No tasks found for objective '{objective}' in test set '{sourceTestSetId}'.");
 
+        // Capture the short display name before removing from source
+        source.ObjectiveNames.TryGetValue(objective, out var objectiveName);
+
         // Remove from source
         source.Tasks.RemoveAll(t =>
             string.Equals(t.Objective, objective, StringComparison.OrdinalIgnoreCase));
         source.Objectives.RemoveAll(o =>
             string.Equals(o, objective, StringComparison.OrdinalIgnoreCase));
+        source.ObjectiveNames.Remove(objective);
 
         // Save or delete source
         if (source.Tasks.Count == 0 && source.Objectives.Count == 0)
@@ -298,6 +307,10 @@ public class TestSetRepository
         // Add objective if not present
         if (!dest.Objectives.Contains(objective, StringComparer.OrdinalIgnoreCase))
             dest.Objectives.Add(objective);
+
+        // Carry the short display name to the destination
+        if (!string.IsNullOrWhiteSpace(objectiveName))
+            dest.ObjectiveNames[objective] = objectiveName;
 
         await SaveAsync(dest, destModuleId);
     }

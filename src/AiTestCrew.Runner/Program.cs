@@ -45,9 +45,7 @@ if (cli.Mode == RunMode.List)
 
     foreach (var s in sets)
     {
-        var shortObjective = s.Objective.Length > 45
-            ? s.Objective[..45] + "…"
-            : s.Objective;
+        var shortObjective = s.GetDisplayName(s.Objective);
         listTable.AddRow(
             s.Id,
             s.ModuleId.Length > 0 ? s.ModuleId : "-",
@@ -252,7 +250,8 @@ await AnsiConsole.Status()
             ctx.Status("Decomposing objective...");
 
         suiteResult = await orchestrator.RunAsync(objective, cli.Mode, cli.ReuseId,
-            moduleId: cli.ModuleId, targetTestSetId: cli.TestSetId);
+            moduleId: cli.ModuleId, targetTestSetId: cli.TestSetId,
+            objectiveName: cli.ObjectiveName);
     });
 
 // ── Results table ──
@@ -320,6 +319,7 @@ static CliArgs ParseArgs(string[] args)
     var remaining = new List<string>();
     string? moduleId = null, testSetId = null, reuseId = null;
     string? createModuleName = null, createTestSetModuleId = null, createTestSetName = null;
+    string? objectiveName = null;
     bool listModules = false;
     var mode = RunMode.Normal;
 
@@ -363,6 +363,11 @@ static CliArgs ParseArgs(string[] args)
                 break;
             case "--create-testset":
                 throw new ArgumentException("--create-testset requires <moduleId> \"Name\" arguments.");
+            case "--obj-name" when i + 1 < args.Length:
+                objectiveName = args[++i];
+                break;
+            case "--obj-name":
+                throw new ArgumentException("--obj-name requires a \"Name\" argument.");
             default:
                 remaining.Add(args[i]);
                 break;
@@ -375,6 +380,7 @@ static CliArgs ParseArgs(string[] args)
     {
         Mode = mode,
         Objective = objective,
+        ObjectiveName = objectiveName,
         ReuseId = reuseId,
         ModuleId = moduleId,
         TestSetId = testSetId,
@@ -398,4 +404,5 @@ class CliArgs
     public string? CreateModuleName { get; init; }
     public string? CreateTestSetModuleId { get; init; }
     public string? CreateTestSetName { get; init; }
+    public string? ObjectiveName { get; init; }
 }
