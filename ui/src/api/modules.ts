@@ -1,0 +1,50 @@
+import { apiFetch } from './client';
+import type { Module, TestSetListItem, TestSetDetail, RunSummary, ExecutionRun, MoveObjectiveRequest } from '../types';
+
+export const fetchModules = () =>
+  apiFetch<Module[]>('/modules');
+
+export const createModule = (name: string, description?: string) =>
+  apiFetch<Module>('/modules', {
+    method: 'POST',
+    body: JSON.stringify({ name, description }),
+  });
+
+export const fetchModule = (moduleId: string) =>
+  apiFetch<Module>(`/modules/${moduleId}`);
+
+export const updateModule = (moduleId: string, name?: string, description?: string) =>
+  apiFetch<Module>(`/modules/${moduleId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ name, description }),
+  });
+
+export const deleteModule = (moduleId: string) =>
+  apiFetch<void>(`/modules/${moduleId}`, { method: 'DELETE' });
+
+export const fetchModuleTestSets = (moduleId: string) =>
+  apiFetch<TestSetListItem[]>(`/modules/${moduleId}/testsets`);
+
+export const createTestSet = (moduleId: string, name: string) =>
+  apiFetch<TestSetDetail>(`/modules/${moduleId}/testsets`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+
+export const fetchModuleTestSet = (moduleId: string, tsId: string) =>
+  apiFetch<TestSetDetail>(`/modules/${moduleId}/testsets/${tsId}`);
+
+export const deleteTestSet = (moduleId: string, tsId: string) =>
+  apiFetch<void>(`/modules/${moduleId}/testsets/${tsId}`, { method: 'DELETE' });
+
+export const fetchModuleRuns = (moduleId: string, tsId: string) =>
+  apiFetch<RunSummary[]>(`/modules/${moduleId}/testsets/${tsId}/runs`);
+
+export const fetchModuleRun = (moduleId: string, tsId: string, runId: string) =>
+  apiFetch<ExecutionRun>(`/modules/${moduleId}/testsets/${tsId}/runs/${runId}`);
+
+export const moveObjective = (moduleId: string, tsId: string, request: MoveObjectiveRequest) =>
+  apiFetch<{ moved: boolean }>(`/modules/${moduleId}/testsets/${tsId}/move-objective`, {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });

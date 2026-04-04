@@ -51,10 +51,12 @@ builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<ApiTestAge
 // ── Persistence — share the same data directory as the Runner ──
 var runnerBinDir = Path.GetFullPath(Path.Combine(runnerDir, "bin", "Debug", "net8.0"));
 var dataDir = Directory.Exists(Path.Combine(runnerBinDir, "testsets"))
+              || Directory.Exists(Path.Combine(runnerBinDir, "modules"))
     ? runnerBinDir
     : AppContext.BaseDirectory;
 builder.Services.AddSingleton(new TestSetRepository(dataDir));
 builder.Services.AddSingleton(new ExecutionHistoryRepository(dataDir));
+builder.Services.AddSingleton(new ModuleRepository(dataDir));
 
 // ── Orchestrator ──
 builder.Services.AddSingleton<TestOrchestrator>();
@@ -84,7 +86,11 @@ var app = builder.Build();
 
 app.UseCors();
 
+// ── Migrate legacy test sets to module structure ──
+await MigrationHelper.MigrateToModulesAsync(dataDir);
+
 // ── Map endpoints ──
+app.MapGroup("/api/modules").MapModuleEndpoints();
 app.MapGroup("/api/testsets").MapTestSetEndpoints();
 app.MapGroup("/api/runs").MapRunEndpoints();
 

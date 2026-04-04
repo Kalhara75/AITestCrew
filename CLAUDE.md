@@ -22,24 +22,41 @@ Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → C
 | File | What it does |
 |---|---|
 | `src/AiTestCrew.Runner/Program.cs` | CLI arg parsing, DI wiring, console output |
-| `src/AiTestCrew.Orchestrator/TestOrchestrator.cs` | RunAsync with Normal/Reuse/Rebaseline/List modes |
+| `src/AiTestCrew.Orchestrator/TestOrchestrator.cs` | RunAsync with Normal/Reuse/Rebaseline/List modes, module-aware |
 | `src/AiTestCrew.Agents/ApiAgent/ApiTestAgent.cs` | REST API test generation and execution |
 | `src/AiTestCrew.Agents/Base/BaseTestAgent.cs` | `AskLlmAsync`, `AskLlmForJsonAsync`, `SummariseResultsAsync` |
-| `src/AiTestCrew.Agents/Persistence/TestSetRepository.cs` | Save/load/list test sets as JSON in `testsets/` |
-| `src/AiTestCrew.Agents/Persistence/ExecutionHistoryRepository.cs` | Save/load execution runs in `executions/` |
-| `src/AiTestCrew.Agents/Persistence/PersistedExecutionRun.cs` | Execution history models |
-| `src/AiTestCrew.WebApi/Program.cs` | WebApi DI wiring, CORS, minimal API endpoints |
-| `src/AiTestCrew.WebApi/Endpoints/` | REST endpoint definitions |
+| `src/AiTestCrew.Agents/Persistence/PersistedModule.cs` | Module model (id, name, description, timestamps) |
+| `src/AiTestCrew.Agents/Persistence/ModuleRepository.cs` | CRUD for modules in `modules/{id}/module.json` |
+| `src/AiTestCrew.Agents/Persistence/TestSetRepository.cs` | Save/load/move/delete test sets (legacy flat + module-scoped) |
+| `src/AiTestCrew.Agents/Persistence/ExecutionHistoryRepository.cs` | Save/load/delete execution runs in `executions/` |
+| `src/AiTestCrew.Agents/Persistence/MigrationHelper.cs` | Auto-migrates legacy `testsets/` to `modules/default/` |
+| `src/AiTestCrew.WebApi/Program.cs` | WebApi DI wiring, CORS, migration, minimal API endpoints |
+| `src/AiTestCrew.WebApi/Endpoints/ModuleEndpoints.cs` | Module CRUD + nested test set/run/move-objective endpoints |
+| `src/AiTestCrew.WebApi/Endpoints/RunEndpoints.cs` | Trigger runs with optional moduleId/testSetId |
 | `src/AiTestCrew.Core/Models/` | `TestTask`, `TestStep`, `TestResult`, `TestSuiteResult`, `RunMode` |
 | `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` | Bound from `appsettings.json → TestEnvironment` |
+
+## Test organisation
+
+Tests are organised into **Modules > Test Sets**. A test set accumulates test cases from multiple objectives.
+
+```
+modules/{moduleId}/module.json           ← Module manifest
+modules/{moduleId}/{testSetId}.json      ← Test set with accumulated test cases
+executions/{testSetId}/{runId}.json      ← Execution history
+```
 
 ## Run modes
 
 ```bash
-dotnet run --project src/AiTestCrew.Runner -- "objective"         # Normal
-dotnet run --project src/AiTestCrew.Runner -- --list              # List saved test sets
-dotnet run --project src/AiTestCrew.Runner -- --reuse <id>        # Reuse saved test set
-dotnet run --project src/AiTestCrew.Runner -- --rebaseline "obj"  # Regenerate & save
+dotnet run --project src/AiTestCrew.Runner -- "objective"                                    # Normal (legacy flat)
+dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset ctrl-loads "objective"   # Normal (module-scoped, merges)
+dotnet run --project src/AiTestCrew.Runner -- --list                                         # List saved test sets
+dotnet run --project src/AiTestCrew.Runner -- --list-modules                                 # List modules
+dotnet run --project src/AiTestCrew.Runner -- --reuse <id>                                   # Reuse saved test set
+dotnet run --project src/AiTestCrew.Runner -- --rebaseline "obj"                             # Regenerate & save
+dotnet run --project src/AiTestCrew.Runner -- --create-module "Name"                         # Create a module
+dotnet run --project src/AiTestCrew.Runner -- --create-testset <moduleId> "Name"             # Create empty test set
 ```
 
 ## Agent pattern
@@ -57,8 +74,8 @@ All agents extend `BaseTestAgent` and implement `ITestAgent`:
 - Use `TestStep.Pass/Fail/Err` factories, never construct `TestStep` directly
 - JSON serialisation: `PropertyNamingPolicy = CamelCase`, `PropertyNameCaseInsensitive = true`
 - New config settings go in `TestEnvironmentConfig` + `appsettings.example.json` (not `appsettings.json`)
-- Saved test set models (`PersistedTestSet`, `PersistedTaskEntry`) live in `AiTestCrew.Agents/Persistence/`
-- Execution history models (`PersistedExecutionRun`, `PersistedTaskResult`, `PersistedStepResult`) also in `Persistence/`
+- All persistence models (`PersistedModule`, `PersistedTestSet`, `PersistedTaskEntry`, `PersistedExecutionRun`, etc.) live in `AiTestCrew.Agents/Persistence/`
+- Slugification uses `SlugHelper.ToSlug()` — shared between `ModuleRepository` and `TestSetRepository`
 - WebApi uses the same DI wiring pattern as Runner — if you add a new service, register it in both `Program.cs` files
 
 ## Available slash commands

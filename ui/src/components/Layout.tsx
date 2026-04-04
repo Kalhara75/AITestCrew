@@ -41,7 +41,7 @@ export function Layout() {
           AI Test Crew
         </Link>
         <nav style={{ display: 'flex', gap: 8 }}>
-          <NavLink to="/" label="Dashboard" active={isHome} />
+          <NavLink to="/" label="Modules" active={isHome} />
         </nav>
       </header>
       <main style={{ maxWidth: 1200, margin: '0 auto', padding: '28px 24px' }}>

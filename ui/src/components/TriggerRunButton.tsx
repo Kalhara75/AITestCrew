@@ -6,9 +6,10 @@ import { triggerRun, fetchRunStatus } from '../api/runs';
 interface Props {
   testSetId: string;
   objective: string;
+  moduleId?: string;
 }
 
-export function TriggerRunButton({ testSetId, objective }: Props) {
+export function TriggerRunButton({ testSetId, objective, moduleId }: Props) {
   const navigate = useNavigate();
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -22,7 +23,10 @@ export function TriggerRunButton({ testSetId, objective }: Props) {
     select(data) {
       if (data.status === 'Completed' && data.testSetId) {
         setActiveRunId(null);
-        navigate(`/testsets/${data.testSetId}/runs/${data.runId}`);
+        const basePath = moduleId
+          ? `/modules/${moduleId}/testsets/${data.testSetId}`
+          : `/testsets/${data.testSetId}`;
+        navigate(`${basePath}/runs/${data.runId}`);
       } else if (data.status === 'Failed') {
         setActiveRunId(null);
         setError(data.error || 'Run failed');
@@ -36,8 +40,9 @@ export function TriggerRunButton({ testSetId, objective }: Props) {
     try {
       const res = await triggerRun({
         mode,
-        testSetId: mode === 'Reuse' ? testSetId : undefined,
+        testSetId: testSetId,
         objective: mode !== 'Reuse' ? objective : undefined,
+        moduleId,
       });
       setActiveRunId(res.runId);
     } catch (err) {
@@ -94,7 +99,7 @@ export function TriggerRunButton({ testSetId, objective }: Props) {
   );
 }
 
-const btnStyle = (bg: string, hover: string): React.CSSProperties => ({
+const btnStyle = (bg: string, _hover: string): React.CSSProperties => ({
   background: bg,
   color: '#fff',
   border: 'none',
@@ -104,5 +109,4 @@ const btnStyle = (bg: string, hover: string): React.CSSProperties => ({
   fontWeight: 600,
   cursor: 'pointer',
   transition: 'background 0.15s',
-  // Note: hover effect won't work with inline styles, but the base looks good
 });

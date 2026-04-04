@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import type { RunSummary } from '../types';
 import { StatusBadge } from './StatusBadge';
 
-export function RunHistoryTable({ runs, testSetId }: { runs: RunSummary[]; testSetId: string }) {
+export function RunHistoryTable({ runs, testSetId, moduleId }: { runs: RunSummary[]; testSetId: string; moduleId?: string }) {
   if (runs.length === 0) {
     return <p style={{ color: '#94a3b8', fontSize: 14 }}>No execution history yet.</p>;
   }
@@ -27,7 +27,7 @@ export function RunHistoryTable({ runs, testSetId }: { runs: RunSummary[]; testS
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
             >
               <td style={tdStyle}>
-                <Link to={`/testsets/${testSetId}/runs/${r.runId}`}
+                <Link to={moduleId ? `/modules/${moduleId}/testsets/${testSetId}/runs/${r.runId}` : `/testsets/${testSetId}/runs/${r.runId}`}
                   style={{ color: '#2563eb', textDecoration: 'none', fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 13 }}>
                   {r.runId}
                 </Link>

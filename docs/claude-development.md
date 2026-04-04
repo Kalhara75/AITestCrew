@@ -249,7 +249,7 @@ Pick the test set ID, then:
 | `ui/src/App.tsx` | React Router route definitions |
 | `ui/src/api/` | TypeScript API client functions |
 | `ui/src/pages/` | React page components |
-| `ui/src/components/` | Reusable React UI components |
+| `ui/src/components/` | Reusable React UI components (incl. ConfirmDialog, MoveObjectiveDialog) |
 | `ui/src/types/index.ts` | TypeScript interfaces matching API responses |
 
 ---

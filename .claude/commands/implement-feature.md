@@ -30,6 +30,8 @@ Use this guide to determine where the code belongs:
 | New configuration setting | `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` + `appsettings.json` |
 | New persistence operation | `src/AiTestCrew.Agents/Persistence/` |
 | New execution history feature | `src/AiTestCrew.Agents/Persistence/ExecutionHistoryRepository.cs` |
+| Delete/move test set operations | `TestSetRepository` + `ExecutionHistoryRepository` + `ModuleEndpoints.cs` |
+| Confirmation or destructive UI dialog | `ui/src/components/ConfirmDialog.tsx` (reusable) |
 
 ### Step 3 — Check the dependency rules
 

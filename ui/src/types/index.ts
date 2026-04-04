@@ -1,6 +1,19 @@
+export interface Module {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+  testSetCount: number;
+  totalTestCases: number;
+}
+
 export interface TestSetListItem {
   id: string;
+  name: string;
+  moduleId: string;
   objective: string;
+  objectives: string[];
   taskCount: number;
   testCaseCount: number;
   createdAt: string;
@@ -11,7 +24,10 @@ export interface TestSetListItem {
 
 export interface TestSetDetail {
   id: string;
+  name: string;
+  moduleId: string;
   objective: string;
+  objectives: string[];
   createdAt: string;
   lastRunAt: string;
   runCount: number;
@@ -23,7 +39,14 @@ export interface TaskEntry {
   taskId: string;
   taskDescription: string;
   agentName: string;
+  objective: string;
   testCases: ApiTestCase[];
+}
+
+export interface MoveObjectiveRequest {
+  objective: string;
+  destinationModuleId: string;
+  destinationTestSetId: string;
 }
 
 export interface ApiTestCase {
@@ -55,6 +78,7 @@ export interface RunSummary {
 export interface ExecutionRun {
   runId: string;
   testSetId: string;
+  moduleId: string | null;
   objective: string;
   mode: string;
   status: string;
@@ -106,6 +130,7 @@ export interface TriggerRunRequest {
   objective?: string;
   mode: string;
   testSetId?: string;
+  moduleId?: string;
 }
 
 export interface TriggerRunResponse {

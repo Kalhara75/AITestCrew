@@ -25,6 +25,10 @@ public static class RunEndpoints
             if (mode != RunMode.Reuse && string.IsNullOrWhiteSpace(request.Objective))
                 return Results.BadRequest(new { error = "objective is required for Normal/Rebaseline mode" });
 
+            // Module-scoped Normal mode requires both moduleId and testSetId
+            if (!string.IsNullOrWhiteSpace(request.ModuleId) && string.IsNullOrWhiteSpace(request.TestSetId))
+                return Results.BadRequest(new { error = "testSetId is required when moduleId is specified" });
+
             // Only one run at a time
             if (tracker.HasActiveRun())
                 return Results.Conflict(new { error = "A test run is already in progress" });
@@ -39,10 +43,16 @@ public static class RunEndpoints
                 try
                 {
                     var reuseId = mode == RunMode.Reuse ? request.TestSetId : null;
-                    var result = await orchestrator.RunAsync(objective, mode, reuseId, externalRunId: runId);
+                    var result = await orchestrator.RunAsync(
+                        objective, mode, reuseId,
+                        externalRunId: runId,
+                        moduleId: request.ModuleId,
+                        targetTestSetId: request.TestSetId);
                     var testSetId = mode == RunMode.Reuse
                         ? request.TestSetId!
-                        : TestSetRepository.SlugFromObjective(result.Objective);
+                        : !string.IsNullOrWhiteSpace(request.TestSetId)
+                            ? request.TestSetId!
+                            : TestSetRepository.SlugFromObjective(result.Objective);
                     tracker.Complete(runId, testSetId);
                 }
                 catch (Exception ex)
@@ -71,4 +81,4 @@ public static class RunEndpoints
     }
 }
 
-public record RunRequest(string? Objective, string Mode, string? TestSetId);
+public record RunRequest(string? Objective, string Mode, string? TestSetId, string? ModuleId);

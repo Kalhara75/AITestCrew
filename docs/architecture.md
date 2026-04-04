@@ -23,7 +23,7 @@ The solution (`AiTestCrew.slnx`) contains five .NET 8 projects with a strict lay
               AiTestCrew.Core
 ```
 
-Both Runner (CLI) and WebApi reference the same Orchestrator/Agents/Core layers. They share the same `testsets/` and `executions/` file storage.
+Both Runner (CLI) and WebApi reference the same Orchestrator/Agents/Core layers. They share the same `modules/`, `testsets/` (legacy), and `executions/` file storage.
 
 ---
 
@@ -58,10 +58,14 @@ Agents/
   Base/
     BaseTestAgent.cs              — Shared LLM communication and JSON utilities
   Persistence/
-    PersistedTestSet.cs           — JSON envelope model for saved test sets
-    TestSetRepository.cs          — File I/O service for testsets/ directory
+    PersistedModule.cs            — Module manifest model (id, name, description, timestamps)
+    PersistedTestSet.cs           — JSON envelope model for saved test sets (supports multiple objectives)
     PersistedExecutionRun.cs      — Execution history models (run, task, step results)
+    ModuleRepository.cs           — File I/O for modules/{id}/module.json
+    TestSetRepository.cs          — File I/O for test sets (legacy flat + module-scoped, incl. move objective)
     ExecutionHistoryRepository.cs — File I/O for executions/{testSetId}/{runId}.json
+    SlugHelper.cs                 — Shared slugification logic
+    MigrationHelper.cs            — Auto-migrates legacy testsets/ to modules/default/
 ```
 
 ---
@@ -98,10 +102,11 @@ REST API backend for the React UI. Mirrors Runner's DI wiring but exposes HTTP e
 
 ```
 WebApi/
-  Program.cs                       — DI wiring, CORS, minimal API endpoints
+  Program.cs                       — DI wiring, CORS, minimal API endpoints, migration
   AnthropicChatCompletionService.cs — Copy of Runner's bridge (same layer, can't reference Runner)
   Endpoints/
-    TestSetEndpoints.cs            — GET /api/testsets, GET /api/testsets/{id}, runs endpoints
+    ModuleEndpoints.cs             — Module CRUD + nested test set and run access
+    TestSetEndpoints.cs            — Legacy flat test set endpoints (backward compat)
     RunEndpoints.cs                — POST /api/runs (trigger), GET /api/runs/{id}/status (poll)
   Services/
     RunTracker.cs                  — ConcurrentDictionary tracking active/completed runs
@@ -112,11 +117,23 @@ WebApi/
 
 | Method | Route | Purpose |
 |--------|-------|---------|
-| `GET` | `/api/testsets` | List all test sets with last-run status |
-| `GET` | `/api/testsets/{id}` | Full test set detail with test cases |
-| `GET` | `/api/testsets/{id}/runs` | Execution history for a test set |
-| `GET` | `/api/testsets/{id}/runs/{runId}` | Full execution detail with steps |
-| `POST` | `/api/runs` | Trigger a test run (returns 202, async) |
+| `GET` | `/api/modules` | List all modules with test set counts |
+| `POST` | `/api/modules` | Create a module |
+| `GET` | `/api/modules/{id}` | Module detail |
+| `PUT` | `/api/modules/{id}` | Update module name/description |
+| `DELETE` | `/api/modules/{id}` | Delete empty module |
+| `GET` | `/api/modules/{id}/testsets` | List test sets in module |
+| `POST` | `/api/modules/{id}/testsets` | Create empty test set |
+| `GET` | `/api/modules/{id}/testsets/{tsId}` | Test set detail |
+| `DELETE` | `/api/modules/{id}/testsets/{tsId}` | Delete test set (cascades to runs) |
+| `GET` | `/api/modules/{id}/testsets/{tsId}/runs` | Run history |
+| `GET` | `/api/modules/{id}/testsets/{tsId}/runs/{runId}` | Run detail |
+| `POST` | `/api/modules/{id}/testsets/{tsId}/move-objective` | Move objective to another test set |
+| `GET` | `/api/testsets` | List all test sets (legacy, combined view) |
+| `GET` | `/api/testsets/{id}` | Full test set detail (legacy) |
+| `GET` | `/api/testsets/{id}/runs` | Execution history (legacy) |
+| `GET` | `/api/testsets/{id}/runs/{runId}` | Full execution detail (legacy) |
+| `POST` | `/api/runs` | Trigger a test run (supports `moduleId` + `testSetId`) |
 | `GET` | `/api/runs/{runId}/status` | Poll run progress |
 | `GET` | `/api/health` | Health check |
 
@@ -128,26 +145,33 @@ Single-page application built with React 18, TypeScript, and Vite. Communicates 
 
 ```
 ui/src/
-  main.tsx                    — React root + QueryClientProvider + BrowserRouter
-  App.tsx                     — Route definitions with Layout wrapper
+  main.tsx                         — React root + QueryClientProvider + BrowserRouter
+  App.tsx                          — Route definitions with Layout wrapper
   api/
-    client.ts                 — fetch wrapper with base URL + error handling
-    testSets.ts               — API functions for test sets and runs
-    runs.ts                   — API functions for triggering and polling runs
+    client.ts                      — fetch wrapper with base URL + error handling
+    modules.ts                     — API functions for modules and module-scoped test sets/runs
+    testSets.ts                    — API functions for legacy flat test sets and runs
+    runs.ts                        — API functions for triggering and polling runs
   pages/
-    DashboardPage.tsx         — Card grid of all test sets
-    TestSetDetailPage.tsx     — Test cases table + run history + trigger button
-    ExecutionDetailPage.tsx   — Task results with expandable step details
+    ModuleListPage.tsx             — Module card grid (root page)
+    ModuleDetailPage.tsx           — Test sets within a module + create/run dialogs
+    TestSetDetailPage.tsx          — Test cases table + run history + trigger button (module-aware)
+    ExecutionDetailPage.tsx        — Task results with expandable step details (module-aware)
   components/
-    Layout.tsx                — Header, nav, content area
-    StatusBadge.tsx           — Color-coded Passed/Failed/Error/Running badge
-    TestSetCard.tsx           — Test set summary card for dashboard
-    TestCaseTable.tsx         — HTTP method, endpoint, expected status table
-    RunHistoryTable.tsx       — Run list with status, duration, date
-    StepList.tsx              — Expandable task/step rows with detail
-    TriggerRunButton.tsx      — Mode selector + trigger + progress polling
+    Layout.tsx                     — Header, nav, content area
+    StatusBadge.tsx                — Color-coded Passed/Failed/Error/Running badge
+    TestSetCard.tsx                — Test set summary card (module-scoped links)
+    TestCaseTable.tsx              — HTTP method, endpoint, expected status table
+    RunHistoryTable.tsx            — Run list with status, duration, date (module-aware links)
+    StepList.tsx                   — Expandable task/step rows with detail
+    TriggerRunButton.tsx           — Mode selector + trigger + progress polling (module-aware)
+    CreateModuleDialog.tsx         — Modal form to create a module
+    CreateTestSetDialog.tsx        — Modal form to create a test set within a module
+    RunObjectiveDialog.tsx         — Modal to select test set + enter objective + trigger run
+    ConfirmDialog.tsx              — Reusable confirmation modal (used for destructive actions)
+    MoveObjectiveDialog.tsx        — Modal to move an objective to another module/test set
   types/
-    index.ts                  — TypeScript interfaces matching API responses
+    index.ts                       — TypeScript interfaces matching API responses
 ```
 
 ---
@@ -278,29 +302,53 @@ JSON cleaning handles the LLM wrapping responses in ` ```json ... ``` ` blocks: 
 
 ## Persistence Layer
 
-### Test Set Storage
+### Module and Test Set Storage
 
-Test sets are stored as JSON files in the `testsets/` directory, created alongside the compiled binary (same pattern as `logs/`).
+Tests are organised in a **Module > Test Set** hierarchy. On disk:
 
-**Filename:** `testsets/{slug}.json`
+```
+{dataDir}/
+  modules/
+    sdr/
+      module.json                          ← PersistedModule
+      controlled-load-decodes.json         ← PersistedTestSet (can hold multiple objectives)
+      meter-types.json                     ← PersistedTestSet
+    default/
+      module.json                          ← Auto-created by migration
+      test-get-api-products-endpoint.json  ← Migrated from legacy testsets/
+  testsets/                                ← Legacy directory (kept as read-only fallback)
+  executions/                              ← Unchanged: executions/{testSetId}/{runId}.json
+```
 
-**Slug algorithm** (`TestSetRepository.SlugFromObjective`):
-1. Lowercase the objective string
+**Slug algorithm** (`SlugHelper.ToSlug`):
+1. Lowercase the input string
 2. Replace all non-alphanumeric characters with hyphens
 3. Collapse consecutive hyphens to one
 4. Trim leading/trailing hyphens
 5. Truncate to 80 characters at the last hyphen boundary
 
-Example: `"Test GET /api/products endpoint"` → `"test-get-api-products-endpoint"`
+Example: `"Standing Data Replication (SDR)"` → `"standing-data-replication-sdr"`
 
-The slug is deterministic — the same objective always produces the same filename. This means `--rebaseline` with the same objective always overwrites the same file.
+### Migration
+
+On first startup, `MigrationHelper.MigrateToModulesAsync` runs automatically:
+1. If `modules/default/module.json` already exists, skips (idempotent)
+2. Creates a "Default" module
+3. Copies each `testsets/*.json` into `modules/default/`, populating `ModuleId` and `Objectives`
+4. Leaves the original `testsets/` directory intact
 
 ### PersistedTestSet Schema
 
 ```json
 {
-  "id": "test-get-api-products-endpoint",
-  "objective": "Test GET /api/products endpoint",
+  "id": "controlled-load-decodes",
+  "name": "Controlled Load Decodes",
+  "moduleId": "sdr",
+  "objectives": [
+    "Test GET /api/ControlledLoadDecodes endpoint",
+    "Test POST /api/ControlledLoadDecodes endpoint"
+  ],
+  "objective": "Test GET /api/ControlledLoadDecodes endpoint",
   "createdAt": "2026-04-04T14:30:00Z",
   "lastRunAt": "2026-04-04T15:45:00Z",
   "runCount": 3,
@@ -309,6 +357,7 @@ The slug is deterministic — the same objective always produces the same filena
       "taskId": "a1b2c3d4",
       "taskDescription": "Test the GET /api/products endpoint for listing products",
       "agentName": "API Agent",
+      "objective": "Test GET /api/ControlledLoadDecodes endpoint",
       "testCases": [
         {
           "name": "Get all products - happy path",
@@ -372,7 +421,7 @@ Every test run (Normal, Reuse, Rebaseline) is persisted as a JSON file in `execu
 }
 ```
 
-The orchestrator saves execution history after every run (wrapped in try/catch so failures are non-fatal). `ExecutionHistoryRepository` provides `SaveAsync`, `GetRunAsync`, `ListRuns`, and `GetLatestRun`.
+The orchestrator saves execution history after every run (wrapped in try/catch so failures are non-fatal). `ExecutionHistoryRepository` provides `SaveAsync`, `GetRunAsync`, `ListRuns`, `GetLatestRun`, and `DeleteRunsForTestSetAsync` (cascade-deletes all runs for a test set).
 
 ---
 
@@ -458,7 +507,8 @@ IHttpClientFactory          → Managed by AddHttpClient()
 ApiTestAgent                → Singleton (concrete + ITestAgent)
 TestSetRepository           → Singleton (new instance, baseDir = AppContext.BaseDirectory)
 ExecutionHistoryRepository  → Singleton (new instance, baseDir = AppContext.BaseDirectory)
-TestOrchestrator            → Singleton (receives IEnumerable<ITestAgent> + repos)
+ModuleRepository            → Singleton (new instance, baseDir = AppContext.BaseDirectory)
+TestOrchestrator            → Singleton (receives IEnumerable<ITestAgent> + all repos)
 RunTracker                  → Singleton (WebApi only — tracks async run state)
 ```
 

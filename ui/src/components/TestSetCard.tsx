@@ -2,9 +2,13 @@ import { Link } from 'react-router-dom';
 import type { TestSetListItem } from '../types';
 import { StatusBadge } from './StatusBadge';
 
-export function TestSetCard({ ts }: { ts: TestSetListItem }) {
+export function TestSetCard({ ts, moduleId }: { ts: TestSetListItem; moduleId: string }) {
+  const linkTo = `/modules/${moduleId}/testsets/${ts.id}`;
+  const displayTitle = ts.name || ts.objective || ts.id;
+  const objectiveCount = ts.objectives?.length || (ts.objective ? 1 : 0);
+
   return (
-    <Link to={`/testsets/${ts.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+    <Link to={linkTo} style={{ textDecoration: 'none', color: 'inherit' }}>
       <div style={{
         background: '#fff',
         borderRadius: 10,
@@ -41,7 +45,7 @@ export function TestSetCard({ ts }: { ts: TestSetListItem }) {
           flex: 1,
           wordBreak: 'break-word',
         }}>
-          {ts.objective}
+          {displayTitle}
         </h3>
 
         {/* Stats row */}
@@ -51,10 +55,14 @@ export function TestSetCard({ ts }: { ts: TestSetListItem }) {
           fontSize: 13,
           color: '#64748b',
           marginBottom: 12,
+          flexWrap: 'wrap',
         }}>
           <span style={statPill}>{ts.taskCount} task{ts.taskCount !== 1 ? 's' : ''}</span>
           <span style={statPill}>{ts.testCaseCount} case{ts.testCaseCount !== 1 ? 's' : ''}</span>
           <span style={statPill}>{ts.runCount} run{ts.runCount !== 1 ? 's' : ''}</span>
+          {objectiveCount > 0 && (
+            <span style={statPill}>{objectiveCount} objective{objectiveCount !== 1 ? 's' : ''}</span>
+          )}
         </div>
 
         {/* Footer */}
@@ -64,7 +72,7 @@ export function TestSetCard({ ts }: { ts: TestSetListItem }) {
           borderTop: '1px solid #f1f5f9',
           paddingTop: 12,
         }}>
-          {ts.lastRunAt
+          {ts.lastRunAt && ts.lastRunAt !== '0001-01-01T00:00:00'
             ? `Last run: ${new Date(ts.lastRunAt).toLocaleString()}`
             : 'Never run'}
         </div>

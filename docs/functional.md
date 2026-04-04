@@ -18,20 +18,56 @@ AITestCrew is an AI-powered test automation tool that uses a large language mode
 
 ---
 
+## Modules and Test Sets
+
+Tests are organised into **Modules** and **Test Sets**:
+
+- **Module** — a top-level grouping representing an application area (e.g. "Standing Data Replication (SDR)").
+- **Test Set** — a user-defined container within a module. Test cases from multiple objectives accumulate in a test set over time.
+
+### Creating Modules and Test Sets (CLI)
+
+```bash
+# Create a module
+dotnet run --project src/AiTestCrew.Runner -- --create-module "Standing Data Replication (SDR)"
+
+# List all modules
+dotnet run --project src/AiTestCrew.Runner -- --list-modules
+
+# Create an empty test set within a module
+dotnet run --project src/AiTestCrew.Runner -- --create-testset sdr "Controlled Load Decodes"
+```
+
+### Creating via the Web UI
+
+1. Open the dashboard — the root page shows all modules.
+2. Click **+ Create Module** to create a module.
+3. Click into a module, then **+ Test Set** to create a test set.
+4. Click **Run Objective** to generate tests and add them to a test set.
+
+---
+
 ## Run Modes
 
 ### Normal (default)
 Generate new test cases via LLM, save them to disk, execute them.
 
+**Legacy (flat) mode:**
 ```
 dotnet run --project src/AiTestCrew.Runner -- "Test the /api/products endpoint"
 ```
 
+**Module-scoped mode** (recommended):
+```
+dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset controlled-loads "Test the /api/ControlledLoadDecodes endpoint"
+```
+
+In module-scoped mode, generated test cases are **merged** into the target test set. Running another objective against the same test set accumulates tests.
+
 Output:
 - Executes 5–8 LLM-generated test cases per task.
-- Saves the test set to `testsets/{slug}.json`.
+- Saves/merges test cases into the target test set.
 - Prints a results table and LLM summary to the console.
-- Tells you the reuse command to run the same tests again later.
 
 ---
 
@@ -42,10 +78,9 @@ Re-execute a previously saved test set without calling the LLM. The exact same t
 dotnet run --project src/AiTestCrew.Runner -- --reuse <id>
 ```
 
-Where `<id>` is the test set slug shown in `--list` output. Example:
-
+Or module-scoped:
 ```
-dotnet run --project src/AiTestCrew.Runner -- --reuse test-the-api-products-endpoint
+dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset controlled-loads --reuse controlled-loads
 ```
 
 - No LLM calls during test generation — uses saved `ApiTestCase` objects directly.
@@ -61,7 +96,10 @@ Regenerate test cases from scratch via LLM (fresh set), overwrite the saved test
 dotnet run --project src/AiTestCrew.Runner -- --rebaseline "Test the /api/products endpoint"
 ```
 
-The same slug is computed from the objective, so it overwrites the existing saved file.
+Or module-scoped:
+```
+dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset controlled-loads --rebaseline "Test the /api/ControlledLoadDecodes endpoint"
+```
 
 ---
 
@@ -72,7 +110,7 @@ Display all saved test sets and exit.
 dotnet run --project src/AiTestCrew.Runner -- --list
 ```
 
-Output includes: ID (slug), objective, task count, total test case count, created date, last run date, and total run count.
+Output includes: ID (slug), module, objective, task count, total test case count, created date, last run date, and total run count.
 
 ---
 
@@ -144,10 +182,13 @@ Regenerate:    dotnet run -- --rebaseline "Test the /api/products endpoint"
 
 | Location | Contents |
 |---|---|
-| `testsets/{slug}.json` | Saved test set (tasks + test cases + run metadata) |
+| `modules/{moduleId}/module.json` | Module manifest (id, name, description, timestamps) |
+| `modules/{moduleId}/{testSetId}.json` | Module-scoped test set (tasks + test cases + run metadata) |
+| `testsets/{slug}.json` | Legacy flat test set (auto-migrated to `modules/default/` on first run) |
+| `executions/{testSetId}/{runId}.json` | Execution history for each run |
 | `logs/testrun_{timestamp}.log` | Full trace log of every run including HTTP request/response details |
 
-Both directories are created automatically next to the compiled binary.
+All directories are created automatically next to the compiled binary. On first startup, existing `testsets/` files are auto-migrated into a "Default" module.
 
 ---
 
@@ -196,7 +237,7 @@ If more than 75% of test steps in the first API task return HTTP 404 with zero p
 
 ## Web Dashboard
 
-AITestCrew includes a React-based web dashboard for browsing test sets, viewing test cases, inspecting execution history, and triggering re-runs.
+AITestCrew includes a React-based web dashboard for browsing modules, managing test sets, viewing test cases, inspecting execution history, and triggering runs.
 
 ### Starting the Web UI
 
@@ -213,22 +254,30 @@ AITestCrew includes a React-based web dashboard for browsing test sets, viewing 
    ```
    Opens at `http://localhost:5173`.
 
-### Dashboard
+### Module List (Home Page)
 
-The home page shows all saved test sets as cards. Each card displays:
-- Test objective
-- Last run status (colour-coded badge)
-- Number of tasks, test cases, and runs
-- Last run date
+The home page shows all modules as cards. Each card displays:
+- Module name and description
+- Number of test sets and total test cases
+- Creation date
 
-Click a card to view its details.
+Click **+ Create Module** to add a new module.
+
+### Module Detail
+
+Shows the test sets within a module as a card grid. Features:
+- **+ Test Set** button to create an empty test set
+- **Run Objective** button to enter an objective, select a target test set, and trigger a Normal-mode run that merges generated tests into the selected set
+- Each test set card shows name, objective count, test case count, run count, and last run status
 
 ### Test Set Detail
 
 Shows the full test set with:
+- **Objectives list** — all objectives that have contributed test cases, each with a **Move** button to relocate the objective (and its tasks) to a different test set/module
 - **Test cases table** — HTTP method (colour-coded), endpoint, test name, expected status code
 - **Execution history** — all previous runs with status, pass/fail counts, duration, and date
 - **Trigger buttons** — "Re-run Tests" (reuse mode) and "Rebaseline" (regenerate tests)
+- **Delete Test Set** button — permanently removes the test set and all execution history after confirmation
 
 ### Execution Detail
 
@@ -240,12 +289,68 @@ Shows a single run's results:
 
 ### Triggering Runs from the UI
 
-Click "Re-run Tests" or "Rebaseline" on a test set detail page. The UI:
-1. Sends a POST to `/api/runs`
-2. Shows a spinner while polling every 3 seconds
-3. Automatically navigates to the results page when the run completes
+From a module detail page, click **Run Objective** to:
+1. Select a target test set
+2. Enter a test objective
+3. The UI sends a POST to `/api/runs` with `moduleId` and `testSetId`
+4. Shows a spinner while polling every 3 seconds
+5. Automatically navigates to the results page when the run completes
+
+From a test set detail page, click "Re-run Tests" or "Rebaseline" to re-execute or regenerate tests.
 
 Only one run can be active at a time (the API returns 409 if another is in progress).
+
+### URL Routes
+
+| Route | Page |
+|---|---|
+| `/` | Module list |
+| `/modules/{moduleId}` | Module detail with test sets |
+| `/modules/{moduleId}/testsets/{tsId}` | Test set detail |
+| `/modules/{moduleId}/testsets/{tsId}/runs/{runId}` | Execution detail |
+| `/testsets/{id}` | Legacy test set detail (backward compat) |
+| `/testsets/{id}/runs/{runId}` | Legacy execution detail (backward compat) |
+
+---
+
+## Deleting Test Sets
+
+A test set can be deleted from the test set detail page by clicking the **Delete Test Set** button. This is a destructive action that:
+
+1. Deletes all execution history (runs) for the test set
+2. Deletes the test set file itself
+3. Redirects back to the module detail page
+
+A confirmation dialog is shown before deletion. This action cannot be undone.
+
+**API:** `DELETE /api/modules/{moduleId}/testsets/{tsId}`
+
+---
+
+## Moving Objectives
+
+An objective (and all its associated tasks and test cases) can be moved from one test set to another, including across modules. This is useful for reorganising test cases after they've been generated.
+
+From the test set detail page, click the **Move** button next to any objective. A dialog allows you to select:
+1. The destination module
+2. The destination test set (within that module)
+
+Moving an objective:
+- Removes the objective and its tasks from the source test set
+- Appends them to the destination test set (deduplicating by task ID)
+- If the source test set has no remaining objectives or tasks after the move, it is deleted automatically
+- Execution history is **not** moved — it stays with the original test set
+
+**API:** `POST /api/modules/{moduleId}/testsets/{tsId}/move-objective`
+
+Request body:
+```json
+{
+  "objective": "Test the /api/products endpoint",
+  "destinationModuleId": "target-module",
+  "destinationTestSetId": "target-testset"
+}
+```
 
 ---
 

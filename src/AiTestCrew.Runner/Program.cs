@@ -19,7 +19,7 @@ AnsiConsole.Write(new FigletText("AI Test Crew").Color(Color.Cyan1));
 // ── Parse CLI arguments ──
 var cli = ParseArgs(args);
 
-// ── --list mode: no LLM needed, short-circuit before building host ──
+// ── Short-circuit commands that don't need the LLM host ──
 if (cli.Mode == RunMode.List)
 {
     var repo = new TestSetRepository(AppContext.BaseDirectory);
@@ -35,6 +35,7 @@ if (cli.Mode == RunMode.List)
     var listTable = new Table()
         .Border(TableBorder.Rounded)
         .AddColumn("[bold]ID[/]")
+        .AddColumn("[bold]Module[/]")
         .AddColumn("[bold]Objective[/]")
         .AddColumn("[bold]Tasks[/]")
         .AddColumn("[bold]Cases[/]")
@@ -44,16 +45,17 @@ if (cli.Mode == RunMode.List)
 
     foreach (var s in sets)
     {
-        var shortObjective = s.Objective.Length > 55
-            ? s.Objective[..55] + "…"
+        var shortObjective = s.Objective.Length > 45
+            ? s.Objective[..45] + "…"
             : s.Objective;
         listTable.AddRow(
             s.Id,
+            s.ModuleId.Length > 0 ? s.ModuleId : "-",
             shortObjective,
             s.Tasks.Count.ToString(),
             s.Tasks.Sum(t => t.TestCases.Count).ToString(),
             s.CreatedAt.ToString("yyyy-MM-dd HH:mm"),
-            s.LastRunAt.ToString("yyyy-MM-dd HH:mm"),
+            s.LastRunAt == default ? "-" : s.LastRunAt.ToString("yyyy-MM-dd HH:mm"),
             s.RunCount.ToString()
         );
     }
@@ -64,6 +66,70 @@ if (cli.Mode == RunMode.List)
     AnsiConsole.MarkupLine("[grey]Regenerate & resave: dotnet run -- --rebaseline \"<objective>\"[/]");
     return;
 }
+
+if (cli.ListModules)
+{
+    var moduleRepo = new ModuleRepository(AppContext.BaseDirectory);
+    var tsRepo = new TestSetRepository(AppContext.BaseDirectory);
+    var modules = await moduleRepo.ListAllAsync();
+
+    if (modules.Count == 0)
+    {
+        AnsiConsole.MarkupLine("[grey]No modules found.[/]");
+        AnsiConsole.MarkupLine("[grey]Create one: dotnet run -- --create-module \"Module Name\"[/]");
+        return;
+    }
+
+    var moduleTable = new Table()
+        .Border(TableBorder.Rounded)
+        .AddColumn("[bold]ID[/]")
+        .AddColumn("[bold]Name[/]")
+        .AddColumn("[bold]Test Sets[/]")
+        .AddColumn("[bold]Test Cases[/]")
+        .AddColumn("[bold]Created (UTC)[/]");
+
+    foreach (var m in modules)
+    {
+        var testSets = tsRepo.ListByModule(m.Id);
+        moduleTable.AddRow(
+            m.Id,
+            m.Name,
+            testSets.Count.ToString(),
+            testSets.Sum(ts => ts.Tasks.Sum(t => t.TestCases.Count)).ToString(),
+            m.CreatedAt.ToString("yyyy-MM-dd HH:mm")
+        );
+    }
+
+    AnsiConsole.Write(moduleTable);
+    return;
+}
+
+if (cli.CreateModuleName is not null)
+{
+    var moduleRepo = new ModuleRepository(AppContext.BaseDirectory);
+    var module = await moduleRepo.CreateAsync(cli.CreateModuleName);
+    AnsiConsole.MarkupLine($"[green]Module created:[/] {module.Id} ({module.Name})");
+    AnsiConsole.MarkupLine($"[grey]Create a test set: dotnet run -- --create-testset {module.Id} \"Test Set Name\"[/]");
+    return;
+}
+
+if (cli.CreateTestSetModuleId is not null && cli.CreateTestSetName is not null)
+{
+    var moduleRepo = new ModuleRepository(AppContext.BaseDirectory);
+    if (!moduleRepo.Exists(cli.CreateTestSetModuleId))
+    {
+        AnsiConsole.MarkupLine($"[red]Module '{cli.CreateTestSetModuleId}' not found.[/]");
+        return;
+    }
+    var tsRepo = new TestSetRepository(AppContext.BaseDirectory);
+    var testSet = await tsRepo.CreateEmptyAsync(cli.CreateTestSetModuleId, cli.CreateTestSetName);
+    AnsiConsole.MarkupLine($"[green]Test set created:[/] {cli.CreateTestSetModuleId}/{testSet.Id} ({testSet.Name})");
+    AnsiConsole.MarkupLine($"[grey]Run objective: dotnet run -- --module {cli.CreateTestSetModuleId} --testset {testSet.Id} \"<objective>\"[/]");
+    return;
+}
+
+// ── Migrate legacy test sets to module structure (idempotent) ──
+await MigrationHelper.MigrateToModulesAsync(AppContext.BaseDirectory);
 
 // ── Build host ──
 // Use AppContext.BaseDirectory (the binary output dir) as content root so that
@@ -108,9 +174,10 @@ builder.Services.AddSingleton<ApiTestAgent>(sp => new ApiTestAgent(
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<ApiTestAgent>());
 
-// Test set persistence + execution history
+// Test set persistence + execution history + modules
 builder.Services.AddSingleton(new TestSetRepository(AppContext.BaseDirectory));
 builder.Services.AddSingleton(new ExecutionHistoryRepository(AppContext.BaseDirectory));
+builder.Services.AddSingleton(new ModuleRepository(AppContext.BaseDirectory));
 
 // Orchestrator (receives IEnumerable<ITestAgent> and TestSetRepository from DI automatically)
 builder.Services.AddSingleton<TestOrchestrator>();
@@ -165,6 +232,8 @@ var modeLabel = cli.Mode switch
     _                  => "[green]NORMAL[/] (generating new test cases)"
 };
 AnsiConsole.MarkupLine($"[grey]Mode:[/] {modeLabel}");
+if (cli.ModuleId is not null)
+    AnsiConsole.MarkupLine($"[grey]Module:[/] {cli.ModuleId}  [grey]Test set:[/] {cli.TestSetId}");
 if (cli.Mode != RunMode.Reuse)
     AnsiConsole.MarkupLine($"[grey]Objective:[/] {objective}");
 AnsiConsole.WriteLine();
@@ -182,7 +251,8 @@ await AnsiConsole.Status()
         else
             ctx.Status("Decomposing objective...");
 
-        suiteResult = await orchestrator.RunAsync(objective, cli.Mode, cli.ReuseId);
+        suiteResult = await orchestrator.RunAsync(objective, cli.Mode, cli.ReuseId,
+            moduleId: cli.ModuleId, targetTestSetId: cli.TestSetId);
     });
 
 // ── Results table ──
@@ -241,20 +311,91 @@ if (cli.Mode is RunMode.Normal or RunMode.Rebaseline)
 
 // ── Local functions ──
 
-static CliArgs ParseArgs(string[] args) => args.Length == 0
-    ? new(RunMode.Normal, null, null)
-    : args[0].ToLowerInvariant() switch
+static CliArgs ParseArgs(string[] args)
+{
+    if (args.Length == 0)
+        return new CliArgs();
+
+    // Scan for known flags
+    var remaining = new List<string>();
+    string? moduleId = null, testSetId = null, reuseId = null;
+    string? createModuleName = null, createTestSetModuleId = null, createTestSetName = null;
+    bool listModules = false;
+    var mode = RunMode.Normal;
+
+    for (int i = 0; i < args.Length; i++)
     {
-        "--list"       => new(RunMode.List, null, null),
-        "--reuse"      => args.Length > 1
-                            ? new(RunMode.Reuse, null, args[1])
-                            : throw new ArgumentException("--reuse requires a <id> argument. Use --list to see saved test sets."),
-        "--rebaseline" => args.Length > 1
-                            ? new(RunMode.Rebaseline, string.Join(" ", args[1..]), null)
-                            : throw new ArgumentException("--rebaseline requires an objective string."),
-        _              => new(RunMode.Normal, string.Join(" ", args), null)
+        switch (args[i].ToLowerInvariant())
+        {
+            case "--list":
+                mode = RunMode.List;
+                break;
+            case "--list-modules":
+                listModules = true;
+                break;
+            case "--reuse" when i + 1 < args.Length:
+                mode = RunMode.Reuse;
+                reuseId = args[++i];
+                break;
+            case "--reuse":
+                throw new ArgumentException("--reuse requires a <id> argument.");
+            case "--rebaseline":
+                mode = RunMode.Rebaseline;
+                break;
+            case "--module" when i + 1 < args.Length:
+                moduleId = args[++i];
+                break;
+            case "--module":
+                throw new ArgumentException("--module requires a <moduleId> argument.");
+            case "--testset" when i + 1 < args.Length:
+                testSetId = args[++i];
+                break;
+            case "--testset":
+                throw new ArgumentException("--testset requires a <testSetId> argument.");
+            case "--create-module" when i + 1 < args.Length:
+                createModuleName = args[++i];
+                break;
+            case "--create-module":
+                throw new ArgumentException("--create-module requires a \"Name\" argument.");
+            case "--create-testset" when i + 2 < args.Length:
+                createTestSetModuleId = args[++i];
+                createTestSetName = args[++i];
+                break;
+            case "--create-testset":
+                throw new ArgumentException("--create-testset requires <moduleId> \"Name\" arguments.");
+            default:
+                remaining.Add(args[i]);
+                break;
+        }
+    }
+
+    var objective = remaining.Count > 0 ? string.Join(" ", remaining) : null;
+
+    return new CliArgs
+    {
+        Mode = mode,
+        Objective = objective,
+        ReuseId = reuseId,
+        ModuleId = moduleId,
+        TestSetId = testSetId,
+        ListModules = listModules,
+        CreateModuleName = createModuleName,
+        CreateTestSetModuleId = createTestSetModuleId,
+        CreateTestSetName = createTestSetName
     };
+}
 
 // ── Types ──
 
-record CliArgs(RunMode Mode, string? Objective, string? ReuseId);
+class CliArgs
+{
+    public RunMode Mode { get; init; } = RunMode.Normal;
+    public string? Objective { get; init; }
+    public string? ReuseId { get; init; }
+    public string? ModuleId { get; init; }
+    public string? TestSetId { get; init; }
+    public bool ListModules { get; init; }
+    public string? CreateModuleName { get; init; }
+    public string? CreateTestSetModuleId { get; init; }
+    public string? CreateTestSetName { get; init; }
+}

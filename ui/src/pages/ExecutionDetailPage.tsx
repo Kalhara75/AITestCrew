@@ -1,15 +1,25 @@
 import { useParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { fetchRun } from '../api/testSets';
+import { fetchModuleRun, fetchModule } from '../api/modules';
 import { StatusBadge } from '../components/StatusBadge';
 import { StepList } from '../components/StepList';
 
 export function ExecutionDetailPage() {
-  const { id, runId } = useParams<{ id: string; runId: string }>();
+  const { id, runId, moduleId } = useParams<{ id: string; runId: string; moduleId?: string }>();
+  const isModuleScoped = !!moduleId;
+
+  const { data: module } = useQuery({
+    queryKey: ['module', moduleId],
+    queryFn: () => fetchModule(moduleId!),
+    enabled: isModuleScoped,
+  });
 
   const { data: run, isLoading, error } = useQuery({
-    queryKey: ['run', id, runId],
-    queryFn: () => fetchRun(id!, runId!),
+    queryKey: ['run', moduleId, id, runId],
+    queryFn: () => isModuleScoped
+      ? fetchModuleRun(moduleId!, id!, runId!)
+      : fetchRun(id!, runId!),
     enabled: !!id && !!runId,
   });
 
@@ -17,15 +27,35 @@ export function ExecutionDetailPage() {
   if (error) return <p style={{ color: '#dc2626', padding: 40, textAlign: 'center' }}>Error: {(error as Error).message}</p>;
   if (!run) return <p style={{ color: '#64748b', padding: 40, textAlign: 'center' }}>Run not found.</p>;
 
+  const testSetPath = isModuleScoped
+    ? `/modules/${moduleId}/testsets/${id}`
+    : `/testsets/${id}`;
+
   return (
     <div>
       {/* Breadcrumb */}
       <div style={{ fontSize: 13, color: '#94a3b8', marginBottom: 20 }}>
-        <Link to="/" style={{ color: '#2563eb', textDecoration: 'none' }}>Dashboard</Link>
-        <span style={{ margin: '0 8px' }}>/</span>
-        <Link to={`/testsets/${id}`} style={{ color: '#2563eb', textDecoration: 'none' }}>{id}</Link>
-        <span style={{ margin: '0 8px' }}>/</span>
-        <span style={{ color: '#64748b' }}>{run.runId}</span>
+        {isModuleScoped ? (
+          <>
+            <Link to="/" style={{ color: '#2563eb', textDecoration: 'none' }}>Modules</Link>
+            <span style={{ margin: '0 8px' }}>/</span>
+            <Link to={`/modules/${moduleId}`} style={{ color: '#2563eb', textDecoration: 'none' }}>
+              {module?.name || moduleId}
+            </Link>
+            <span style={{ margin: '0 8px' }}>/</span>
+            <Link to={testSetPath} style={{ color: '#2563eb', textDecoration: 'none' }}>{id}</Link>
+            <span style={{ margin: '0 8px' }}>/</span>
+            <span style={{ color: '#64748b' }}>{run.runId}</span>
+          </>
+        ) : (
+          <>
+            <Link to="/" style={{ color: '#2563eb', textDecoration: 'none' }}>Dashboard</Link>
+            <span style={{ margin: '0 8px' }}>/</span>
+            <Link to={testSetPath} style={{ color: '#2563eb', textDecoration: 'none' }}>{id}</Link>
+            <span style={{ margin: '0 8px' }}>/</span>
+            <span style={{ color: '#64748b' }}>{run.runId}</span>
+          </>
+        )}
       </div>
 
       {/* Header card */}

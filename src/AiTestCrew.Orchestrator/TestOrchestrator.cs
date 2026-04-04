@@ -21,6 +21,11 @@ namespace AiTestCrew.Orchestrator;
 /// - Reuse: load saved test set, execute without LLM generation
 /// - Rebaseline: decompose via LLM, generate fresh test cases, overwrite saved test set, execute
 ///
+/// When moduleId and targetTestSetId are provided, operates in module-scoped mode:
+/// - Normal: generates test cases and merges them into the target test set
+/// - Reuse: loads from module directory
+/// - Rebaseline: regenerates and overwrites within the module
+///
 /// In later phases, this will handle parallel execution,
 /// dependency ordering, retry logic, and adaptive re-planning.
 /// </summary>
@@ -31,6 +36,7 @@ public class TestOrchestrator
     private readonly TestEnvironmentConfig _config;
     private readonly TestSetRepository _testSetRepo;
     private readonly ExecutionHistoryRepository _historyRepo;
+    private readonly ModuleRepository _moduleRepo;
     private readonly ILogger<TestOrchestrator> _logger;
 
     public TestOrchestrator(
@@ -39,6 +45,7 @@ public class TestOrchestrator
         TestEnvironmentConfig config,
         TestSetRepository testSetRepo,
         ExecutionHistoryRepository historyRepo,
+        ModuleRepository moduleRepo,
         ILogger<TestOrchestrator> logger)
     {
         _agents = agents.ToList();
@@ -46,26 +53,40 @@ public class TestOrchestrator
         _config = config;
         _testSetRepo = testSetRepo;
         _historyRepo = historyRepo;
+        _moduleRepo = moduleRepo;
         _logger = logger;
     }
 
     /// <summary>
     /// Run the full test flow: decompose → route → execute → report.
     /// </summary>
+    /// <param name="objective">Natural language test objective.</param>
+    /// <param name="mode">Run mode (Normal, Reuse, Rebaseline).</param>
+    /// <param name="reuseId">Test set ID for Reuse mode (legacy flat).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <param name="externalRunId">Optional pre-assigned run ID (from WebApi).</param>
+    /// <param name="moduleId">Target module for module-scoped operations.</param>
+    /// <param name="targetTestSetId">Target test set within the module.</param>
     public async Task<TestSuiteResult> RunAsync(
         string objective,
         RunMode mode = RunMode.Normal,
         string? reuseId = null,
         CancellationToken ct = default,
-        string? externalRunId = null)
+        string? externalRunId = null,
+        string? moduleId = null,
+        string? targetTestSetId = null)
     {
         var sw = Stopwatch.StartNew();
         var startedAt = DateTime.UtcNow;
-        _logger.LogInformation("╔══════════════════════════════════════════╗");
+        var isModuleScoped = !string.IsNullOrEmpty(moduleId) && !string.IsNullOrEmpty(targetTestSetId);
+
+        _logger.LogInformation("���══════════════════════════════════════════╗");
         _logger.LogInformation("║  AI TEST CREW - Starting Test Run        ║");
-        _logger.LogInformation("╚══════════════════════════════════════════╝");
+        _logger.LogInformation("��═════════════��════════════════════════════╝");
         _logger.LogInformation("Objective: {Obj}", objective);
         _logger.LogInformation("Mode: {Mode}", mode);
+        if (isModuleScoped)
+            _logger.LogInformation("Module: {Module}, TestSet: {TestSet}", moduleId, targetTestSetId);
         _logger.LogInformation("Available agents: {Agents}",
             string.Join(", ", _agents.Select(a => a.Name)));
 
@@ -74,14 +95,24 @@ public class TestOrchestrator
         // ── Reuse mode: load saved test set, skip LLM decomposition ──
         if (mode == RunMode.Reuse)
         {
-            var saved = await _testSetRepo.LoadAsync(reuseId!);
+            PersistedTestSet? saved;
+            if (isModuleScoped)
+            {
+                saved = await _testSetRepo.LoadAsync(moduleId!, targetTestSetId!);
+                reuseId = targetTestSetId;
+            }
+            else
+            {
+                saved = await _testSetRepo.LoadAsync(reuseId!);
+            }
+
             if (saved is null)
             {
                 var available = _testSetRepo.ListAll();
                 var availableIds = available.Count > 0
                     ? string.Join(", ", available.Select(s => s.Id))
                     : "(none)";
-                var errorMsg = $"Test set '{reuseId}' not found. Available IDs: {availableIds}";
+                var errorMsg = $"Test set '{reuseId ?? targetTestSetId}' not found. Available IDs: {availableIds}";
                 _logger.LogError(errorMsg);
                 return new TestSuiteResult
                 {
@@ -120,7 +151,7 @@ public class TestOrchestrator
         }
         else
         {
-            // ── Normal / Rebaseline: decompose via LLM ──
+            // ��─ Normal / Rebaseline: decompose via LLM ──
             tasks = await DecomposeObjectiveAsync(objective, ct);
             _logger.LogInformation("Decomposed into {Count} tasks:", tasks.Count);
             foreach (var t in tasks)
@@ -214,24 +245,30 @@ public class TestOrchestrator
             }
         }
 
-        // ── Persist test set (Normal and Rebaseline modes) ──
+        // ── Persist test set ──
         if (mode is RunMode.Normal or RunMode.Rebaseline)
         {
-            await SaveTestSetAsync(objective, tasks, results);
+            if (isModuleScoped)
+                await SaveTestSetToModuleAsync(objective, tasks, results, moduleId!, targetTestSetId!, mode);
+            else
+                await SaveTestSetAsync(objective, tasks, results);
         }
 
-        // ── Update run statistics (Reuse mode) ──
-        if (mode == RunMode.Reuse && reuseId is not null)
+        // ─��� Update run statistics (Reuse mode) ──
+        if (mode == RunMode.Reuse)
         {
-            await _testSetRepo.UpdateRunStatsAsync(reuseId);
+            if (isModuleScoped)
+                await _testSetRepo.UpdateRunStatsAsync(moduleId!, targetTestSetId!);
+            else if (reuseId is not null)
+                await _testSetRepo.UpdateRunStatsAsync(reuseId);
         }
 
         // ── Generate summary ──
         var summary = await GenerateSummaryAsync(objective, results, ct);
 
-        _logger.LogInformation("╔══════════════════════════════════════════╗");
+        _logger.LogInformation("╔══════════════════════════════════��═══════╗");
         _logger.LogInformation("║  TEST RUN COMPLETE                       ║");
-        _logger.LogInformation("╚══════════════════════════════════════════╝");
+        _logger.LogInformation("���══════════════════════════════════════════��");
         _logger.LogInformation("Duration: {Dur}", sw.Elapsed);
 
         var suiteResult = new TestSuiteResult
@@ -245,10 +282,13 @@ public class TestOrchestrator
         // ── Persist execution history (all modes) ──
         try
         {
-            var testSetId = mode == RunMode.Reuse && reuseId is not null
-                ? reuseId
-                : TestSetRepository.SlugFromObjective(objective);
-            var executionRun = PersistedExecutionRun.FromSuiteResult(suiteResult, testSetId, mode, startedAt);
+            var testSetId = isModuleScoped
+                ? targetTestSetId!
+                : mode == RunMode.Reuse && reuseId is not null
+                    ? reuseId
+                    : TestSetRepository.SlugFromObjective(objective);
+            var executionRun = PersistedExecutionRun.FromSuiteResult(
+                suiteResult, testSetId, mode, startedAt, isModuleScoped ? moduleId : null);
             if (externalRunId is not null)
                 executionRun.RunId = externalRunId;
             await _historyRepo.SaveAsync(executionRun);
@@ -263,26 +303,15 @@ public class TestOrchestrator
         return suiteResult;
     }
 
-    // ─────────────────────────────────────────────────────
+    // ─────────────────────────���───────────────────────────
     // Persistence
-    // ─────────────────────────────────────────────────────
+    // ───────────────────────────────────────────────���─────
 
+    /// <summary>Save test set to legacy flat directory.</summary>
     private async Task SaveTestSetAsync(
         string objective, List<TestTask> tasks, List<TestResult> results)
     {
-        var entries = results
-            .Where(r => r.Metadata.TryGetValue("generatedTestCases", out var v)
-                        && v is List<ApiTestCase> { Count: > 0 })
-            .Select(r => new PersistedTaskEntry
-            {
-                TaskId = r.TaskId,
-                TaskDescription = tasks.FirstOrDefault(t => t.Id == r.TaskId)?.Description
-                                  ?? r.TaskId,
-                AgentName = r.AgentName,
-                TestCases = (List<ApiTestCase>)r.Metadata["generatedTestCases"]
-            })
-            .ToList();
-
+        var entries = ExtractTaskEntries(tasks, results, objective);
         if (entries.Count == 0)
         {
             _logger.LogWarning("No test cases were generated — test set will not be saved.");
@@ -293,7 +322,8 @@ public class TestOrchestrator
         var testSet = new PersistedTestSet
         {
             Id = slug,
-            Objective = objective,
+            Name = objective,
+            Objectives = [objective],
             CreatedAt = DateTime.UtcNow,
             LastRunAt = DateTime.UtcNow,
             RunCount = 1,
@@ -304,9 +334,78 @@ public class TestOrchestrator
         _logger.LogInformation("Test set saved: {Id} ({Dir})", slug, _testSetRepo.Directory);
     }
 
-    // ─────────────────────────────────────────────────────
+    /// <summary>Save/merge test set into a module directory.</summary>
+    private async Task SaveTestSetToModuleAsync(
+        string objective, List<TestTask> tasks, List<TestResult> results,
+        string moduleId, string testSetId, RunMode mode)
+    {
+        var entries = ExtractTaskEntries(tasks, results, objective);
+        if (entries.Count == 0)
+        {
+            _logger.LogWarning("No test cases were generated — test set will not be updated.");
+            return;
+        }
+
+        if (mode == RunMode.Rebaseline)
+        {
+            // Rebaseline: replace only the tasks belonging to the specified objective,
+            // keeping tasks from other objectives intact.
+            var existing = await _testSetRepo.LoadAsync(moduleId, testSetId);
+
+            // Keep tasks from other objectives
+            var tasksFromOtherObjectives = existing?.Tasks
+                .Where(t => !string.Equals(t.Objective, objective, StringComparison.OrdinalIgnoreCase))
+                .ToList() ?? [];
+
+            // Preserve the full objectives list, ensuring the rebaselined one is present
+            var objectives = existing?.Objectives.ToList() ?? [];
+            if (!objectives.Contains(objective, StringComparer.OrdinalIgnoreCase))
+                objectives.Add(objective);
+
+            var testSet = new PersistedTestSet
+            {
+                Id = testSetId,
+                Name = existing?.Name ?? testSetId,
+                ModuleId = moduleId,
+                Objectives = objectives,
+                CreatedAt = existing?.CreatedAt ?? DateTime.UtcNow,
+                LastRunAt = DateTime.UtcNow,
+                RunCount = (existing?.RunCount ?? 0) + 1,
+                Tasks = [..tasksFromOtherObjectives, ..entries]
+            };
+            await _testSetRepo.SaveAsync(testSet, moduleId);
+            _logger.LogInformation("Test set rebaselined (objective: {Obj}): {Module}/{Id}",
+                objective, moduleId, testSetId);
+        }
+        else
+        {
+            // Normal: merge into existing test set
+            await _testSetRepo.MergeTasksAsync(moduleId, testSetId, entries, objective);
+            _logger.LogInformation("Test cases merged into: {Module}/{Id}", moduleId, testSetId);
+        }
+    }
+
+    private static List<PersistedTaskEntry> ExtractTaskEntries(
+        List<TestTask> tasks, List<TestResult> results, string objective = "")
+    {
+        return results
+            .Where(r => r.Metadata.TryGetValue("generatedTestCases", out var v)
+                        && v is List<ApiTestCase> { Count: > 0 })
+            .Select(r => new PersistedTaskEntry
+            {
+                TaskId = r.TaskId,
+                TaskDescription = tasks.FirstOrDefault(t => t.Id == r.TaskId)?.Description
+                                  ?? r.TaskId,
+                AgentName = r.AgentName,
+                Objective = objective,
+                TestCases = (List<ApiTestCase>)r.Metadata["generatedTestCases"]
+            })
+            .ToList();
+    }
+
+    // ─────���───────────────────────��───────────────────────
     // LLM helpers
-    // ─────────────────────────────────────────────────────
+    // ──────────────���──────────────────────────────────────
 
     /// <summary>
     /// Use the LLM to decompose a natural language objective

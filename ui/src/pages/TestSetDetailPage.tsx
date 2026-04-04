@@ -1,23 +1,44 @@
-import { useParams, Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchTestSet, fetchRuns } from '../api/testSets';
+import { fetchModuleTestSet, fetchModuleRuns, fetchModule, deleteTestSet } from '../api/modules';
 import { TestCaseTable } from '../components/TestCaseTable';
 import { RunHistoryTable } from '../components/RunHistoryTable';
 import { TriggerRunButton } from '../components/TriggerRunButton';
 import { StatusBadge } from '../components/StatusBadge';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { MoveObjectiveDialog } from '../components/MoveObjectiveDialog';
 
 export function TestSetDetailPage() {
-  const { id } = useParams<{ id: string }>();
+  const { id, moduleId } = useParams<{ id: string; moduleId?: string }>();
+  const isModuleScoped = !!moduleId;
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [moveObjective, setMoveObjective] = useState<string | null>(null);
+
+  const { data: module } = useQuery({
+    queryKey: ['module', moduleId],
+    queryFn: () => fetchModule(moduleId!),
+    enabled: isModuleScoped,
+  });
 
   const { data: testSet, isLoading, error } = useQuery({
-    queryKey: ['testSet', id],
-    queryFn: () => fetchTestSet(id!),
+    queryKey: ['testSet', moduleId, id],
+    queryFn: () => isModuleScoped
+      ? fetchModuleTestSet(moduleId!, id!)
+      : fetchTestSet(id!),
     enabled: !!id,
   });
 
   const { data: runs } = useQuery({
-    queryKey: ['runs', id],
-    queryFn: () => fetchRuns(id!),
+    queryKey: ['runs', moduleId, id],
+    queryFn: () => isModuleScoped
+      ? fetchModuleRuns(moduleId!, id!)
+      : fetchRuns(id!),
     enabled: !!id,
   });
 
@@ -26,14 +47,46 @@ export function TestSetDetailPage() {
   if (!testSet) return <p style={{ color: '#64748b', padding: 40, textAlign: 'center' }}>Test set not found.</p>;
 
   const totalCases = testSet.tasks.reduce((sum, t) => sum + t.testCases.length, 0);
+  const displayTitle = testSet.name || testSet.objective || testSet.id;
+  const objectives = testSet.objectives?.length > 0 ? testSet.objectives : (testSet.objective ? [testSet.objective] : []);
+
+  const handleDelete = async () => {
+    if (!isModuleScoped) return;
+    setDeleting(true);
+    try {
+      await deleteTestSet(moduleId!, id!);
+      navigate(`/modules/${moduleId}`);
+    } catch {
+      setDeleting(false);
+      setShowDeleteConfirm(false);
+    }
+  };
+
+  const handleObjectiveMoved = () => {
+    queryClient.invalidateQueries({ queryKey: ['testSet', moduleId, id] });
+  };
 
   return (
     <div>
       {/* Breadcrumb */}
       <div style={{ fontSize: 13, color: '#94a3b8', marginBottom: 20 }}>
-        <Link to="/" style={{ color: '#2563eb', textDecoration: 'none' }}>Dashboard</Link>
-        <span style={{ margin: '0 8px' }}>/</span>
-        <span style={{ color: '#64748b' }}>{testSet.id}</span>
+        {isModuleScoped ? (
+          <>
+            <Link to="/" style={{ color: '#2563eb', textDecoration: 'none' }}>Modules</Link>
+            <span style={{ margin: '0 8px' }}>/</span>
+            <Link to={`/modules/${moduleId}`} style={{ color: '#2563eb', textDecoration: 'none' }}>
+              {module?.name || moduleId}
+            </Link>
+            <span style={{ margin: '0 8px' }}>/</span>
+            <span style={{ color: '#64748b' }}>{displayTitle}</span>
+          </>
+        ) : (
+          <>
+            <Link to="/" style={{ color: '#2563eb', textDecoration: 'none' }}>Dashboard</Link>
+            <span style={{ margin: '0 8px' }}>/</span>
+            <span style={{ color: '#64748b' }}>{testSet.id}</span>
+          </>
+        )}
       </div>
 
       {/* Header card */}
@@ -44,8 +97,36 @@ export function TestSetDetailPage() {
               <StatusBadge status={testSet.lastRunStatus} size="md" />
             </div>
             <h1 style={{ margin: '0 0 16px', fontSize: 22, fontWeight: 700, color: '#0f172a', lineHeight: 1.4 }}>
-              {testSet.objective}
+              {displayTitle}
             </h1>
+
+            {/* Objectives list */}
+            {objectives.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                  Objectives ({objectives.length})
+                </div>
+                <ul style={{ margin: 0, paddingLeft: 18, listStyle: 'disc' }}>
+                  {objectives.map((obj, i) => (
+                    <li key={i} style={{ fontSize: 13, color: '#475569', lineHeight: 1.8, display: 'list-item' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                        {obj}
+                        {isModuleScoped && (
+                          <button
+                            onClick={() => setMoveObjective(obj)}
+                            style={moveBtnStyle}
+                            title="Move to another test set"
+                          >
+                            Move
+                          </button>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <StatPill label="Tasks" value={testSet.tasks.length} />
               <StatPill label="Test Cases" value={totalCases} />
@@ -53,7 +134,17 @@ export function TestSetDetailPage() {
               <StatPill label="Created" value={new Date(testSet.createdAt).toLocaleDateString()} />
             </div>
           </div>
-          <TriggerRunButton testSetId={testSet.id} objective={testSet.objective} />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexDirection: 'column' }}>
+            <TriggerRunButton testSetId={testSet.id} objective={testSet.objective} moduleId={moduleId} />
+            {isModuleScoped && (
+              <button
+                onClick={() => setShowDeleteConfirm(true)}
+                style={deleteBtnStyle}
+              >
+                Delete Test Set
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -70,8 +161,32 @@ export function TestSetDetailPage() {
       {/* Execution History */}
       <div style={cardStyle({})}>
         <SectionHeader title="Execution History" count={runs?.length || 0} />
-        <RunHistoryTable runs={runs || []} testSetId={testSet.id} />
+        <RunHistoryTable runs={runs || []} testSetId={testSet.id} moduleId={moduleId} />
       </div>
+
+      {/* Delete confirmation dialog */}
+      <ConfirmDialog
+        open={showDeleteConfirm}
+        title="Delete Test Set"
+        message={`This will permanently delete "${displayTitle}" and all ${runs?.length ?? 0} execution run(s). This action cannot be undone.`}
+        confirmLabel="Delete"
+        confirmDestructive
+        loading={deleting}
+        onConfirm={handleDelete}
+        onCancel={() => setShowDeleteConfirm(false)}
+      />
+
+      {/* Move objective dialog */}
+      {isModuleScoped && moveObjective !== null && (
+        <MoveObjectiveDialog
+          open
+          objective={moveObjective}
+          sourceModuleId={moduleId!}
+          sourceTestSetId={id!}
+          onClose={() => setMoveObjective(null)}
+          onMoved={handleObjectiveMoved}
+        />
+      )}
     </div>
   );
 }
@@ -107,6 +222,18 @@ function StatPill({ label, value }: { label: string; value: string | number }) {
     </span>
   );
 }
+
+const deleteBtnStyle: React.CSSProperties = {
+  background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca',
+  padding: '8px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+  cursor: 'pointer', width: '100%',
+};
+
+const moveBtnStyle: React.CSSProperties = {
+  background: 'none', color: '#2563eb', border: '1px solid #bfdbfe',
+  padding: '1px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+  cursor: 'pointer', lineHeight: '18px', flexShrink: 0,
+};
 
 function cardStyle(extra: React.CSSProperties): React.CSSProperties {
   return {

@@ -69,6 +69,15 @@ public class ExecutionHistoryRepository
         return runs.Count > 0 ? runs[0] : null;
     }
 
+    /// <summary>Deletes all execution runs for a given test set.</summary>
+    public Task DeleteRunsForTestSetAsync(string testSetId)
+    {
+        var dir = Path.Combine(_baseDir, testSetId);
+        if (System.IO.Directory.Exists(dir))
+            System.IO.Directory.Delete(dir, recursive: true);
+        return Task.CompletedTask;
+    }
+
     /// <summary>Directory where execution history is stored.</summary>
     public string Directory => _baseDir;
 }

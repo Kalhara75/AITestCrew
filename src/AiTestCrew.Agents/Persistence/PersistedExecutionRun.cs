@@ -10,6 +10,7 @@ public class PersistedExecutionRun
 {
     public string RunId { get; set; } = "";
     public string TestSetId { get; set; } = "";
+    public string? ModuleId { get; set; }
     public string Objective { get; set; } = "";
     public string Mode { get; set; } = "";
     public string Status { get; set; } = "";
@@ -27,12 +28,14 @@ public class PersistedExecutionRun
     /// Converts an in-memory TestSuiteResult to the persisted form.
     /// </summary>
     public static PersistedExecutionRun FromSuiteResult(
-        TestSuiteResult suite, string testSetId, RunMode mode, DateTime startedAt)
+        TestSuiteResult suite, string testSetId, RunMode mode, DateTime startedAt,
+        string? moduleId = null)
     {
         return new PersistedExecutionRun
         {
             RunId = Guid.NewGuid().ToString("N")[..12],
             TestSetId = testSetId,
+            ModuleId = moduleId,
             Objective = suite.Objective,
             Mode = mode.ToString(),
             Status = suite.AllPassed ? "Passed"
