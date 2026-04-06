@@ -110,7 +110,8 @@ public static class ModuleEndpoints
             var testSets = tsRepo.ListByModule(moduleId);
             var result = testSets.Select(ts =>
             {
-                var latestRun = historyRepo.GetLatestRun(ts.Id);
+                var objStatuses = historyRepo.GetLatestObjectiveStatuses(ts.Id);
+                var currentIds = ts.TestObjectives.Select(o => o.Id).ToHashSet();
                 return new
                 {
                     ts.Id,
@@ -123,7 +124,7 @@ public static class ModuleEndpoints
                     ts.CreatedAt,
                     ts.LastRunAt,
                     ts.RunCount,
-                    LastRunStatus = latestRun?.Status
+                    LastRunStatus = AggregateStatus(objStatuses, currentIds)
                 };
             });
             return Results.Ok(result);
@@ -156,21 +157,7 @@ public static class ModuleEndpoints
             if (testSet is null)
                 return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
 
-            var latestRun = historyRepo.GetLatestRun(tsId);
-            return Results.Ok(new
-            {
-                testSet.Id,
-                testSet.Name,
-                testSet.ModuleId,
-                testSet.Objectives,
-                testSet.ObjectiveNames,
-                Objective = testSet.Objective,
-                testSet.CreatedAt,
-                testSet.LastRunAt,
-                testSet.RunCount,
-                LastRunStatus = latestRun?.Status,
-                testSet.TestObjectives
-            });
+            return Results.Ok(TestSetResponse(testSet, historyRepo));
         });
 
         // DELETE /api/modules/{moduleId}/testsets/{tsId} — delete test set and all runs
@@ -413,16 +400,43 @@ public static class ModuleEndpoints
 
     private static object TestSetResponse(PersistedTestSet testSet, ExecutionHistoryRepository historyRepo)
     {
-        var latestRun = historyRepo.GetLatestRun(testSet.Id);
+        var objStatuses = historyRepo.GetLatestObjectiveStatuses(testSet.Id);
+        var currentIds = testSet.TestObjectives.Select(o => o.Id).ToHashSet();
         return new
         {
             testSet.Id, testSet.Name, testSet.ModuleId,
             testSet.Objectives, testSet.ObjectiveNames,
             Objective = testSet.Objective,
             testSet.CreatedAt, testSet.LastRunAt, testSet.RunCount,
-            LastRunStatus = latestRun?.Status,
+            LastRunStatus = AggregateStatus(objStatuses, currentIds),
+            ObjectiveStatuses = objStatuses
+                .Where(kvp => currentIds.Contains(kvp.Key))
+                .ToDictionary(
+                kvp => kvp.Key,
+                kvp => new
+                {
+                    kvp.Value.Result.Status,
+                    kvp.Value.Result.CompletedAt,
+                    kvp.Value.RunId
+                }),
             testSet.TestObjectives
         };
+    }
+
+    private static string? AggregateStatus(
+        Dictionary<string, (PersistedObjectiveResult Result, string RunId)> objStatuses,
+        IEnumerable<string>? currentObjectiveIds = null)
+    {
+        var values = currentObjectiveIds is not null
+            ? objStatuses.Where(kvp => currentObjectiveIds.Contains(kvp.Key)).Select(kvp => kvp.Value)
+            : objStatuses.Values;
+
+        var list = values.ToList();
+        if (list.Count == 0) return null;
+        if (list.Any(o => o.Result.Status == "Error")) return "Error";
+        if (list.Any(o => o.Result.Status == "Failed")) return "Failed";
+        if (list.Any(o => o.Result.Status == "Skipped")) return "Skipped";
+        return "Passed";
     }
 }
 

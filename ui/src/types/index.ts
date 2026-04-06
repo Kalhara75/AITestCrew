@@ -59,6 +59,12 @@ export interface TestObjective {
   stepCount: number;
 }
 
+export interface ObjectiveStatus {
+  status: string;
+  completedAt: string | null;
+  runId: string;
+}
+
 export interface TestSetDetail {
   id: string;
   name: string;
@@ -70,6 +76,7 @@ export interface TestSetDetail {
   lastRunAt: string;
   runCount: number;
   lastRunStatus: string | null;
+  objectiveStatuses?: Record<string, ObjectiveStatus>;
   testObjectives: TestObjective[];
 }
 
@@ -187,6 +194,7 @@ export interface TriggerRunRequest {
   mode: string;
   testSetId?: string;
   moduleId?: string;
+  objectiveId?: string;
 }
 
 export interface TriggerRunResponse {

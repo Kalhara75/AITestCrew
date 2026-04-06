@@ -11,7 +11,8 @@ public static class TestSetEndpoints
             var testSets = repo.ListAll();
             var result = testSets.Select(ts =>
             {
-                var latestRun = historyRepo.GetLatestRun(ts.Id);
+                var objStatuses = historyRepo.GetLatestObjectiveStatuses(ts.Id);
+                var currentIds = ts.TestObjectives.Select(o => o.Id).ToHashSet();
                 return new
                 {
                     ts.Id,
@@ -21,7 +22,7 @@ public static class TestSetEndpoints
                     ts.CreatedAt,
                     ts.LastRunAt,
                     ts.RunCount,
-                    LastRunStatus = latestRun?.Status
+                    LastRunStatus = AggregateStatus(objStatuses, currentIds)
                 };
             });
             return Results.Ok(result);
@@ -32,7 +33,8 @@ public static class TestSetEndpoints
             var testSet = await repo.LoadAsync(id);
             if (testSet is null) return Results.NotFound(new { error = $"Test set '{id}' not found" });
 
-            var latestRun = historyRepo.GetLatestRun(id);
+            var objStatuses = historyRepo.GetLatestObjectiveStatuses(id);
+            var currentIds = testSet.TestObjectives.Select(o => o.Id).ToHashSet();
             return Results.Ok(new
             {
                 testSet.Id,
@@ -41,7 +43,17 @@ public static class TestSetEndpoints
                 testSet.CreatedAt,
                 testSet.LastRunAt,
                 testSet.RunCount,
-                LastRunStatus = latestRun?.Status,
+                LastRunStatus = AggregateStatus(objStatuses, currentIds),
+                ObjectiveStatuses = objStatuses
+                    .Where(kvp => currentIds.Contains(kvp.Key))
+                    .ToDictionary(
+                        kvp => kvp.Key,
+                        kvp => new
+                        {
+                            kvp.Value.Result.Status,
+                            kvp.Value.Result.CompletedAt,
+                            kvp.Value.RunId
+                        }),
                 testSet.TestObjectives
             });
         });
@@ -73,5 +85,21 @@ public static class TestSetEndpoints
         });
 
         return group;
+    }
+
+    private static string? AggregateStatus(
+        Dictionary<string, (PersistedObjectiveResult Result, string RunId)> objStatuses,
+        IEnumerable<string>? currentObjectiveIds = null)
+    {
+        var values = currentObjectiveIds is not null
+            ? objStatuses.Where(kvp => currentObjectiveIds.Contains(kvp.Key)).Select(kvp => kvp.Value)
+            : objStatuses.Values;
+
+        var list = values.ToList();
+        if (list.Count == 0) return null;
+        if (list.Any(o => o.Result.Status == "Error")) return "Error";
+        if (list.Any(o => o.Result.Status == "Failed")) return "Failed";
+        if (list.Any(o => o.Result.Status == "Skipped")) return "Skipped";
+        return "Passed";
     }
 }

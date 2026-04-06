@@ -70,24 +70,37 @@ function ObjectiveSection({ objective }: { objective: ObjectiveResult }) {
   );
 }
 
+/** Extract screenshot filename from detail text like "...| Screenshot: filename.png" */
+function parseScreenshot(detail: string | null): { text: string; screenshotFile: string | null } {
+  if (!detail) return { text: '', screenshotFile: null };
+  const match = detail.match(/\| Screenshot: (.+\.png)$/);
+  if (!match) return { text: detail, screenshotFile: null };
+  return {
+    text: detail.slice(0, match.index).trim(),
+    screenshotFile: match[1],
+  };
+}
+
 function StepRow({ step, isLast }: { step: StepResult; isLast: boolean }) {
   const [showDetail, setShowDetail] = useState(false);
   const statusIcon = step.status === 'Passed' ? '\u2705' : step.status === 'Failed' ? '\u274C' : '\u26A0\uFE0F';
+  const { text: detailText, screenshotFile } = parseScreenshot(step.detail);
+  const hasDetail = !!(step.detail);
 
   return (
     <div style={{ borderBottom: isLast ? 'none' : '1px solid #f1f5f9' }}>
       <div
-        onClick={() => step.detail && setShowDetail(!showDetail)}
+        onClick={() => hasDetail && setShowDetail(!showDetail)}
         style={{
           padding: '10px 20px',
           display: 'flex',
           alignItems: 'center',
           gap: 10,
-          cursor: step.detail ? 'pointer' : 'default',
+          cursor: hasDetail ? 'pointer' : 'default',
           fontSize: 13,
           transition: 'background 0.1s',
         }}
-        onMouseEnter={e => { if (step.detail) e.currentTarget.style.background = '#fafafa'; }}
+        onMouseEnter={e => { if (hasDetail) e.currentTarget.style.background = '#fafafa'; }}
         onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
       >
         <span style={{ width: 20, textAlign: 'center' }}>{statusIcon}</span>
@@ -101,26 +114,52 @@ function StepRow({ step, isLast }: { step: StepResult; isLast: boolean }) {
           {step.action}
         </span>
         <span style={{ color: '#64748b', flex: 1 }}>{step.summary}</span>
-        {step.detail && (
+        {hasDetail && (
           <span style={{ color: '#94a3b8', fontSize: 11 }}>{showDetail ? 'Hide' : 'Detail'}</span>
         )}
       </div>
-      {showDetail && step.detail && (
-        <pre style={{
-          margin: 0,
+      {showDetail && hasDetail && (
+        <div style={{
           padding: '12px 20px 16px 50px',
-          fontSize: 12,
-          color: '#475569',
           background: '#f8fafc',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          maxHeight: 300,
-          overflow: 'auto',
           borderTop: '1px solid #f1f5f9',
-          fontFamily: 'ui-monospace, Consolas, monospace',
         }}>
-          {step.detail}
-        </pre>
+          <pre style={{
+            margin: 0,
+            fontSize: 12,
+            color: '#475569',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            fontFamily: 'ui-monospace, Consolas, monospace',
+          }}>
+            {detailText}
+          </pre>
+          {screenshotFile && (
+            <div style={{ marginTop: 12 }}>
+              <a
+                href={`http://localhost:5050/screenshots/${encodeURIComponent(screenshotFile)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: '#2563eb', fontSize: 12, fontWeight: 500 }}
+              >
+                View Screenshot
+              </a>
+              <img
+                src={`http://localhost:5050/screenshots/${encodeURIComponent(screenshotFile)}`}
+                alt="Failure screenshot"
+                style={{
+                  display: 'block',
+                  marginTop: 8,
+                  maxWidth: '100%',
+                  maxHeight: 400,
+                  borderRadius: 6,
+                  border: '1px solid #e2e8f0',
+                }}
+                onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+              />
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

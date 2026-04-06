@@ -143,12 +143,12 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                 Logger.LogInformation("[{Agent}] Generated {Count} test cases", Name, testCases.Count);
             }
 
-            // ── Execute each test case (each becomes a step) ──
+            // ── Execute each test case — individual Playwright steps become separate TestSteps ──
             foreach (var tc in testCases)
             {
                 ct.ThrowIfCancellationRequested();
-                var tcStep = await ExecuteUiTestCaseAsync(browser, tc, ct);
-                steps.Add(tcStep);
+                var tcSteps = await ExecuteUiTestCaseAsync(browser, tc, ct);
+                steps.AddRange(tcSteps);
             }
 
             var summary = await SummariseResultsAsync(steps, ct);
@@ -351,9 +351,10 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
     // Test case execution — fresh context per test case
     // ─────────────────────────────────────────────────────
 
-    private async Task<TestStep> ExecuteUiTestCaseAsync(IBrowser browser, WebUiTestCase tc, CancellationToken ct)
+    private async Task<List<TestStep>> ExecuteUiTestCaseAsync(IBrowser browser, WebUiTestCase tc, CancellationToken ct)
     {
         Logger.LogInformation("[{Agent}] Executing test case: {Name}", Name, tc.Name);
+        var stepResults = new List<TestStep>();
 
         // Each test case gets its own fresh context — no auth state from prior cases leaks in.
         // BuildContextOptions() may inject saved auth state (e.g. storage state for SSO).
@@ -368,30 +369,119 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                 await page.GotoAsync(url, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
             }
 
-            foreach (var step in tc.Steps)
+            for (var i = 0; i < tc.Steps.Count; i++)
             {
                 ct.ThrowIfCancellationRequested();
-                await ExecuteUiStepAsync(page, step);
-            }
+                var step = tc.Steps[i];
+                var stepLabel = $"{tc.Name} [{i + 1}/{tc.Steps.Count}] {step.Action}";
+                var sw = Stopwatch.StartNew();
 
-            return TestStep.Pass(tc.Name, $"[{tc.Name}] All {tc.Steps.Count} steps passed");
+                try
+                {
+                    await ExecuteUiStepAsync(page, step);
+                    sw.Stop();
+                    stepResults.Add(new TestStep
+                    {
+                        Action = stepLabel,
+                        Summary = $"{step.Action} {step.Selector ?? ""} {step.Value ?? ""}".Trim(),
+                        Status = TestStatus.Passed,
+                        Duration = sw.Elapsed
+                    });
+                }
+                catch (PlaywrightException ex)
+                {
+                    sw.Stop();
+                    Logger.LogWarning("[{Agent}] Step {Idx}/{Total} failed in '{Case}': {Msg}",
+                        Name, i + 1, tc.Steps.Count, tc.Name, ex.Message);
+
+                    var screenshotPath = tc.TakeScreenshotOnFailure
+                        ? await CaptureScreenshotAsync(page, tc.Name)
+                        : null;
+                    var detail = screenshotPath is not null
+                        ? $"{ex.Message} | Screenshot: {screenshotPath}"
+                        : ex.Message;
+
+                    stepResults.Add(new TestStep
+                    {
+                        Action = stepLabel,
+                        Summary = $"Failed: {ex.Message}",
+                        Status = TestStatus.Failed,
+                        Detail = detail,
+                        Duration = sw.Elapsed
+                    });
+
+                    // Mark remaining steps as skipped
+                    for (var j = i + 1; j < tc.Steps.Count; j++)
+                    {
+                        var skipped = tc.Steps[j];
+                        var skippedLabel = $"{tc.Name} [{j + 1}/{tc.Steps.Count}] {skipped.Action}";
+                        stepResults.Add(TestStep.Fail(skippedLabel,
+                            "Skipped — previous step failed",
+                            $"{skipped.Action} {skipped.Selector ?? ""} {skipped.Value ?? ""}".Trim()));
+                    }
+                    return stepResults;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    sw.Stop();
+                    Logger.LogError(ex, "[{Agent}] Unexpected error at step {Idx} in '{Case}'",
+                        Name, i + 1, tc.Name);
+
+                    var errScreenshotPath = tc.TakeScreenshotOnFailure
+                        ? await CaptureScreenshotAsync(page, tc.Name)
+                        : null;
+                    var errDetail = errScreenshotPath is not null
+                        ? $"{ex.Message} | Screenshot: {errScreenshotPath}"
+                        : ex.Message;
+
+                    stepResults.Add(new TestStep
+                    {
+                        Action = stepLabel,
+                        Summary = ex.Message,
+                        Status = TestStatus.Error,
+                        Detail = errDetail,
+                        Duration = sw.Elapsed
+                    });
+
+                    // Mark remaining steps as skipped
+                    for (var j = i + 1; j < tc.Steps.Count; j++)
+                    {
+                        var skipped = tc.Steps[j];
+                        var skippedLabel = $"{tc.Name} [{j + 1}/{tc.Steps.Count}] {skipped.Action}";
+                        stepResults.Add(TestStep.Fail(skippedLabel,
+                            "Skipped — previous step errored",
+                            $"{skipped.Action} {skipped.Selector ?? ""} {skipped.Value ?? ""}".Trim()));
+                    }
+                    return stepResults;
+                }
+            }
         }
         catch (PlaywrightException ex)
         {
-            Logger.LogWarning("[{Agent}] Playwright error in '{Case}': {Msg}", Name, tc.Name, ex.Message);
-            var screenshotPath = tc.TakeScreenshotOnFailure
+            // StartUrl navigation failure — no individual steps ran yet
+            Logger.LogWarning("[{Agent}] Navigation failed for '{Case}': {Msg}", Name, tc.Name, ex.Message);
+            var navScreenshot = tc.TakeScreenshotOnFailure
                 ? await CaptureScreenshotAsync(page, tc.Name)
                 : null;
-            var detail = screenshotPath is not null
-                ? $"{ex.Message} | Screenshot: {screenshotPath}"
+            var navDetail = navScreenshot is not null
+                ? $"{ex.Message} | Screenshot: {navScreenshot}"
                 : ex.Message;
-            return TestStep.Fail(tc.Name, $"[{tc.Name}] Failed: {ex.Message}", detail);
+            stepResults.Add(TestStep.Fail($"{tc.Name} [navigate]",
+                $"Failed to navigate to {tc.StartUrl}: {ex.Message}", navDetail));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             Logger.LogError(ex, "[{Agent}] Unexpected error in test case '{Case}'", Name, tc.Name);
-            return TestStep.Err(tc.Name, ex.Message);
+            var errScreenshot = tc.TakeScreenshotOnFailure
+                ? await CaptureScreenshotAsync(page, tc.Name)
+                : null;
+            var errDetail = errScreenshot is not null
+                ? $"{ex.Message} | Screenshot: {errScreenshot}"
+                : ex.Message;
+            stepResults.Add(TestStep.Err($"{tc.Name} [error]", ex.Message, errDetail));
         }
+
+        return stepResults;
     }
 
     // ─────────────────────────────────────────────────────
@@ -515,11 +605,12 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
         {
             Directory.CreateDirectory(_config.PlaywrightScreenshotDir);
             var safe = string.Concat(testName.Select(c => char.IsLetterOrDigit(c) ? c : '_'));
-            var path = Path.Combine(_config.PlaywrightScreenshotDir,
-                $"{safe}_{DateTime.Now:yyyyMMdd_HHmmss}.png");
+            var fileName = $"{safe}_{DateTime.Now:yyyyMMdd_HHmmss}.png";
+            var path = Path.Combine(_config.PlaywrightScreenshotDir, fileName);
             await page.ScreenshotAsync(new PageScreenshotOptions { Path = path, FullPage = true });
             Logger.LogInformation("[{Agent}] Screenshot saved: {Path}", Name, path);
-            return path;
+            // Return just the filename — the WebApi serves /screenshots/{fileName}
+            return fileName;
         }
         catch (Exception ex)
         {

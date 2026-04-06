@@ -324,10 +324,12 @@ The test set detail page uses a **master-detail** pattern:
   - Objective name (short name if set, full text as tooltip)
   - Step count (number of API calls or UI test cases)
   - Type (API / Web UI)
-  - Status from last run
-  - Last run date
+  - **Per-objective status** — each test case shows its own individual status from its most recent execution, not a shared test set status. If objective A passed in run 5 and objective B failed in run 6, A shows "Passed" and B shows "Failed".
+  - **Per-objective last run date** — the date of each objective's most recent execution
+  - **Run** button — triggers execution of just that single test case (Reuse mode with `objectiveId` filter). Shows a spinner while running and refreshes statuses on completion.
   - **Move** button to relocate the objective (and its steps) to a different test set/module
   - **Delete** button to remove the objective (`DELETE /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId}`)
+- **Test set level status badge** — computed as the worst-case aggregate across all individual objective statuses: if any objective is "Error" → Error, if any is "Failed" → Failed, otherwise "Passed".
 - **Detail panel** — clicking an objective opens a panel showing:
   - Its steps (API test definitions or Web UI test definitions), each editable
   - Execution history for that objective
@@ -345,6 +347,7 @@ Shows a single run's results:
 - LLM-generated summary
 - Expandable objective sections, each showing individual test steps
 - Click a step to expand its full response detail
+- For failed Web UI steps: if `TakeScreenshotOnFailure` is enabled and `PlaywrightScreenshotDir` is configured, the failure detail includes an inline screenshot image and a "View Screenshot" link
 
 ### Triggering Runs from the UI
 
@@ -356,7 +359,10 @@ From a module detail page, click **Run Objective** to:
 5. Shows a spinner while polling every 3 seconds
 6. Automatically navigates to the results page when the run completes
 
-From a test set detail page, click "Re-run Tests" or "Rebaseline" to re-execute or regenerate tests.
+From a test set detail page:
+- **Re-run Tests** — re-executes all test cases in the set (Reuse mode). Each objective's status updates independently.
+- **Rebaseline** — regenerates all test cases via LLM and re-executes.
+- **Run (per test case)** — the **Run** button on each test case row triggers execution of only that single objective. The API receives `objectiveId` in the run request, and the orchestrator filters to only that task. The test case's status and last run date update independently without affecting other test cases.
 
 Only one run can be active at a time (the API returns 409 if another is in progress).
 
@@ -547,6 +553,27 @@ Changes are saved via `PUT /api/modules/{moduleId}/testsets/{tsId}/objectives/{o
 | `assert-title-contains` | — | title fragment | Assert the page title contains a value |
 | `wait` | CSS selector or — | ms (if no selector) | Wait for a selector or a fixed delay |
 
+### Per-Step Execution Reporting
+
+Web UI test execution reports each Playwright step individually in the execution detail view. For a test case with 9 steps, you will see 9 separate result entries (plus the load-cases and browser-launch infrastructure steps).
+
+Each step is labelled as `"Test Case Name [N/Total] action"` (e.g. `"Happy path [5/9] click"`), showing:
+- Pass/fail/error status
+- The action, selector, and value
+- Duration
+
+When a step fails, remaining steps in that test case are marked as **"Skipped — previous step failed"** so you can see exactly which step broke and what was left untested.
+
+### Failure Screenshots
+
+When `TakeScreenshotOnFailure` is enabled on a test case and `PlaywrightScreenshotDir` is configured, a full-page screenshot is captured at the moment of failure. Screenshots are taken for all failure types: Playwright errors, assertion failures, and unexpected exceptions.
+
+**How it works:**
+1. The agent captures a PNG screenshot via Playwright and saves it to `PlaywrightScreenshotDir`.
+2. The filename is stored in the step's `detail` field (e.g. `"Timeout exceeded | Screenshot: Happy_path_20260704_122709.png"`).
+3. The WebApi serves the screenshot directory as static files at `/screenshots/{filename}`.
+4. The UI parses the screenshot reference from the detail text and renders it as an inline image with a "View Screenshot" link.
+
 ### Configuration
 
 Add these settings to `appsettings.json` under `TestEnvironment`:
@@ -567,6 +594,8 @@ Add these settings to `appsettings.json` under `TestEnvironment`:
 "BraveCloudUiPassword":               "your-aad-password",
 "BraveCloudUiStorageStateMaxAgeHours": 8
 ```
+
+`PlaywrightScreenshotDir` is required for failure screenshots. If not set, screenshots are silently skipped. The WebApi serves this directory at the `/screenshots/` URL path.
 
 ### Authentication
 

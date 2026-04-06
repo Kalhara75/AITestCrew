@@ -10,8 +10,9 @@ import { TriggerRunButton } from '../components/TriggerRunButton';
 import { StatusBadge } from '../components/StatusBadge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { MoveObjectiveDialog } from '../components/MoveObjectiveDialog';
+import { TriggerObjectiveRunButton } from '../components/TriggerObjectiveRunButton';
 import { AiPatchPanel } from '../components/AiPatchPanel';
-import type { TestObjective, RunSummary } from '../types';
+import type { TestObjective, RunSummary, ObjectiveStatus } from '../types';
 
 export function TestSetDetailPage() {
   const { id, moduleId } = useParams<{ id: string; moduleId?: string }>();
@@ -133,6 +134,9 @@ export function TestSetDetailPage() {
           <ObjectiveListTable
             objectives={testSet.testObjectives}
             runs={runs || []}
+            objectiveStatuses={testSet.objectiveStatuses}
+            testSetId={testSet.id}
+            moduleId={moduleId}
             selectedId={selectedObjectiveId}
             onSelect={(objId) => setSelectedObjectiveId(objId === selectedObjectiveId ? null : objId)}
             onMove={isModuleScoped ? (obj) => setMoveObjective(obj) : undefined}
@@ -227,20 +231,22 @@ export function TestSetDetailPage() {
 function ObjectiveListTable({
   objectives,
   runs,
+  objectiveStatuses,
+  testSetId,
+  moduleId,
   selectedId,
   onSelect,
   onMove,
 }: {
   objectives: TestObjective[];
   runs: RunSummary[];
+  objectiveStatuses?: Record<string, ObjectiveStatus>;
+  testSetId: string;
+  moduleId?: string;
   selectedId: string | null;
   onSelect: (id: string) => void;
   onMove?: (parentObjective: string) => void;
 }) {
-  // Determine last run date from the runs list
-  const lastRunDate = runs.length > 0 ? runs[0].startedAt : null;
-  const lastRunStatus = runs.length > 0 ? runs[0].status : null;
-
   return (
     <div style={{ overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -251,12 +257,14 @@ function ObjectiveListTable({
             <th style={{ ...thStyle, width: 90 }}>TYPE</th>
             <th style={{ ...thStyle, width: 100 }}>STATUS</th>
             <th style={{ ...thStyle, width: 180 }}>LAST RUN</th>
+            <th style={{ ...thStyle, width: 60 }}></th>
             {onMove && <th style={{ ...thStyle, width: 60 }}></th>}
           </tr>
         </thead>
         <tbody>
           {objectives.map(obj => {
             const isSelected = obj.id === selectedId;
+            const objStatus = objectiveStatuses?.[obj.id];
             return (
               <tr
                 key={obj.id}
@@ -282,10 +290,17 @@ function ObjectiveListTable({
                   </span>
                 </td>
                 <td style={tdStyle}>
-                  <StatusBadge status={lastRunStatus} size="sm" />
+                  <StatusBadge status={objStatus?.status ?? null} size="sm" />
                 </td>
                 <td style={{ ...tdStyle, color: '#64748b', fontSize: 12 }}>
-                  {lastRunDate ? new Date(lastRunDate).toLocaleString() : '—'}
+                  {objStatus?.completedAt ? new Date(objStatus.completedAt).toLocaleString() : '—'}
+                </td>
+                <td style={tdStyle}>
+                  <TriggerObjectiveRunButton
+                    testSetId={testSetId}
+                    objectiveId={obj.id}
+                    moduleId={moduleId}
+                  />
                 </td>
                 {onMove && (
                   <td style={tdStyle}>

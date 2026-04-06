@@ -29,6 +29,15 @@ public static class RunEndpoints
             if (!string.IsNullOrWhiteSpace(request.ModuleId) && string.IsNullOrWhiteSpace(request.TestSetId))
                 return Results.BadRequest(new { error = "testSetId is required when moduleId is specified" });
 
+            // Single-objective execution requires testSetId and Reuse mode
+            if (!string.IsNullOrWhiteSpace(request.ObjectiveId))
+            {
+                if (string.IsNullOrWhiteSpace(request.TestSetId))
+                    return Results.BadRequest(new { error = "testSetId is required when objectiveId is specified" });
+                if (mode != RunMode.Reuse)
+                    return Results.BadRequest(new { error = "objectiveId is only supported in Reuse mode" });
+            }
+
             // Only one run at a time
             if (tracker.HasActiveRun())
                 return Results.Conflict(new { error = "A test run is already in progress" });
@@ -48,7 +57,8 @@ public static class RunEndpoints
                         externalRunId: runId,
                         moduleId: request.ModuleId,
                         targetTestSetId: request.TestSetId,
-                        objectiveName: request.ObjectiveName);
+                        objectiveName: request.ObjectiveName,
+                        objectiveId: request.ObjectiveId);
                     var testSetId = mode == RunMode.Reuse
                         ? request.TestSetId!
                         : !string.IsNullOrWhiteSpace(request.TestSetId)
@@ -82,4 +92,4 @@ public static class RunEndpoints
     }
 }
 
-public record RunRequest(string? Objective, string? ObjectiveName, string Mode, string? TestSetId, string? ModuleId);
+public record RunRequest(string? Objective, string? ObjectiveName, string Mode, string? TestSetId, string? ModuleId, string? ObjectiveId);

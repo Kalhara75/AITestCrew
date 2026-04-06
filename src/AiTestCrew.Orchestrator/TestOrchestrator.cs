@@ -58,7 +58,8 @@ public class TestOrchestrator
         string? externalRunId = null,
         string? moduleId = null,
         string? targetTestSetId = null,
-        string? objectiveName = null)
+        string? objectiveName = null,
+        string? objectiveId = null)
     {
         var sw = Stopwatch.StartNew();
         var startedAt = DateTime.UtcNow;
@@ -144,6 +145,35 @@ public class TestOrchestrator
                     Parameters = parameters
                 };
             }).ToList();
+
+            // ── Single-objective filter: run only one objective from the set ──
+            if (!string.IsNullOrEmpty(objectiveId))
+            {
+                tasks = tasks.Where(t => t.Id == objectiveId).ToList();
+                if (tasks.Count == 0)
+                {
+                    var errorMsg = $"Objective '{objectiveId}' not found in test set '{reuseId ?? targetTestSetId}'";
+                    _logger.LogError(errorMsg);
+                    return new TestSuiteResult
+                    {
+                        Objective = objective,
+                        Results =
+                        [
+                            new TestResult
+                            {
+                                ObjectiveId = objectiveId,
+                                ObjectiveName = "Error",
+                                AgentName = "Orchestrator",
+                                Status = TestStatus.Error,
+                                Summary = errorMsg
+                            }
+                        ],
+                        Summary = errorMsg,
+                        TotalDuration = sw.Elapsed
+                    };
+                }
+                _logger.LogInformation("Single-objective mode: running only '{ObjId}'", objectiveId);
+            }
         }
         else
         {

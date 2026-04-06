@@ -106,6 +106,20 @@ app.UseCors();
 await MigrationHelper.MigrateToModulesAsync(dataDir);
 await MigrationHelper.MigrateToSchemaV2Async(dataDir);
 
+// ── Serve Playwright screenshots as static files ──
+if (!string.IsNullOrEmpty(envConfig.PlaywrightScreenshotDir))
+{
+    var screenshotDir = Path.GetFullPath(envConfig.PlaywrightScreenshotDir);
+    if (!Directory.Exists(screenshotDir))
+        Directory.CreateDirectory(screenshotDir);
+
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(screenshotDir),
+        RequestPath = "/screenshots"
+    });
+}
+
 // ── Map endpoints ──
 app.MapGroup("/api/modules").MapModuleEndpoints();
 app.MapGroup("/api/testsets").MapTestSetEndpoints();

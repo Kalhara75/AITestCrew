@@ -75,6 +75,22 @@ public class ExecutionHistoryRepository
         return runs.Count > 0 ? runs[0] : null;
     }
 
+    /// <summary>
+    /// Returns the most recent execution result for each objective across all runs.
+    /// Scans runs in descending date order and picks the first result seen per objective ID.
+    /// </summary>
+    public Dictionary<string, (PersistedObjectiveResult Result, string RunId)> GetLatestObjectiveStatuses(string testSetId)
+    {
+        var runs = ListRuns(testSetId); // ordered descending by StartedAt
+        var result = new Dictionary<string, (PersistedObjectiveResult, string)>();
+        foreach (var run in runs)
+        {
+            foreach (var obj in run.ObjectiveResults)
+                result.TryAdd(obj.ObjectiveId, (obj, run.RunId));
+        }
+        return result;
+    }
+
     /// <summary>Deletes all execution runs for a given test set.</summary>
     public Task DeleteRunsForTestSetAsync(string testSetId)
     {
