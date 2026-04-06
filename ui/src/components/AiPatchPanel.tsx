@@ -1,24 +1,24 @@
 import { useState } from 'react';
 import { previewAiPatch, applyAiPatch } from '../api/modules';
-import type { TaskEntry, TestCasePatchEntry, ApiTestCase } from '../types';
+import type { TestObjective, ObjectivePatchEntry, ApiTestCase } from '../types';
 
 interface Props {
   moduleId: string;
   testSetId: string;
-  tasks: TaskEntry[];
+  objectives: TestObjective[];
   onApplied: () => void;
 }
 
-export function AiPatchPanel({ moduleId, testSetId, tasks, onApplied }: Props) {
+export function AiPatchPanel({ moduleId, testSetId, objectives, onApplied }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [instruction, setInstruction] = useState('');
-  const [scopeType, setScopeType] = useState<'all' | 'task'>('all');
-  const [scopeTaskId, setScopeTaskId] = useState(tasks[0]?.taskId ?? '');
+  const [scopeType, setScopeType] = useState<'all' | 'objective'>('all');
+  const [scopeObjectiveId, setScopeObjectiveId] = useState(objectives[0]?.id ?? '');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<{
-    original: TestCasePatchEntry[];
-    patched: TestCasePatchEntry[];
+    original: ObjectivePatchEntry[];
+    patched: ObjectivePatchEntry[];
   } | null>(null);
   const [applying, setApplying] = useState(false);
 
@@ -28,7 +28,7 @@ export function AiPatchPanel({ moduleId, testSetId, tasks, onApplied }: Props) {
     setError(null);
     setPreview(null);
     try {
-      const scope = scopeType === 'task' ? { taskId: scopeTaskId } : undefined;
+      const scope = scopeType === 'objective' ? { objectiveId: scopeObjectiveId } : undefined;
       const result = await previewAiPatch(moduleId, testSetId, { instruction: instruction.trim(), scope });
       setPreview(result);
     } catch (err) {
@@ -86,18 +86,18 @@ export function AiPatchPanel({ moduleId, testSetId, tasks, onApplied }: Props) {
             <span style={{ fontSize: 13, color: '#64748b' }}>Scope:</span>
             <label style={radioLabelStyle}>
               <input type="radio" checked={scopeType === 'all'} onChange={() => setScopeType('all')} />
-              All test cases
+              All objectives
             </label>
             <label style={radioLabelStyle}>
-              <input type="radio" checked={scopeType === 'task'} onChange={() => setScopeType('task')} />
-              Specific task
+              <input type="radio" checked={scopeType === 'objective'} onChange={() => setScopeType('objective')} />
+              Specific objective
             </label>
-            {scopeType === 'task' && (
-              <select style={{ ...inputStyle, width: 'auto', flex: 1 }} value={scopeTaskId}
-                onChange={e => setScopeTaskId(e.target.value)}>
-                {tasks.map(t => (
-                  <option key={t.taskId} value={t.taskId}>
-                    {t.taskId} - {t.taskDescription.slice(0, 60)}
+            {scopeType === 'objective' && (
+              <select style={{ ...inputStyle, width: 'auto', flex: 1 }} value={scopeObjectiveId}
+                onChange={e => setScopeObjectiveId(e.target.value)}>
+                {objectives.filter(o => o.apiSteps.length > 0).map(o => (
+                  <option key={o.id} value={o.id}>
+                    {o.id} - {o.name.slice(0, 60)}
                   </option>
                 ))}
               </select>
@@ -132,8 +132,8 @@ export function AiPatchPanel({ moduleId, testSetId, tasks, onApplied }: Props) {
 
 // ── Diff view ──
 function DiffView({ original, patched }: {
-  original: TestCasePatchEntry[];
-  patched: TestCasePatchEntry[];
+  original: ObjectivePatchEntry[];
+  patched: ObjectivePatchEntry[];
 }) {
   return (
     <div style={{ maxHeight: 400, overflowY: 'auto' }}>
@@ -146,7 +146,7 @@ function DiffView({ original, patched }: {
             <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>
               <strong>{orig.testCase.name}</strong>
               <span style={{ marginLeft: 8, fontSize: 11, color: '#94a3b8' }}>
-                (task: {orig.taskId}, index: {orig.caseIndex})
+                (objective: {orig.objectiveId})
               </span>
             </div>
             <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>

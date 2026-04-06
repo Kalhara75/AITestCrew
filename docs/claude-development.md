@@ -48,7 +48,7 @@ Scaffolds a complete new test agent.
 1. Reads `BaseTestAgent`, `ApiTestAgent`, and `ITestAgent` to understand the patterns
 2. Creates `{TargetType}TestCase.cs` and `{TargetType}TestAgent.cs` in a new `Agents/{TargetType}Agent/` folder
 3. Registers the new agent in `Program.cs`
-4. Handles reuse mode compatibility (`PreloadedTestCases` + `generatedTestCases` in `Metadata`)
+4. Handles reuse mode compatibility (`PreloadedTestCases` + `generatedTestCases` in `Metadata`), returns ONE `TestResult` per objective
 5. Updates `SaveTestSetAsync` in the orchestrator if needed
 6. Builds the solution and fixes any errors
 7. Updates `docs/functional.md` and `docs/architecture.md`
@@ -94,7 +94,7 @@ Adds a new validation rule to an agent's response validation logic.
 **What it does:**
 1. Determines whether the rule is best implemented as rule-based (fast, no LLM cost) or LLM-based (reasoning required)
 2. Adds the check to `ValidateResponseAsync` in the correct location
-3. Extends `ApiTestCase` with a new property if per-test configuration is needed
+3. Extends `ApiTestDefinition` with a new property if per-test configuration is needed
 4. Builds the solution
 5. Updates the Validation section in `docs/functional.md`
 

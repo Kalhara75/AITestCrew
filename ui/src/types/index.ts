@@ -5,7 +5,7 @@ export interface Module {
   createdAt: string;
   updatedAt: string;
   testSetCount: number;
-  totalTestCases: number;
+  totalObjectives: number;
 }
 
 export interface TestSetListItem {
@@ -15,12 +15,48 @@ export interface TestSetListItem {
   objective: string;
   objectives: string[];
   objectiveNames?: Record<string, string>;
-  taskCount: number;
-  testCaseCount: number;
+  objectiveCount: number;
   createdAt: string;
   lastRunAt: string;
   runCount: number;
   lastRunStatus: string | null;
+}
+
+export interface ApiTestDefinition {
+  method: string;
+  endpoint: string;
+  headers: Record<string, string>;
+  queryParams: Record<string, string>;
+  body: unknown;
+  expectedStatus: number;
+  expectedBodyContains: string[];
+  expectedBodyNotContains: string[];
+  isFuzzTest: boolean;
+}
+
+export interface WebUiStep {
+  action: string;
+  selector: string | null;
+  value: string | null;
+  timeoutMs: number;
+}
+
+export interface WebUiTestDefinition {
+  description: string;
+  startUrl: string;
+  steps: WebUiStep[];
+  takeScreenshotOnFailure: boolean;
+}
+
+export interface TestObjective {
+  id: string;
+  name: string;
+  parentObjective: string;
+  agentName: string;
+  targetType: string;
+  apiSteps: ApiTestDefinition[];
+  webUiSteps: WebUiTestDefinition[];
+  stepCount: number;
 }
 
 export interface TestSetDetail {
@@ -34,31 +70,7 @@ export interface TestSetDetail {
   lastRunAt: string;
   runCount: number;
   lastRunStatus: string | null;
-  tasks: TaskEntry[];
-}
-
-export interface WebUiStep {
-  action: string;       // navigate | click | fill | assert-url-contains | assert-title-contains | etc.
-  selector: string | null;
-  value: string | null;
-  timeoutMs: number;
-}
-
-export interface WebUiTestCase {
-  name: string;
-  description: string;
-  startUrl: string;
-  steps: WebUiStep[];
-  takeScreenshotOnFailure: boolean;
-}
-
-export interface TaskEntry {
-  taskId: string;
-  taskDescription: string;
-  agentName: string;
-  objective: string;
-  testCases: ApiTestCase[];
-  webUiTestCases: WebUiTestCase[];
+  testObjectives: TestObjective[];
 }
 
 export interface MoveObjectiveRequest {
@@ -67,6 +79,7 @@ export interface MoveObjectiveRequest {
   destinationTestSetId: string;
 }
 
+// Legacy — kept for AI patch endpoints which still use the flat test case format
 export interface ApiTestCase {
   name: string;
   method: string;
@@ -87,10 +100,10 @@ export interface RunSummary {
   startedAt: string;
   completedAt: string | null;
   totalDuration: string;
-  totalTasks: number;
-  passedTasks: number;
-  failedTasks: number;
-  errorTasks: number;
+  totalObjectives: number;
+  passedObjectives: number;
+  failedObjectives: number;
+  errorObjectives: number;
 }
 
 export interface ExecutionRun {
@@ -104,15 +117,16 @@ export interface ExecutionRun {
   completedAt: string | null;
   totalDuration: string;
   summary: string;
-  totalTasks: number;
-  passedTasks: number;
-  failedTasks: number;
-  errorTasks: number;
-  taskResults: TaskResult[];
+  totalObjectives: number;
+  passedObjectives: number;
+  failedObjectives: number;
+  errorObjectives: number;
+  objectiveResults: ObjectiveResult[];
 }
 
-export interface TaskResult {
-  taskId: string;
+export interface ObjectiveResult {
+  objectiveId: string;
+  objectiveName: string;
   agentName: string;
   status: string;
   summary: string;
@@ -144,15 +158,13 @@ export interface RunStatusResponse {
   error: string | null;
 }
 
-export interface TestCasePatchEntry {
-  taskId: string;
-  caseIndex: number;
+export interface ObjectivePatchEntry {
+  objectiveId: string;
   testCase: ApiTestCase;
 }
 
 export interface AiPatchScope {
-  taskId?: string;
-  caseIndex?: number;
+  objectiveId?: string;
 }
 
 export interface AiPatchRequest {
@@ -161,12 +173,12 @@ export interface AiPatchRequest {
 }
 
 export interface AiPatchPreview {
-  original: TestCasePatchEntry[];
-  patched: TestCasePatchEntry[];
+  original: ObjectivePatchEntry[];
+  patched: ObjectivePatchEntry[];
 }
 
 export interface AiPatchApplyRequest {
-  patches: TestCasePatchEntry[];
+  patches: ObjectivePatchEntry[];
 }
 
 export interface TriggerRunRequest {
@@ -181,4 +193,22 @@ export interface TriggerRunResponse {
   runId: string;
   status: string;
   startedAt: string;
+}
+
+// Legacy types kept for backward compatibility
+export interface WebUiTestCase {
+  name: string;
+  description: string;
+  startUrl: string;
+  steps: WebUiStep[];
+  takeScreenshotOnFailure: boolean;
+}
+
+export interface TaskEntry {
+  taskId: string;
+  taskDescription: string;
+  agentName: string;
+  objective: string;
+  testCases: ApiTestCase[];
+  webUiTestCases: WebUiTestCase[];
 }

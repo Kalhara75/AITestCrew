@@ -10,7 +10,7 @@ AITestCrew is an AI-powered test automation tool that uses a large language mode
 
 1. **Understands your objective** — You provide a plain English description of what to test (e.g. *"Test the /api/products endpoint"*).
 2. **Decomposes the objective** — The LLM breaks it into specific, actionable test tasks.
-3. **Generates test cases** — For each task the LLM creates 5–8 concrete HTTP test cases: happy path, boundary, and error scenarios, using actual response field names discovered from a live pre-flight call.
+3. **Generates test steps** — For each objective the LLM creates 5–8 concrete test steps (HTTP test cases): happy path, boundary, and error scenarios, using actual response field names discovered from a live pre-flight call.
 4. **Executes the tests** — Each test case is sent as a real HTTP request to the target API.
 5. **Validates responses** — A two-stage validation process (rule-based + LLM reasoning) checks status codes, response bodies, and data quality.
 6. **Reports results** — A summary table and an LLM-written narrative are printed to the console. Everything is also written to a timestamped log file.
@@ -20,10 +20,12 @@ AITestCrew is an AI-powered test automation tool that uses a large language mode
 
 ## Modules and Test Sets
 
-Tests are organised into **Modules** and **Test Sets**:
+Tests are organised in a four-level hierarchy: **Module > Test Set > Test Objective (Test Case) > Steps**.
 
 - **Module** — a top-level grouping representing an application area (e.g. "Standing Data Replication (SDR)").
-- **Test Set** — a user-defined container within a module. Test cases from multiple objectives accumulate in a test set over time.
+- **Test Set** — a user-defined container within a module. Multiple test objectives accumulate in a test set over time.
+- **Test Objective (Test Case)** — corresponds to a single user objective (e.g. "Test GET /api/ControlledLoadDecodes"). Contains one or more steps.
+- **Step** — an individual API call (`ApiTestDefinition`) or UI test case (`WebUiTestDefinition`). Each step has its own pass/fail result. The objective's overall status is the aggregate of its steps.
 
 ### Creating Modules and Test Sets (CLI)
 
@@ -49,9 +51,11 @@ dotnet run --project src/AiTestCrew.Runner -- --create-testset sdr "Controlled L
 
 Test cases can be reviewed and modified after generation via two methods:
 
-**Direct edit** — Click any test case row in the test set detail page to open an editor. All fields are editable: name, method, endpoint, headers, query params, body, expected status, and body assertions.
+**Direct edit** — Click any test objective in the test set detail page, then click a specific step to open an editor. All fields are editable: name, method, endpoint, headers, query params, body, expected status, and body assertions. The edit dialog accepts a `stepIndex` to target a specific step within the objective.
 
-**AI edit (natural language patch)** — Click the **AI Edit Test Cases** button above the test case table. Describe the change in plain English (e.g., *"remove the /api/v1 prefix from all endpoints"* or *"change expectedStatus to 200 for the happy path test"*). The system uses the LLM to generate a preview of changes, which you can review field-by-field before applying. Scope can be set to all test cases or a specific task.
+**API endpoint:** `PUT /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId}` (with step index in the request body).
+
+**AI edit (natural language patch)** — Click the **AI Edit Test Cases** button above the test case table. Describe the change in plain English (e.g., *"remove the /api/v1 prefix from all endpoints"* or *"change expectedStatus to 200 for the happy path test"*). The system uses the LLM to generate a preview of changes, which you can review field-by-field before applying. Scope can be set to all objectives or a specific objective.
 
 ---
 
@@ -80,8 +84,8 @@ The `--obj-name` flag assigns a short display name to the objective. This name i
 In module-scoped mode, generated test cases are **merged** into the target test set. Running another objective against the same test set accumulates tests.
 
 Output:
-- Executes 5–8 LLM-generated test cases per task.
-- Saves/merges test cases into the target test set.
+- Executes 5–8 LLM-generated test steps per objective.
+- Saves/merges the objective (with its steps) into the target test set.
 - Prints a results table and LLM summary to the console.
 
 ---
@@ -98,7 +102,7 @@ Or module-scoped:
 dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset controlled-loads --reuse controlled-loads
 ```
 
-- No LLM calls during test generation — uses saved `ApiTestCase` objects directly.
+- No LLM calls during test generation — uses saved `ApiTestDefinition` steps directly.
 - LLM is still used for response validation and the final summary.
 - `RunCount` and `LastRunAt` are updated in the saved file after each reuse run.
 
@@ -120,7 +124,7 @@ dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset controlled-
 
 ### Record (Web UI only)
 
-Record a Web UI test case by interacting with a real browser. The CLI opens a non-headless Chromium window and captures every form fill and button click as exact `WebUiTestCase` steps with verified DOM selectors.
+Record a Web UI test case by interacting with a real browser. The CLI opens a non-headless Chromium window and captures every form fill and button click as exact `WebUiTestDefinition` steps with verified DOM selectors.
 
 ```bash
 dotnet run --project src/AiTestCrew.Runner -- --record \
@@ -146,7 +150,7 @@ Display all saved test sets and exit.
 dotnet run --project src/AiTestCrew.Runner -- --list
 ```
 
-Output includes: ID (slug), module, objective, task count, total test case count, created date, last run date, and total run count.
+Output includes: ID (slug), module, objective, objective count, total step count, created date, last run date, and total run count.
 
 ---
 
@@ -171,7 +175,7 @@ All settings are in `src/AiTestCrew.Runner/appsettings.json` under the `TestEnvi
 | `AuthToken` | Token injected into every request | `null` |
 | `AuthScheme` | `"Bearer"`, `"Basic"`, or `"None"` | `"Bearer"` |
 | `AuthHeaderName` | Header name for auth | `"Authorization"` |
-| `DefaultTimeoutSeconds` | Per-task execution timeout | `300` |
+| `DefaultTimeoutSeconds` | Per-objective execution timeout | `300` |
 | `VerboseLogging` | Show agent-level log lines in console | `true` |
 
 ### Authentication
@@ -194,16 +198,16 @@ If `OpenApiSpecUrl` is set, the spec is fetched before test case generation and 
 
 | Column | Description |
 |---|---|
-| Task ID | 8-character unique identifier for the task |
-| Agent | Which agent executed the task |
+| Objective | 8-character unique identifier for the test objective |
+| Agent | Which agent executed the objective |
 | Status | `Passed` / `Failed` / `Error` / `Skipped` |
-| Steps | `{passed}/{total}` test cases |
-| Summary | LLM-generated one-line summary of the task result |
+| Steps | `{passed}/{total}` steps within the objective |
+| Summary | LLM-generated one-line summary of the objective result |
 
 ### Overall result line
 
 ```
-Overall: PASSED (3/3 tasks) in 01:42
+Overall: PASSED (3/3 objectives) in 01:42
 ```
 
 ### LLM narrative summary
@@ -225,7 +229,7 @@ Regenerate:    dotnet run -- --rebaseline "Test the /api/products endpoint"
 | Location | Contents |
 |---|---|
 | `modules/{moduleId}/module.json` | Module manifest (id, name, description, timestamps) |
-| `modules/{moduleId}/{testSetId}.json` | Module-scoped test set (tasks + test cases + run metadata) |
+| `modules/{moduleId}/{testSetId}.json` | Module-scoped test set (TestObjectives with ApiSteps/WebUiSteps + run metadata) |
 | `testsets/{slug}.json` | Legacy flat test set (auto-migrated to `modules/default/` on first run) |
 | `executions/{testSetId}/{runId}.json` | Execution history for each run |
 | `logs/testrun_{timestamp}.log` | Full trace log of every run including HTTP request/response details |
@@ -236,13 +240,13 @@ All directories are created automatically next to the compiled binary. On first 
 
 ## Test Case Generation
 
-For each task, the LLM generates a mix of:
+For each objective, the LLM generates a mix of test steps:
 
 - **Happy path** — valid inputs, expected success responses
 - **Boundary cases** — empty strings, zero values, maximum lengths
 - **Error cases** — missing required fields, invalid types, wrong data
 
-Each test case specifies:
+Each step specifies:
 - HTTP method and endpoint path
 - Request headers, query parameters, and body
 - Expected HTTP status code
@@ -273,7 +277,7 @@ If rule checks fail, the LLM validation is skipped to save tokens.
 
 ## Fail-Fast Behaviour
 
-If more than 75% of test steps in the first API task return HTTP 404 with zero passing steps, all subsequent API tasks are automatically skipped. This prevents burning LLM tokens when the configured `ApiBaseUrl` is wrong.
+If more than 75% of test steps in the first API objective return HTTP 404 with zero passing steps, all subsequent API objectives are automatically skipped. This prevents burning LLM tokens when the configured `ApiBaseUrl` is wrong.
 
 ---
 
@@ -310,16 +314,26 @@ Click **+ Create Module** to add a new module.
 Shows the test sets within a module as a card grid. Features:
 - **+ Test Set** button to create an empty test set
 - **Run Objective** button to enter an objective, select a target test set, and trigger a Normal-mode run that merges generated tests into the selected set
-- Each test set card shows name, objective count, test case count, run count, and last run status
+- Each test set card shows name, objective count, step count, run count, and last run status
 
-### Test Set Detail
+### Test Set Detail (Master-Detail)
 
-Shows the full test set with:
-- **Objectives list** — all objectives that have contributed test cases. Objectives with a short name display that name with the full text as a tooltip. Each has a **Move** button to relocate the objective (and its tasks) to a different test set/module.
+The test set detail page uses a **master-detail** pattern:
+
+- **Master list** — shows all Test Objectives (test cases) in the set. Each row displays:
+  - Objective name (short name if set, full text as tooltip)
+  - Step count (number of API calls or UI test cases)
+  - Type (API / Web UI)
+  - Status from last run
+  - Last run date
+  - **Move** button to relocate the objective (and its steps) to a different test set/module
+  - **Delete** button to remove the objective (`DELETE /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId}`)
+- **Detail panel** — clicking an objective opens a panel showing:
+  - Its steps (API test definitions or Web UI test definitions), each editable
+  - Execution history for that objective
+  - For API steps: HTTP method (colour-coded), endpoint, test name, expected status code
+  - For Web UI steps: test name, start URL, step count, screenshot-on-failure flag
 - **AI Edit Test Cases button** — opens the AI patch panel for natural language corrections (see [Editing Test Cases](#editing-test-cases))
-- **Test cases table** — adapts to the type of test cases in the set:
-  - *API tests* — HTTP method (colour-coded), endpoint, test name, expected status code. Click any row to open the direct editor.
-  - *Web UI tests* — test name, start URL, step count, screenshot-on-failure flag. Click any row to open the Web UI step editor. If both API and UI tasks exist in the same test set, both tables are shown with labels.
 - **Execution history** — all previous runs with status, pass/fail counts, duration, and date
 - **Trigger buttons** — "Re-run Tests" (reuse mode) and "Rebaseline" (regenerate tests)
 - **Delete Test Set** button — permanently removes the test set and all execution history after confirmation
@@ -327,9 +341,9 @@ Shows the full test set with:
 ### Execution Detail
 
 Shows a single run's results:
-- Overall status, duration, and task pass/fail counts
+- Overall status, duration, and objective pass/fail counts (`totalObjectives`, `passedObjectives`, `failedObjectives`)
 - LLM-generated summary
-- Expandable task sections, each showing individual test steps
+- Expandable objective sections, each showing individual test steps
 - Click a step to expand its full response detail
 
 ### Triggering Runs from the UI
@@ -375,16 +389,16 @@ A confirmation dialog is shown before deletion. This action cannot be undone.
 
 ## Moving Objectives
 
-An objective (and all its associated tasks and test cases) can be moved from one test set to another, including across modules. This is useful for reorganising test cases after they've been generated.
+An objective (and all its associated steps) can be moved from one test set to another, including across modules. This is useful for reorganising test cases after they've been generated.
 
 From the test set detail page, click the **Move** button next to any objective. A dialog allows you to select:
 1. The destination module
 2. The destination test set (within that module)
 
 Moving an objective:
-- Removes the objective and its tasks from the source test set
-- Appends them to the destination test set (deduplicating by task ID)
-- If the source test set has no remaining objectives or tasks after the move, it is deleted automatically
+- Removes the objective and its steps from the source test set
+- Appends them to the destination test set (deduplicating by objective ID)
+- If the source test set has no remaining objectives after the move, it is deleted automatically
 - Execution history is **not** moved — it stays with the original test set
 
 **API:** `POST /api/modules/{moduleId}/testsets/{tsId}/move-objective`
@@ -468,7 +482,7 @@ dotnet run --project src/AiTestCrew.Runner -- --record \
 | `--record` | Activates recording mode |
 | `--module` | Module ID or display name (slugified automatically) |
 | `--testset` | Test set ID or display name (slugified automatically) |
-| `--case-name` | Name for the new `WebUiTestCase` |
+| `--case-name` | Name for the new `WebUiTestDefinition` |
 | `--target` | `UI_Web_MVC` (uses `LegacyWebUiUrl`) or `UI_Web_Blazor` (uses `BraveCloudUiUrl`) |
 
 **What happens:**
@@ -512,7 +526,7 @@ On the test set detail page, the **Web UI Tests** section shows a table with col
 - **+ Add Step** — appends a new blank step
 - **Delete Test Case** button (bottom-left) — removes the entire test case after inline confirmation
 
-Changes are saved via `PUT /api/modules/{moduleId}/testsets/{tsId}/tasks/{taskId}/webuicases/{index}`.
+Changes are saved via `PUT /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId}` (with step index in the request body).
 
 ---
 
@@ -578,8 +592,8 @@ The following are scaffolded in the codebase but not yet active:
 
 | Capability | Status |
 |---|---|
-| Parallel task execution | `MaxParallelAgents` setting exists; sequential only in Phase 1 |
-| Task dependency ordering | `DependsOn` field on `TestTask` exists; not yet enforced |
+| Parallel objective execution | `MaxParallelAgents` setting exists; sequential only in Phase 1 |
+| Objective dependency ordering | `DependsOn` field on `TestTask` exists; not yet enforced |
 | UI testing — WinForms | Target type defined; no agent implemented |
 | Background job testing (Hangfire) | Target type defined; no agent implemented |
 | Message bus testing | Target type defined; no agent implemented |

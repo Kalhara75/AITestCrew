@@ -88,10 +88,10 @@ export function ExecutionDetailPage() {
           paddingTop: 20,
           borderTop: '1px solid #f1f5f9',
         }}>
-          <StatBox label="Total Tasks" value={run.totalTasks} />
-          <StatBox label="Passed" value={run.passedTasks} color="#16a34a" />
-          <StatBox label="Failed" value={run.failedTasks} color={run.failedTasks > 0 ? '#dc2626' : undefined} />
-          {run.errorTasks > 0 && <StatBox label="Errors" value={run.errorTasks} color="#d97706" />}
+          <StatBox label="Total Objectives" value={run.totalObjectives} />
+          <StatBox label="Passed" value={run.passedObjectives} color="#16a34a" />
+          <StatBox label="Failed" value={run.failedObjectives} color={run.failedObjectives > 0 ? '#dc2626' : undefined} />
+          {run.errorObjectives > 0 && <StatBox label="Errors" value={run.errorObjectives} color="#d97706" />}
           <StatBox label="Duration" value={run.totalDuration} mono />
           <StatBox label="Started" value={new Date(run.startedAt).toLocaleString()} />
         </div>
@@ -105,10 +105,10 @@ export function ExecutionDetailPage() {
         </div>
       )}
 
-      {/* Task Results */}
+      {/* Objective Results */}
       <div style={{ marginBottom: 24 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-          <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: '#0f172a' }}>Task Results</h2>
+          <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: '#0f172a' }}>Objective Results</h2>
           <span style={{
             fontSize: 12,
             fontWeight: 600,
@@ -116,12 +116,12 @@ export function ExecutionDetailPage() {
             background: '#f1f5f9',
             padding: '2px 10px',
             borderRadius: 12,
-          }}>{run.taskResults.length}</span>
+          }}>{run.objectiveResults.length}</span>
         </div>
-        {run.taskResults.length === 0 ? (
-          <p style={{ color: '#94a3b8', fontSize: 14 }}>No task results recorded.</p>
+        {run.objectiveResults.length === 0 ? (
+          <p style={{ color: '#94a3b8', fontSize: 14 }}>No objective results recorded.</p>
         ) : (
-          <StepList taskResults={run.taskResults} />
+          <StepList objectiveResults={run.objectiveResults} />
         )}
       </div>
     </div>

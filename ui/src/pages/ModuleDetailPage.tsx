@@ -50,7 +50,7 @@ export function ModuleDetailPage() {
             )}
             <div style={{ display: 'flex', gap: 8 }}>
               <StatPill label="Test Sets" value={module.testSetCount} />
-              <StatPill label="Test Cases" value={module.totalTestCases} />
+              <StatPill label="Objectives" value={module.totalObjectives} />
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>

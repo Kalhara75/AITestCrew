@@ -1,26 +1,29 @@
 import { useState } from 'react';
 import { EditWebUiTestCaseDialog } from './EditWebUiTestCaseDialog';
-import type { WebUiTestCase, TaskEntry } from '../types';
+import type { TestObjective } from '../types';
 
 interface Props {
-  tasks: TaskEntry[];
+  objectives: TestObjective[];
   moduleId?: string;
   testSetId?: string;
   onTestCaseUpdated?: () => void;
 }
 
-export function WebUiTestCaseTable({ tasks, moduleId, testSetId, onTestCaseUpdated }: Props) {
+export function WebUiTestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdated }: Props) {
   const [editing, setEditing] = useState<{
-    tc: WebUiTestCase; taskId: string; caseIndex: number;
+    objective: TestObjective;
+    stepIndex: number;
   } | null>(null);
 
-  const allCases = tasks.flatMap(t =>
-    (t.webUiTestCases ?? []).map((tc, idx) => ({
-      ...tc,
-      taskId: t.taskId,
-      caseIndex: idx,
-    }))
-  );
+  const allCases = objectives
+    .filter(o => o.webUiSteps.length > 0)
+    .flatMap(o => o.webUiSteps.map((step, idx) => ({
+      ...step,
+      objectiveId: o.id,
+      objectiveName: o.name,
+      stepIndex: idx,
+      objective: o,
+    })));
 
   const editable = !!moduleId && !!testSetId;
 
@@ -41,15 +44,15 @@ export function WebUiTestCaseTable({ tasks, moduleId, testSetId, onTestCaseUpdat
           </tr>
         </thead>
         <tbody>
-          {allCases.map((tc, i) => (
+          {allCases.map((tc) => (
             <tr
-              key={i}
+              key={`${tc.objectiveId}-${tc.stepIndex}`}
               style={{ borderBottom: '1px solid #f1f5f9', cursor: editable ? 'pointer' : undefined }}
               onMouseEnter={e => (e.currentTarget.style.background = '#f8fafc')}
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-              onClick={editable ? () => setEditing({ tc, taskId: tc.taskId, caseIndex: tc.caseIndex }) : undefined}
+              onClick={editable ? () => setEditing({ objective: tc.objective, stepIndex: tc.stepIndex }) : undefined}
             >
-              <td style={tdStyle}>{tc.name}</td>
+              <td style={tdStyle}>{tc.objectiveName}</td>
               <td style={{ ...tdStyle, fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 13, color: '#334155' }}>
                 {tc.startUrl || '/'}
               </td>
@@ -82,9 +85,8 @@ export function WebUiTestCaseTable({ tasks, moduleId, testSetId, onTestCaseUpdat
       {editing && moduleId && testSetId && (
         <EditWebUiTestCaseDialog
           open
-          testCase={editing.tc}
-          taskId={editing.taskId}
-          caseIndex={editing.caseIndex}
+          objective={editing.objective}
+          stepIndex={editing.stepIndex}
           moduleId={moduleId}
           testSetId={testSetId}
           onClose={() => setEditing(null)}

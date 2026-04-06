@@ -39,7 +39,9 @@ public class ExecutionHistoryRepository
         var path = Path.Combine(_baseDir, testSetId, $"{runId}.json");
         if (!File.Exists(path)) return null;
         var json = await File.ReadAllTextAsync(path);
-        return JsonSerializer.Deserialize<PersistedExecutionRun>(json, JsonOpts);
+        var run = JsonSerializer.Deserialize<PersistedExecutionRun>(json, JsonOpts);
+        run?.MigrateToV2();
+        return run;
     }
 
     /// <summary>Lists all execution runs for a test set, ordered by StartedAt descending.</summary>
@@ -55,7 +57,11 @@ public class ExecutionHistoryRepository
             {
                 var json = File.ReadAllText(file);
                 var run = JsonSerializer.Deserialize<PersistedExecutionRun>(json, JsonOpts);
-                if (run is not null) result.Add(run);
+                if (run is not null)
+                {
+                    run.MigrateToV2();
+                    result.Add(run);
+                }
             }
             catch { /* skip malformed files */ }
         }

@@ -18,14 +18,68 @@ public class PersistedExecutionRun
     public DateTime? CompletedAt { get; set; }
     public TimeSpan TotalDuration { get; set; }
     public string Summary { get; set; } = "";
-    public int TotalTasks { get; set; }
-    public int PassedTasks { get; set; }
-    public int FailedTasks { get; set; }
-    public int ErrorTasks { get; set; }
-    public List<PersistedTaskResult> TaskResults { get; set; } = [];
 
     /// <summary>
-    /// Converts an in-memory TestSuiteResult to the persisted form.
+    /// Schema version for migration detection.
+    /// Version 1 (or absent): legacy format with TaskResults.
+    /// Version 2: new format with ObjectiveResults.
+    /// </summary>
+    public int SchemaVersion { get; set; }
+
+    // ── v2 fields (objective-based) ──
+    public int TotalObjectives { get; set; }
+    public int PassedObjectives { get; set; }
+    public int FailedObjectives { get; set; }
+    public int ErrorObjectives { get; set; }
+    public List<PersistedObjectiveResult> ObjectiveResults { get; set; } = [];
+
+    // ── v1 legacy fields (kept for deserialization of old runs) ──
+    [Obsolete("Use TotalObjectives instead.")]
+    public int TotalTasks { get; set; }
+    [Obsolete("Use PassedObjectives instead.")]
+    public int PassedTasks { get; set; }
+    [Obsolete("Use FailedObjectives instead.")]
+    public int FailedTasks { get; set; }
+    [Obsolete("Use ErrorObjectives instead.")]
+    public int ErrorTasks { get; set; }
+    [Obsolete("Use ObjectiveResults instead.")]
+    public List<PersistedTaskResult>? TaskResults { get; set; }
+
+    /// <summary>
+    /// Performs in-memory v1→v2 migration when deserializing legacy execution runs.
+    /// </summary>
+    public void MigrateToV2()
+    {
+#pragma warning disable CS0612
+        if (SchemaVersion >= 2) return;
+        if (TaskResults is { Count: > 0 } && ObjectiveResults.Count == 0)
+        {
+            ObjectiveResults = TaskResults.Select(tr => new PersistedObjectiveResult
+            {
+                ObjectiveId = tr.TaskId,
+                ObjectiveName = tr.TaskId, // best we have from v1
+                AgentName = tr.AgentName,
+                Status = tr.Status,
+                Summary = tr.Summary,
+                Duration = tr.Duration,
+                CompletedAt = tr.CompletedAt,
+                PassedSteps = tr.PassedSteps,
+                FailedSteps = tr.FailedSteps,
+                TotalSteps = tr.TotalSteps,
+                Steps = tr.Steps
+            }).ToList();
+
+            TotalObjectives = TotalTasks;
+            PassedObjectives = PassedTasks;
+            FailedObjectives = FailedTasks;
+            ErrorObjectives = ErrorTasks;
+        }
+        SchemaVersion = 2;
+#pragma warning restore CS0612
+    }
+
+    /// <summary>
+    /// Converts an in-memory TestSuiteResult to the persisted form (v2).
     /// </summary>
     public static PersistedExecutionRun FromSuiteResult(
         TestSuiteResult suite, string testSetId, RunMode mode, DateTime startedAt,
@@ -45,13 +99,15 @@ public class PersistedExecutionRun
             CompletedAt = suite.CompletedAt,
             TotalDuration = suite.TotalDuration,
             Summary = suite.Summary,
-            TotalTasks = suite.TotalTasks,
-            PassedTasks = suite.Passed,
-            FailedTasks = suite.Failed,
-            ErrorTasks = suite.Errors,
-            TaskResults = suite.Results.Select(r => new PersistedTaskResult
+            SchemaVersion = 2,
+            TotalObjectives = suite.TotalObjectives,
+            PassedObjectives = suite.Passed,
+            FailedObjectives = suite.Failed,
+            ErrorObjectives = suite.Errors,
+            ObjectiveResults = suite.Results.Select(r => new PersistedObjectiveResult
             {
-                TaskId = r.TaskId,
+                ObjectiveId = r.ObjectiveId,
+                ObjectiveName = r.ObjectiveName,
                 AgentName = r.AgentName,
                 Status = r.Status.ToString(),
                 Summary = r.Summary,
@@ -75,8 +131,28 @@ public class PersistedExecutionRun
 }
 
 /// <summary>
-/// Persisted result of a single task within an execution run.
+/// Persisted result of a single test objective within an execution run.
 /// </summary>
+public class PersistedObjectiveResult
+{
+    public string ObjectiveId { get; set; } = "";
+    public string ObjectiveName { get; set; } = "";
+    public string AgentName { get; set; } = "";
+    public string Status { get; set; } = "";
+    public string Summary { get; set; } = "";
+    public TimeSpan Duration { get; set; }
+    public DateTime CompletedAt { get; set; }
+    public int PassedSteps { get; set; }
+    public int FailedSteps { get; set; }
+    public int TotalSteps { get; set; }
+    public List<PersistedStepResult> Steps { get; set; } = [];
+}
+
+/// <summary>
+/// Legacy: persisted result of a single task (v1 schema).
+/// Kept for deserialization of old execution run files.
+/// </summary>
+[Obsolete("Use PersistedObjectiveResult instead.")]
 public class PersistedTaskResult
 {
     public string TaskId { get; set; } = "";
@@ -92,7 +168,7 @@ public class PersistedTaskResult
 }
 
 /// <summary>
-/// Persisted result of a single test step within a task result.
+/// Persisted result of a single test step within an objective/task result.
 /// </summary>
 public class PersistedStepResult
 {

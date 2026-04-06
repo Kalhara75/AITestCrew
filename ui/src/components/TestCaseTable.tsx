@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { EditTestCaseDialog } from './EditTestCaseDialog';
-import type { TaskEntry, ApiTestCase } from '../types';
+import type { TestObjective } from '../types';
 
 const methodColor: Record<string, { fg: string; bg: string }> = {
   GET:    { fg: '#166534', bg: '#dcfce7' },
@@ -11,25 +11,27 @@ const methodColor: Record<string, { fg: string; bg: string }> = {
 };
 
 interface Props {
-  tasks: TaskEntry[];
+  objectives: TestObjective[];
   moduleId?: string;
   testSetId?: string;
   onTestCaseUpdated?: () => void;
 }
 
-export function TestCaseTable({ tasks, moduleId, testSetId, onTestCaseUpdated }: Props) {
+export function TestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdated }: Props) {
   const [editing, setEditing] = useState<{
-    tc: ApiTestCase; taskId: string; caseIndex: number;
+    objective: TestObjective;
+    stepIndex: number;
   } | null>(null);
 
-  const allCases = tasks.flatMap(t =>
-    t.testCases.map((tc, idx) => ({
-      ...tc,
-      taskId: t.taskId,
-      taskDescription: t.taskDescription,
-      caseIndex: idx,
-    }))
-  );
+  const allCases = objectives
+    .filter(o => o.apiSteps.length > 0)
+    .flatMap(o => o.apiSteps.map((step, idx) => ({
+      ...step,
+      objectiveId: o.id,
+      objectiveName: o.name,
+      stepIndex: idx,
+      objective: o,
+    })));
 
   const editable = !!moduleId && !!testSetId;
 
@@ -47,10 +49,10 @@ export function TestCaseTable({ tasks, moduleId, testSetId, onTestCaseUpdated }:
         </thead>
         <tbody>
           {allCases.map((tc, i) => (
-            <tr key={i} style={{ borderBottom: '1px solid #f1f5f9', cursor: editable ? 'pointer' : undefined }}
+            <tr key={`${tc.objectiveId}-${tc.stepIndex}`} style={{ borderBottom: '1px solid #f1f5f9', cursor: editable ? 'pointer' : undefined }}
               onMouseEnter={e => (e.currentTarget.style.background = '#f8fafc')}
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-              onClick={editable ? () => setEditing({ tc, taskId: tc.taskId, caseIndex: tc.caseIndex }) : undefined}
+              onClick={editable ? () => setEditing({ objective: tc.objective, stepIndex: tc.stepIndex }) : undefined}
             >
               <td style={tdStyle}>
                 {(() => {
@@ -68,7 +70,7 @@ export function TestCaseTable({ tasks, moduleId, testSetId, onTestCaseUpdated }:
                 })()}
               </td>
               <td style={{ ...tdStyle, fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 13, color: '#334155' }}>{tc.endpoint}</td>
-              <td style={{ ...tdStyle, color: '#475569' }}>{tc.name}</td>
+              <td style={{ ...tdStyle, color: '#475569' }}>{tc.objectiveName}</td>
               <td style={tdStyle}>
                 <span style={{
                   fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 13, fontWeight: 600,
@@ -93,9 +95,8 @@ export function TestCaseTable({ tasks, moduleId, testSetId, onTestCaseUpdated }:
       {editing && moduleId && testSetId && (
         <EditTestCaseDialog
           open
-          testCase={editing.tc}
-          taskId={editing.taskId}
-          caseIndex={editing.caseIndex}
+          objective={editing.objective}
+          stepIndex={editing.stepIndex}
           moduleId={moduleId}
           testSetId={testSetId}
           onClose={() => setEditing(null)}

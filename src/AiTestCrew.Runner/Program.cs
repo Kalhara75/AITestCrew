@@ -194,23 +194,38 @@ if (cli.RecordMode)
     var testSet = await tsRepo.LoadAsync(moduleId, testSetId)
                   ?? await tsRepo.CreateEmptyAsync(moduleId, cli.TestSetId);
 
-    // Create or reuse a task entry for recorded UI cases in this test set
-    var taskId = $"recorded-{SlugHelper.ToSlug(cli.CaseName)}";
-    var task   = testSet.Tasks.FirstOrDefault(t => t.TaskId == taskId);
-    if (task is null)
+    // Add recorded test case as a new test objective
+    var objectiveId = $"recorded-{SlugHelper.ToSlug(cli.CaseName)}";
+    var agentName = targetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
+                    ? "Brave Cloud UI Agent" : "Legacy Web UI Agent";
+
+    // Check if an objective with this ID already exists — update it, otherwise add
+    var existingIdx = testSet.TestObjectives.FindIndex(o => o.Id == objectiveId);
+    var uiStep = AiTestCrew.Agents.Shared.WebUiTestDefinition.FromTestCase(recorded);
+
+    if (existingIdx >= 0)
     {
-        task = new AiTestCrew.Agents.Persistence.PersistedTaskEntry
-        {
-            TaskId          = taskId,
-            TaskDescription = $"Recorded: {cli.CaseName}",
-            AgentName       = targetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
-                              ? "Brave Cloud UI Agent" : "Legacy Web UI Agent",
-            Objective       = cli.CaseName,
-            TargetType      = targetType
-        };
-        testSet.Tasks.Add(task);
+        // Add this recording as a new step to the existing objective
+        testSet.TestObjectives[existingIdx].WebUiSteps.Add(uiStep);
     }
-    task.WebUiTestCases.Add(recorded);
+    else
+    {
+        // Create a new objective with this recording as its first step
+        var testObj = new AiTestCrew.Agents.Persistence.TestObjective
+        {
+            Id              = objectiveId,
+            Name            = cli.CaseName,
+            ParentObjective = cli.CaseName,
+            AgentName       = agentName,
+            TargetType      = targetType,
+            WebUiSteps      = [uiStep]
+        };
+        testSet.TestObjectives.Add(testObj);
+    }
+
+    if (!testSet.Objectives.Contains(cli.CaseName, StringComparer.OrdinalIgnoreCase))
+        testSet.Objectives.Add(cli.CaseName);
+
     await tsRepo.SaveAsync(testSet, moduleId);
 
     // Print captured steps
@@ -240,6 +255,7 @@ if (cli.RecordMode)
 
 // ── Migrate legacy test sets to module structure (idempotent) ──
 await MigrationHelper.MigrateToModulesAsync(AppContext.BaseDirectory);
+await MigrationHelper.MigrateToSchemaV2Async(AppContext.BaseDirectory);
 
 // ── Build host ──
 // Use AppContext.BaseDirectory (the binary output dir) as content root so that
@@ -383,7 +399,7 @@ await AnsiConsole.Status()
 // ── Results table ──
 var table = new Table()
     .Border(TableBorder.Rounded)
-    .AddColumn("[bold]Task ID[/]")
+    .AddColumn("[bold]Objective[/]")
     .AddColumn("[bold]Agent[/]")
     .AddColumn("[bold]Status[/]")
     .AddColumn("[bold]Steps[/]")
@@ -400,7 +416,7 @@ foreach (var r in suiteResult!.Results)
     };
     var summary = r.Summary.Length > 80 ? r.Summary[..80] + "…" : r.Summary;
     table.AddRow(
-        r.TaskId,
+        r.ObjectiveId,
         r.AgentName,
         $"[{statusColor}]{r.Status}[/]",
         $"{r.PassedSteps}/{r.Steps.Count}",
@@ -414,7 +430,7 @@ var overallColor = suiteResult.AllPassed ? "green" : "red";
 var overallLabel = suiteResult.AllPassed ? "PASSED" : "FAILED";
 AnsiConsole.MarkupLine(
     $"\n[bold]Overall:[/] [{overallColor}]{overallLabel}[/] " +
-    $"({suiteResult.Passed}/{suiteResult.TotalTasks} tasks) " +
+    $"({suiteResult.Passed}/{suiteResult.TotalObjectives} objectives) " +
     $"in {suiteResult.TotalDuration:mm\\:ss}");
 
 AnsiConsole.MarkupLine($"\n[italic grey]{suiteResult.Summary}[/]");

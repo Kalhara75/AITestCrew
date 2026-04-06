@@ -36,6 +36,14 @@ public class TestSetRepository
     /// </summary>
     public static string SlugFromObjective(string objective) => SlugHelper.ToSlug(objective);
 
+    /// <summary>Loads and ensures v2 migration for a test set.</summary>
+    private static PersistedTestSet? EnsureV2(PersistedTestSet? ts)
+    {
+        if (ts is null) return null;
+        ts.MigrateLegacyObjective();
+        return ts;
+    }
+
     // ─────────────────────────────────────────────────────
     // Legacy (flat) operations — testsets/{id}.json
     // ─────────────────────────────────────────────────────
@@ -54,9 +62,7 @@ public class TestSetRepository
         var path = LegacyFilePath(id);
         if (!File.Exists(path)) return null;
         var json = await File.ReadAllTextAsync(path);
-        var ts = JsonSerializer.Deserialize<PersistedTestSet>(json, JsonOpts);
-        ts?.MigrateLegacyObjective();
-        return ts;
+        return EnsureV2(JsonSerializer.Deserialize<PersistedTestSet>(json, JsonOpts));
     }
 
     /// <summary>
@@ -75,12 +81,8 @@ public class TestSetRepository
                 try
                 {
                     var json = File.ReadAllText(file);
-                    var ts = JsonSerializer.Deserialize<PersistedTestSet>(json, JsonOpts);
-                    if (ts is not null)
-                    {
-                        ts.MigrateLegacyObjective();
-                        result.Add(ts);
-                    }
+                    var ts = EnsureV2(JsonSerializer.Deserialize<PersistedTestSet>(json, JsonOpts));
+                    if (ts is not null) result.Add(ts);
                 }
                 catch { /* skip malformed */ }
             }
@@ -98,12 +100,8 @@ public class TestSetRepository
                     try
                     {
                         var json = File.ReadAllText(file);
-                        var ts = JsonSerializer.Deserialize<PersistedTestSet>(json, JsonOpts);
-                        if (ts is not null)
-                        {
-                            ts.MigrateLegacyObjective();
-                            result.Add(ts);
-                        }
+                        var ts = EnsureV2(JsonSerializer.Deserialize<PersistedTestSet>(json, JsonOpts));
+                        if (ts is not null) result.Add(ts);
                     }
                     catch { /* skip malformed */ }
                 }
@@ -150,9 +148,7 @@ public class TestSetRepository
         var path = ModuleFilePath(moduleId, testSetId);
         if (!File.Exists(path)) return null;
         var json = await File.ReadAllTextAsync(path);
-        var ts = JsonSerializer.Deserialize<PersistedTestSet>(json, JsonOpts);
-        ts?.MigrateLegacyObjective();
-        return ts;
+        return EnsureV2(JsonSerializer.Deserialize<PersistedTestSet>(json, JsonOpts));
     }
 
     /// <summary>Lists all test sets within a specific module, ordered by creation date descending.</summary>
@@ -169,12 +165,8 @@ public class TestSetRepository
             try
             {
                 var json = File.ReadAllText(file);
-                var ts = JsonSerializer.Deserialize<PersistedTestSet>(json, JsonOpts);
-                if (ts is not null)
-                {
-                    ts.MigrateLegacyObjective();
-                    result.Add(ts);
-                }
+                var ts = EnsureV2(JsonSerializer.Deserialize<PersistedTestSet>(json, JsonOpts));
+                if (ts is not null) result.Add(ts);
             }
             catch { /* skip malformed */ }
         }
@@ -191,30 +183,31 @@ public class TestSetRepository
             Id = id,
             Name = name,
             ModuleId = moduleId,
+            SchemaVersion = 2,
             CreatedAt = DateTime.UtcNow,
             LastRunAt = default,
             RunCount = 0,
             Objectives = [],
-            Tasks = []
+            TestObjectives = []
         };
         await SaveAsync(testSet, moduleId);
         return testSet;
     }
 
     /// <summary>
-    /// Merges new task entries into an existing test set within a module.
-    /// Appends tasks (deduplicating by TaskId) and adds the objective if not already present.
+    /// Merges new test objectives into an existing test set within a module.
+    /// Appends objectives (deduplicating by Id) and adds the user objective if not already present.
     /// </summary>
-    public async Task MergeTasksAsync(
+    public async Task MergeObjectivesAsync(
         string moduleId, string testSetId,
-        List<PersistedTaskEntry> newTasks, string objective,
+        List<TestObjective> newObjectives, string objective,
         string? objectiveName = null)
     {
         var testSet = await LoadAsync(moduleId, testSetId)
             ?? throw new InvalidOperationException(
                 $"Test set '{testSetId}' not found in module '{moduleId}'.");
 
-        // Add objective if not already tracked
+        // Add user objective if not already tracked
         if (!testSet.Objectives.Contains(objective, StringComparer.OrdinalIgnoreCase))
             testSet.Objectives.Add(objective);
 
@@ -222,12 +215,12 @@ public class TestSetRepository
         if (!string.IsNullOrWhiteSpace(objectiveName))
             testSet.ObjectiveNames[objective] = objectiveName;
 
-        // Append tasks, deduplicating by TaskId
-        var existingIds = testSet.Tasks.Select(t => t.TaskId).ToHashSet();
-        foreach (var task in newTasks)
+        // Append objectives, deduplicating by Id
+        var existingIds = testSet.TestObjectives.Select(o => o.Id).ToHashSet();
+        foreach (var obj in newObjectives)
         {
-            if (!existingIds.Contains(task.TaskId))
-                testSet.Tasks.Add(task);
+            if (!existingIds.Contains(obj.Id))
+                testSet.TestObjectives.Add(obj);
         }
 
         testSet.LastRunAt = DateTime.UtcNow;
@@ -254,8 +247,8 @@ public class TestSetRepository
     }
 
     /// <summary>
-    /// Moves all tasks belonging to an objective from one test set to another (cross-module).
-    /// Removes the objective and its tasks from the source, appends to the destination.
+    /// Moves all test objectives belonging to a user objective from one test set to another (cross-module).
+    /// Removes the objective and its test objectives from the source, appends to the destination.
     /// </summary>
     public async Task MoveObjectiveAsync(
         string sourceModuleId, string sourceTestSetId,
@@ -267,27 +260,27 @@ public class TestSetRepository
             ?? throw new InvalidOperationException(
                 $"Source test set '{sourceTestSetId}' not found in module '{sourceModuleId}'.");
 
-        // Extract tasks belonging to the objective
-        var tasksToMove = source.Tasks
-            .Where(t => string.Equals(t.Objective, objective, StringComparison.OrdinalIgnoreCase))
+        // Extract test objectives belonging to the user objective
+        var objectivesToMove = source.TestObjectives
+            .Where(o => string.Equals(o.ParentObjective, objective, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
-        if (tasksToMove.Count == 0)
+        if (objectivesToMove.Count == 0)
             throw new InvalidOperationException(
-                $"No tasks found for objective '{objective}' in test set '{sourceTestSetId}'.");
+                $"No test objectives found for objective '{objective}' in test set '{sourceTestSetId}'.");
 
         // Capture the short display name before removing from source
         source.ObjectiveNames.TryGetValue(objective, out var objectiveName);
 
         // Remove from source
-        source.Tasks.RemoveAll(t =>
-            string.Equals(t.Objective, objective, StringComparison.OrdinalIgnoreCase));
+        source.TestObjectives.RemoveAll(o =>
+            string.Equals(o.ParentObjective, objective, StringComparison.OrdinalIgnoreCase));
         source.Objectives.RemoveAll(o =>
             string.Equals(o, objective, StringComparison.OrdinalIgnoreCase));
         source.ObjectiveNames.Remove(objective);
 
         // Save or delete source
-        if (source.Tasks.Count == 0 && source.Objectives.Count == 0)
+        if (source.TestObjectives.Count == 0 && source.Objectives.Count == 0)
             await DeleteAsync(sourceModuleId, sourceTestSetId);
         else
             await SaveAsync(source, sourceModuleId);
@@ -297,15 +290,15 @@ public class TestSetRepository
             ?? throw new InvalidOperationException(
                 $"Destination test set '{destTestSetId}' not found in module '{destModuleId}'.");
 
-        // Append tasks (dedup by TaskId)
-        var existingIds = dest.Tasks.Select(t => t.TaskId).ToHashSet();
-        foreach (var task in tasksToMove)
+        // Append objectives (dedup by Id)
+        var existingIds = dest.TestObjectives.Select(o => o.Id).ToHashSet();
+        foreach (var obj in objectivesToMove)
         {
-            if (!existingIds.Contains(task.TaskId))
-                dest.Tasks.Add(task);
+            if (!existingIds.Contains(obj.Id))
+                dest.TestObjectives.Add(obj);
         }
 
-        // Add objective if not present
+        // Add user objective if not present
         if (!dest.Objectives.Contains(objective, StringComparer.OrdinalIgnoreCase))
             dest.Objectives.Add(objective);
 

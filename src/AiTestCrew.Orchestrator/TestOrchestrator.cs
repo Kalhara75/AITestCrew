@@ -13,22 +13,11 @@ using AiTestCrew.Core.Models;
 namespace AiTestCrew.Orchestrator;
 
 /// <summary>
-/// Phase 1 orchestrator: takes a natural language objective,
-/// decomposes it into tasks, routes each to the right agent,
-/// and aggregates results.
+/// Orchestrator: takes a natural language objective, decomposes it into tasks,
+/// routes each to the right agent, and aggregates results.
 ///
-/// Supports three run modes:
-/// - Normal: decompose via LLM, generate test cases, save test set, execute
-/// - Reuse: load saved test set, execute without LLM generation
-/// - Rebaseline: decompose via LLM, generate fresh test cases, overwrite saved test set, execute
-///
-/// When moduleId and targetTestSetId are provided, operates in module-scoped mode:
-/// - Normal: generates test cases and merges them into the target test set
-/// - Reuse: loads from module directory
-/// - Rebaseline: regenerates and overwrites within the module
-///
-/// In later phases, this will handle parallel execution,
-/// dependency ordering, retry logic, and adaptive re-planning.
+/// Each user objective produces ONE TestObjective in persistence.
+/// The agent-generated test cases (API calls, UI flows) become steps within that objective.
 /// </summary>
 public class TestOrchestrator
 {
@@ -61,13 +50,6 @@ public class TestOrchestrator
     /// <summary>
     /// Run the full test flow: decompose → route → execute → report.
     /// </summary>
-    /// <param name="objective">Natural language test objective.</param>
-    /// <param name="mode">Run mode (Normal, Reuse, Rebaseline).</param>
-    /// <param name="reuseId">Test set ID for Reuse mode (legacy flat).</param>
-    /// <param name="ct">Cancellation token.</param>
-    /// <param name="externalRunId">Optional pre-assigned run ID (from WebApi).</param>
-    /// <param name="moduleId">Target module for module-scoped operations.</param>
-    /// <param name="targetTestSetId">Target test set within the module.</param>
     public async Task<TestSuiteResult> RunAsync(
         string objective,
         RunMode mode = RunMode.Normal,
@@ -82,9 +64,9 @@ public class TestOrchestrator
         var startedAt = DateTime.UtcNow;
         var isModuleScoped = !string.IsNullOrEmpty(moduleId) && !string.IsNullOrEmpty(targetTestSetId);
 
-        _logger.LogInformation("���══════════════════════════════════════════╗");
+        _logger.LogInformation("╔══════════════════════════════════════════╗");
         _logger.LogInformation("║  AI TEST CREW - Starting Test Run        ║");
-        _logger.LogInformation("��═════════════��════════════════════════════╝");
+        _logger.LogInformation("╚══════════════════════════════════════════╝");
         _logger.LogInformation("Objective: {Obj}", objective);
         _logger.LogInformation("Mode: {Mode}", mode);
         if (isModuleScoped)
@@ -123,7 +105,8 @@ public class TestOrchestrator
                     [
                         new TestResult
                         {
-                            TaskId = "n/a",
+                            ObjectiveId = "n/a",
+                            ObjectiveName = "Error",
                             AgentName = "Orchestrator",
                             Status = TestStatus.Error,
                             Summary = errorMsg
@@ -136,25 +119,27 @@ public class TestOrchestrator
 
             // Use the original objective stored in the test set
             objective = saved.Objective;
-            _logger.LogInformation("Reuse mode: loaded test set '{Id}' (run #{Run}, {Count} tasks)",
-                saved.Id, saved.RunCount + 1, saved.Tasks.Count);
+            _logger.LogInformation("Reuse mode: loaded test set '{Id}' (run #{Run}, {Count} objectives)",
+                saved.Id, saved.RunCount + 1, saved.TestObjectives.Count);
 
-            // Restore tasks with pre-loaded test cases injected into Parameters
-            tasks = saved.Tasks.Select(entry =>
+            // Build tasks from saved objectives — one task per objective, injecting its steps
+            tasks = saved.TestObjectives.Select(obj =>
             {
-                var targetType = Enum.TryParse<TestTargetType>(entry.TargetType, out var t)
+                var targetType = Enum.TryParse<TestTargetType>(obj.TargetType, out var t)
                     ? t : TestTargetType.API_REST;
 
                 var parameters = new Dictionary<string, object>();
-                if (entry.WebUiTestCases.Count > 0)
-                    parameters["PreloadedTestCases"] = entry.WebUiTestCases;
+                if (obj.WebUiSteps.Count > 0)
+                    parameters["PreloadedTestCases"] = obj.WebUiSteps
+                        .Select(s => s.ToTestCase(s.Description)).ToList();
                 else
-                    parameters["PreloadedTestCases"] = entry.TestCases;
+                    parameters["PreloadedTestCases"] = obj.ApiSteps
+                        .Select(s => s.ToTestCase("")).ToList();
 
                 return new TestTask
                 {
-                    Id = entry.TaskId,
-                    Description = entry.TaskDescription,
+                    Id = obj.Id,
+                    Description = obj.Name,
                     Target = targetType,
                     Parameters = parameters
                 };
@@ -162,7 +147,7 @@ public class TestOrchestrator
         }
         else
         {
-            // ��─ Normal / Rebaseline: decompose via LLM ──
+            // ── Normal / Rebaseline: decompose via LLM ──
             tasks = await DecomposeObjectiveAsync(objective, ct);
             _logger.LogInformation("Decomposed into {Count} tasks:", tasks.Count);
             foreach (var t in tasks)
@@ -172,9 +157,10 @@ public class TestOrchestrator
             }
         }
 
-        // ── Execute each task (sequential in Phase 1) ──
+        // ── Execute each task (sequential) ──
+        // Each agent returns ONE TestResult per task with N steps inside.
         var results = new List<TestResult>();
-        bool endpointUnreachable = false; // fail-fast flag
+        bool endpointUnreachable = false;
 
         foreach (var task in tasks)
         {
@@ -187,7 +173,8 @@ public class TestOrchestrator
                     task.Id, task.Target);
                 results.Add(new TestResult
                 {
-                    TaskId = task.Id,
+                    ObjectiveId = task.Id,
+                    ObjectiveName = task.Description,
                     AgentName = "None",
                     Status = TestStatus.Skipped,
                     Summary = $"No agent available for target type: {task.Target}"
@@ -204,10 +191,11 @@ public class TestOrchestrator
                     task.Id);
                 results.Add(new TestResult
                 {
-                    TaskId    = task.Id,
-                    AgentName = agent.Name,
-                    Status    = TestStatus.Skipped,
-                    Summary   = "Skipped: base URL appears unreachable — check ApiBaseUrl in appsettings.json"
+                    ObjectiveId   = task.Id,
+                    ObjectiveName = task.Description,
+                    AgentName     = agent.Name,
+                    Status        = TestStatus.Skipped,
+                    Summary       = "Skipped: base URL appears unreachable — check ApiBaseUrl in appsettings.json"
                 });
                 continue;
             }
@@ -225,8 +213,7 @@ public class TestOrchestrator
                 _logger.LogInformation("[{Id}] Result: {Status} ({Passed}/{Total} steps passed)",
                     task.Id, result.Status, result.PassedSteps, result.Steps.Count);
 
-                // Detect consistent 404: if >75% of executed steps mention "got 404"
-                // and 0 steps passed, the base URL is almost certainly wrong.
+                // Detect consistent 404
                 if (result.Status is TestStatus.Failed or TestStatus.Error
                     && result.PassedSteps == 0
                     && result.Steps.Count > 0)
@@ -248,10 +235,11 @@ public class TestOrchestrator
             {
                 results.Add(new TestResult
                 {
-                    TaskId    = task.Id,
-                    AgentName = agent.Name,
-                    Status    = TestStatus.Error,
-                    Summary   = $"Task timed out after {task.Timeout.TotalSeconds}s"
+                    ObjectiveId   = task.Id,
+                    ObjectiveName = task.Description,
+                    AgentName     = agent.Name,
+                    Status        = TestStatus.Error,
+                    Summary       = $"Task timed out after {task.Timeout.TotalSeconds}s"
                 });
             }
         }
@@ -260,12 +248,12 @@ public class TestOrchestrator
         if (mode is RunMode.Normal or RunMode.Rebaseline)
         {
             if (isModuleScoped)
-                await SaveTestSetToModuleAsync(objective, tasks, results, moduleId!, targetTestSetId!, mode, objectiveName);
+                await SaveTestSetToModuleAsync(objective, results, moduleId!, targetTestSetId!, mode, objectiveName);
             else
-                await SaveTestSetAsync(objective, tasks, results, objectiveName);
+                await SaveTestSetAsync(objective, results, objectiveName);
         }
 
-        // ─��� Update run statistics (Reuse mode) ──
+        // ── Update run statistics (Reuse mode) ──
         if (mode == RunMode.Reuse)
         {
             if (isModuleScoped)
@@ -277,9 +265,9 @@ public class TestOrchestrator
         // ── Generate summary ──
         var summary = await GenerateSummaryAsync(objective, results, ct);
 
-        _logger.LogInformation("╔══════════════════════════════════��═══════╗");
+        _logger.LogInformation("╔══════════════════════════════════════════╗");
         _logger.LogInformation("║  TEST RUN COMPLETE                       ║");
-        _logger.LogInformation("���══════════════════════════════════════════��");
+        _logger.LogInformation("╚══════════════════════════════════════════╝");
         _logger.LogInformation("Duration: {Dur}", sw.Elapsed);
 
         var suiteResult = new TestSuiteResult
@@ -314,17 +302,17 @@ public class TestOrchestrator
         return suiteResult;
     }
 
-    // ─────────────────────────���───────────────────────────
+    // ─────────────────────────────────────────────────────
     // Persistence
-    // ───────────────────────────────────────────────���─────
+    // ─────────────────────────────────────────────────────
 
     /// <summary>Save test set to legacy flat directory.</summary>
     private async Task SaveTestSetAsync(
-        string objective, List<TestTask> tasks, List<TestResult> results,
+        string objective, List<TestResult> results,
         string? objectiveName = null)
     {
-        var entries = ExtractTaskEntries(tasks, results, objective);
-        if (entries.Count == 0)
+        var testObjective = BuildObjectiveFromResults(objective, results, objectiveName);
+        if (testObjective is null)
         {
             _logger.LogWarning("No test cases were generated — test set will not be saved.");
             return;
@@ -335,11 +323,13 @@ public class TestOrchestrator
         {
             Id = slug,
             Name = objective,
+            ModuleId = "",
+            SchemaVersion = 2,
             Objectives = [objective],
             CreatedAt = DateTime.UtcNow,
             LastRunAt = DateTime.UtcNow,
             RunCount = 1,
-            Tasks = entries
+            TestObjectives = [testObjective]
         };
 
         if (!string.IsNullOrWhiteSpace(objectiveName))
@@ -351,12 +341,12 @@ public class TestOrchestrator
 
     /// <summary>Save/merge test set into a module directory.</summary>
     private async Task SaveTestSetToModuleAsync(
-        string objective, List<TestTask> tasks, List<TestResult> results,
+        string objective, List<TestResult> results,
         string moduleId, string testSetId, RunMode mode,
         string? objectiveName = null)
     {
-        var entries = ExtractTaskEntries(tasks, results, objective);
-        if (entries.Count == 0)
+        var testObjective = BuildObjectiveFromResults(objective, results, objectiveName);
+        if (testObjective is null)
         {
             _logger.LogWarning("No test cases were generated — test set will not be updated.");
             return;
@@ -364,21 +354,17 @@ public class TestOrchestrator
 
         if (mode == RunMode.Rebaseline)
         {
-            // Rebaseline: replace only the tasks belonging to the specified objective,
-            // keeping tasks from other objectives intact.
             var existing = await _testSetRepo.LoadAsync(moduleId, testSetId);
 
-            // Keep tasks from other objectives
-            var tasksFromOtherObjectives = existing?.Tasks
-                .Where(t => !string.Equals(t.Objective, objective, StringComparison.OrdinalIgnoreCase))
+            // Keep objectives from other user objectives
+            var objectivesFromOthers = existing?.TestObjectives
+                .Where(o => !string.Equals(o.ParentObjective, objective, StringComparison.OrdinalIgnoreCase))
                 .ToList() ?? [];
 
-            // Preserve the full objectives list, ensuring the rebaselined one is present
-            var objectives = existing?.Objectives.ToList() ?? [];
-            if (!objectives.Contains(objective, StringComparer.OrdinalIgnoreCase))
-                objectives.Add(objective);
+            var userObjectives = existing?.Objectives.ToList() ?? [];
+            if (!userObjectives.Contains(objective, StringComparer.OrdinalIgnoreCase))
+                userObjectives.Add(objective);
 
-            // Preserve existing objective names and update if new name provided
             var objectiveNames = existing?.ObjectiveNames ?? new Dictionary<string, string>();
             if (!string.IsNullOrWhiteSpace(objectiveName))
                 objectiveNames[objective] = objectiveName;
@@ -388,12 +374,13 @@ public class TestOrchestrator
                 Id = testSetId,
                 Name = existing?.Name ?? testSetId,
                 ModuleId = moduleId,
-                Objectives = objectives,
+                SchemaVersion = 2,
+                Objectives = userObjectives,
                 ObjectiveNames = objectiveNames,
                 CreatedAt = existing?.CreatedAt ?? DateTime.UtcNow,
                 LastRunAt = DateTime.UtcNow,
                 RunCount = (existing?.RunCount ?? 0) + 1,
-                Tasks = [..tasksFromOtherObjectives, ..entries]
+                TestObjectives = [..objectivesFromOthers, testObjective]
             };
             await _testSetRepo.SaveAsync(testSet, moduleId);
             _logger.LogInformation("Test set rebaselined (objective: {Obj}): {Module}/{Id}",
@@ -402,52 +389,69 @@ public class TestOrchestrator
         else
         {
             // Normal: merge into existing test set
-            await _testSetRepo.MergeTasksAsync(moduleId, testSetId, entries, objective, objectiveName);
-            _logger.LogInformation("Test cases merged into: {Module}/{Id}", moduleId, testSetId);
+            await _testSetRepo.MergeObjectivesAsync(moduleId, testSetId, [testObjective], objective, objectiveName);
+            _logger.LogInformation("Test objective merged into: {Module}/{Id}", moduleId, testSetId);
         }
     }
 
-    private static List<PersistedTaskEntry> ExtractTaskEntries(
-        List<TestTask> tasks, List<TestResult> results, string objective = "")
+    /// <summary>
+    /// Builds ONE TestObjective from all agent results for a given user objective.
+    /// All generated test cases across all tasks become steps within this objective.
+    /// </summary>
+    private static TestObjective? BuildObjectiveFromResults(
+        string objective, List<TestResult> results, string? objectiveName)
     {
-        var entries = new List<PersistedTaskEntry>();
+        var apiSteps = new List<ApiTestDefinition>();
+        var webUiSteps = new List<WebUiTestDefinition>();
+        var agentName = "";
+        var targetType = "API_REST";
 
         foreach (var r in results)
         {
-            if (!r.Metadata.TryGetValue("generatedTestCases", out var v)) continue;
+            agentName = r.AgentName;
 
-            var entry = new PersistedTaskEntry
+            if (r.Metadata.TryGetValue("generatedTestCases", out var v))
             {
-                TaskId = r.TaskId,
-                TaskDescription = tasks.FirstOrDefault(t => t.Id == r.TaskId)?.Description ?? r.TaskId,
-                AgentName = r.AgentName,
-                Objective = objective,
-                TargetType = tasks.FirstOrDefault(t => t.Id == r.TaskId)?.Target.ToString() ?? "API_REST"
-            };
-
-            if (v is List<ApiTestCase> apiCases && apiCases.Count > 0)
-            {
-                entry.TestCases = apiCases;
-                entries.Add(entry);
-            }
-            else if (v is List<WebUiTestCase> uiCases && uiCases.Count > 0)
-            {
-                entry.WebUiTestCases = uiCases;
-                entries.Add(entry);
+                if (v is List<ApiTestCase> apiCases)
+                {
+                    targetType = "API_REST";
+                    foreach (var tc in apiCases)
+                        apiSteps.Add(ApiTestDefinition.FromTestCase(tc));
+                }
+                else if (v is List<WebUiTestCase> uiCases)
+                {
+                    targetType = "UI_Web_MVC";
+                    foreach (var tc in uiCases)
+                        webUiSteps.Add(WebUiTestDefinition.FromTestCase(tc));
+                }
             }
         }
 
-        return entries;
+        if (apiSteps.Count == 0 && webUiSteps.Count == 0)
+            return null;
+
+        var displayName = !string.IsNullOrWhiteSpace(objectiveName)
+            ? objectiveName
+            : objective.Length <= 80
+                ? objective
+                : string.Concat(objective.AsSpan(0, 77), "...");
+
+        return new TestObjective
+        {
+            Id = SlugHelper.ToSlug(objective),
+            Name = displayName,
+            ParentObjective = objective,
+            AgentName = agentName,
+            TargetType = targetType,
+            ApiSteps = apiSteps,
+            WebUiSteps = webUiSteps
+        };
     }
 
-    // ─────���───────────────────────��───────────────────────
+    // ─────────────────────────────────────────────────────
     // LLM helpers
-    // ──────────────���──────────────────────────────────────
+    // ─────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Use the LLM to decompose a natural language objective
-    /// into concrete, typed test tasks.
-    /// </summary>
     private async Task<List<TestTask>> DecomposeObjectiveAsync(
         string objective, CancellationToken ct)
     {
@@ -525,7 +529,6 @@ public class TestOrchestrator
         {
             _logger.LogError("Failed to parse decomposed tasks: {Err}\nRaw: {Raw}",
                 ex.Message, cleaned);
-            // Fallback: treat the entire objective as one API task
             return
             [
                 new TestTask
@@ -583,7 +586,6 @@ public class TestOrchestrator
             : cleaned;
     }
 
-    // DTO for deserialising the LLM's decomposed tasks
     private record TaskDto(
         string Description,
         string Target,

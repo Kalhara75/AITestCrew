@@ -17,8 +17,7 @@ public static class TestSetEndpoints
                     ts.Id,
                     ts.Objective,
                     ts.ObjectiveNames,
-                    TaskCount = ts.Tasks.Count,
-                    TestCaseCount = ts.Tasks.Sum(t => t.TestCases.Count),
+                    ObjectiveCount = ts.TestObjectives.Count,
                     ts.CreatedAt,
                     ts.LastRunAt,
                     ts.RunCount,
@@ -43,7 +42,7 @@ public static class TestSetEndpoints
                 testSet.LastRunAt,
                 testSet.RunCount,
                 LastRunStatus = latestRun?.Status,
-                testSet.Tasks
+                testSet.TestObjectives
             });
         });
 
@@ -58,10 +57,10 @@ public static class TestSetEndpoints
                 r.StartedAt,
                 r.CompletedAt,
                 r.TotalDuration,
-                r.TotalTasks,
-                r.PassedTasks,
-                r.FailedTasks,
-                r.ErrorTasks
+                r.TotalObjectives,
+                r.PassedObjectives,
+                r.FailedObjectives,
+                r.ErrorObjectives
             });
             return Results.Ok(result);
         });

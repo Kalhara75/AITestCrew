@@ -8,7 +8,7 @@ namespace AiTestCrew.Agents.Persistence;
 /// Root envelope persisted to disk as a JSON file.
 /// In module mode: modules/{moduleId}/{testSetId}.json
 /// Legacy mode: testsets/{id}.json
-/// A test set can accumulate test cases from multiple objectives over time.
+/// A test set can accumulate test objectives from multiple user objectives over time.
 /// </summary>
 public class PersistedTestSet
 {
@@ -21,7 +21,7 @@ public class PersistedTestSet
     /// <summary>The module this test set belongs to (empty for legacy test sets).</summary>
     public string ModuleId { get; set; } = "";
 
-    /// <summary>All objectives that have contributed test cases to this test set.</summary>
+    /// <summary>All user objectives that have contributed test objectives to this test set.</summary>
     public List<string> Objectives { get; set; } = [];
 
     /// <summary>
@@ -53,8 +53,22 @@ public class PersistedTestSet
     /// </summary>
     public Dictionary<string, string> ObjectiveNames { get; set; } = new();
 
-    /// <summary>One entry per decomposed task, each holding its generated test cases.</summary>
-    public List<PersistedTaskEntry> Tasks { get; set; } = [];
+    /// <summary>
+    /// Schema version for migration detection.
+    /// Version 1 (or absent): legacy format with Tasks containing test cases.
+    /// Version 2: new format with flat TestObjectives list.
+    /// </summary>
+    public int SchemaVersion { get; set; }
+
+    /// <summary>Flat list of individually runnable test objectives (v2 schema).</summary>
+    public List<TestObjective> TestObjectives { get; set; } = [];
+
+    /// <summary>
+    /// Legacy task entries — populated only when deserializing v1 JSON files.
+    /// Null/empty in v2 files. Kept for migration deserialization.
+    /// </summary>
+    [Obsolete("Use TestObjectives instead. Tasks is only used for v1 migration.")]
+    public List<PersistedTaskEntry>? Tasks { get; set; }
 
     /// <summary>
     /// Returns the short display name for an objective if one exists,
@@ -74,6 +88,7 @@ public class PersistedTestSet
     /// After deserializing a legacy file that only has "objective" (no "objectives" array),
     /// migrate the single value into the list so the rest of the code only needs to deal
     /// with <see cref="Objectives"/>.
+    /// Also performs in-memory v1→v2 migration if Tasks is populated but TestObjectives is empty.
     /// </summary>
     public void MigrateLegacyObjective()
     {
@@ -82,10 +97,9 @@ public class PersistedTestSet
             Objectives.Add(_legacyObjective);
         }
 
+#pragma warning disable CS0612 // Type or member is obsolete
         // Backfill empty Objective on tasks created before per-objective tracking.
-        // If there's only one objective, all tasks belong to it.
-        // If there are multiple objectives, we can't guess — leave them empty.
-        if (Objectives.Count == 1)
+        if (Tasks is { Count: > 0 } && Objectives.Count == 1)
         {
             var obj = Objectives[0];
             foreach (var task in Tasks)
@@ -94,15 +108,77 @@ public class PersistedTestSet
                     task.Objective = obj;
             }
         }
+
+        // In-memory v1→v2: promote Tasks into TestObjectives if not already migrated
+        if (SchemaVersion < 2 && Tasks is { Count: > 0 } && TestObjectives.Count == 0)
+        {
+            TestObjectives = MigrateTasksToObjectives(Tasks);
+            SchemaVersion = 2;
+        }
+#pragma warning restore CS0612
+    }
+
+    /// <summary>
+    /// Converts legacy PersistedTaskEntry list into TestObjective list.
+    /// Groups tasks by user objective — all test cases from tasks sharing the same
+    /// objective text become steps within a single TestObjective.
+    /// </summary>
+    internal static List<TestObjective> MigrateTasksToObjectives(List<PersistedTaskEntry> tasks)
+    {
+        var objectives = new List<TestObjective>();
+
+        // Group tasks by their user objective text
+        var grouped = tasks.GroupBy(t => t.Objective, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var group in grouped)
+        {
+            var objectiveText = group.Key;
+            var apiSteps = new List<ApiTestDefinition>();
+            var webUiSteps = new List<WebUiTestDefinition>();
+            var agentName = group.First().AgentName;
+            var targetType = group.First().TargetType;
+
+            foreach (var task in group)
+            {
+                foreach (var tc in task.TestCases)
+                    apiSteps.Add(ApiTestDefinition.FromTestCase(tc));
+
+                foreach (var tc in task.WebUiTestCases)
+                    webUiSteps.Add(WebUiTestDefinition.FromTestCase(tc));
+
+                // Use the most specific agent/target from tasks in this group
+                if (!string.IsNullOrEmpty(task.AgentName))
+                    agentName = task.AgentName;
+                if (!string.IsNullOrEmpty(task.TargetType))
+                    targetType = task.TargetType;
+            }
+
+            objectives.Add(new TestObjective
+            {
+                Id = SlugHelper.ToSlug(objectiveText),
+                Name = objectiveText.Length <= 80
+                    ? objectiveText
+                    : string.Concat(objectiveText.AsSpan(0, 77), "..."),
+                ParentObjective = objectiveText,
+                AgentName = agentName,
+                TargetType = targetType,
+                ApiSteps = apiSteps,
+                WebUiSteps = webUiSteps
+            });
+        }
+
+        return objectives;
     }
 }
 
 /// <summary>
-/// Holds the saved test cases for a single task within a <see cref="PersistedTestSet"/>.
+/// Legacy: holds saved test cases for a single task within a test set (v1 schema).
+/// Kept for deserialization of legacy JSON files during migration.
 /// </summary>
+[Obsolete("Use TestObjective instead. PersistedTaskEntry is only used for v1 migration.")]
 public class PersistedTaskEntry
 {
-    /// <summary>Original task ID (preserved so results can be correlated across runs).</summary>
+    /// <summary>Original task ID.</summary>
     public string TaskId { get; set; } = "";
 
     /// <summary>Human-readable task description.</summary>
@@ -111,21 +187,15 @@ public class PersistedTaskEntry
     /// <summary>Name of the agent that executed this task.</summary>
     public string AgentName { get; set; } = "";
 
-    /// <summary>The objective that produced this task (used for per-objective rebaseline).</summary>
+    /// <summary>The objective that produced this task.</summary>
     public string Objective { get; set; } = "";
 
-    /// <summary>The exact test cases that were generated and should be replayed on reuse.</summary>
+    /// <summary>API test cases (legacy).</summary>
     public List<ApiTestCase> TestCases { get; set; } = [];
 
-    /// <summary>
-    /// Web UI test cases (populated for UI_Web_MVC and UI_Web_Blazor agents).
-    /// Empty for API agent tasks.
-    /// </summary>
+    /// <summary>Web UI test cases (legacy).</summary>
     public List<WebUiTestCase> WebUiTestCases { get; set; } = [];
 
-    /// <summary>
-    /// The TestTargetType this task was executed against, stored as a string for serialisation.
-    /// Defaults to "API_REST" so legacy JSON files without this field remain valid.
-    /// </summary>
+    /// <summary>Target type string, defaults to "API_REST".</summary>
     public string TargetType { get; set; } = "API_REST";
 }

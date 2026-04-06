@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { updateWebUiTestCase, deleteWebUiTestCase } from '../api/modules';
-import type { WebUiTestCase, WebUiStep } from '../types';
+import { updateObjective, deleteObjective } from '../api/modules';
+import type { WebUiTestDefinition, WebUiStep, TestObjective } from '../types';
 
 const ACTIONS = [
   'navigate', 'click', 'fill', 'select', 'check', 'uncheck', 'hover', 'press',
@@ -13,9 +13,8 @@ const NO_SELECTOR = new Set(['navigate', 'assert-url-contains', 'assert-title-co
 
 interface Props {
   open: boolean;
-  testCase: WebUiTestCase;
-  taskId: string;
-  caseIndex: number;
+  objective: TestObjective;
+  stepIndex: number;
   moduleId: string;
   testSetId: string;
   onClose: () => void;
@@ -24,9 +23,11 @@ interface Props {
 }
 
 export function EditWebUiTestCaseDialog({
-  open, testCase, taskId, caseIndex, moduleId, testSetId, onClose, onSaved, onDeleted,
+  open, objective, stepIndex, moduleId, testSetId, onClose, onSaved, onDeleted,
 }: Props) {
-  const [form, setForm] = useState<WebUiTestCase>(() => structuredClone(testCase));
+  const step = objective.webUiSteps[stepIndex];
+  const [form, setForm] = useState<WebUiTestDefinition>(() => structuredClone(step));
+  const [name, setName] = useState(objective.name);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -34,7 +35,7 @@ export function EditWebUiTestCaseDialog({
 
   if (!open) return null;
 
-  const setField = <K extends keyof WebUiTestCase>(key: K, value: WebUiTestCase[K]) =>
+  const setField = <K extends keyof WebUiTestDefinition>(key: K, value: WebUiTestDefinition[K]) =>
     setForm(prev => ({ ...prev, [key]: value }));
 
   const setStep = (index: number, updated: WebUiStep) =>
@@ -67,7 +68,9 @@ export function EditWebUiTestCaseDialog({
     setSaving(true);
     setError(null);
     try {
-      await updateWebUiTestCase(moduleId, testSetId, taskId, caseIndex, form);
+      const updatedSteps = [...objective.webUiSteps];
+      updatedSteps[stepIndex] = form;
+      await updateObjective(moduleId, testSetId, objective.id, { ...objective, name, webUiSteps: updatedSteps });
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Save failed');
@@ -80,7 +83,7 @@ export function EditWebUiTestCaseDialog({
     setDeleting(true);
     setError(null);
     try {
-      await deleteWebUiTestCase(moduleId, testSetId, taskId, caseIndex);
+      await deleteObjective(moduleId, testSetId, objective.id);
       onDeleted?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Delete failed');
@@ -100,8 +103,8 @@ export function EditWebUiTestCaseDialog({
 
           {/* Name */}
           <label style={labelStyle}>Name</label>
-          <input style={inputStyle} value={form.name}
-            onChange={e => setField('name', e.target.value)} />
+          <input style={inputStyle} value={name}
+            onChange={e => setName(e.target.value)} />
 
           {/* Description */}
           <label style={{ ...labelStyle, marginTop: 12 }}>Description</label>

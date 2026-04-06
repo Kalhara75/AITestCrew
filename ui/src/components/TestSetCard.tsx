@@ -5,7 +5,6 @@ import { StatusBadge } from './StatusBadge';
 export function TestSetCard({ ts, moduleId }: { ts: TestSetListItem; moduleId: string }) {
   const linkTo = `/modules/${moduleId}/testsets/${ts.id}`;
   const displayTitle = ts.name || ts.objective || ts.id;
-  const objectiveCount = ts.objectives?.length || (ts.objective ? 1 : 0);
 
   return (
     <Link to={linkTo} style={{ textDecoration: 'none', color: 'inherit' }}>
@@ -57,12 +56,8 @@ export function TestSetCard({ ts, moduleId }: { ts: TestSetListItem; moduleId: s
           marginBottom: 12,
           flexWrap: 'wrap',
         }}>
-          <span style={statPill}>{ts.taskCount} task{ts.taskCount !== 1 ? 's' : ''}</span>
-          <span style={statPill}>{ts.testCaseCount} case{ts.testCaseCount !== 1 ? 's' : ''}</span>
+          <span style={statPill}>{ts.objectiveCount} objective{ts.objectiveCount !== 1 ? 's' : ''}</span>
           <span style={statPill}>{ts.runCount} run{ts.runCount !== 1 ? 's' : ''}</span>
-          {objectiveCount > 0 && (
-            <span style={statPill}>{objectiveCount} objective{objectiveCount !== 1 ? 's' : ''}</span>
-          )}
         </div>
 
         {/* Footer */}

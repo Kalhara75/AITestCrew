@@ -29,7 +29,10 @@ Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → C
 | `src/AiTestCrew.Agents/Persistence/ModuleRepository.cs` | CRUD for modules in `modules/{id}/module.json` |
 | `src/AiTestCrew.Agents/Persistence/TestSetRepository.cs` | Save/load/move/delete test sets (legacy flat + module-scoped) |
 | `src/AiTestCrew.Agents/Persistence/ExecutionHistoryRepository.cs` | Save/load/delete execution runs in `executions/` |
-| `src/AiTestCrew.Agents/Persistence/MigrationHelper.cs` | Auto-migrates legacy `testsets/` to `modules/default/` |
+| `src/AiTestCrew.Agents/Persistence/TestObjective.cs` | Test objective model (wraps ApiTestDefinition or WebUiTestDefinition) |
+| `src/AiTestCrew.Agents/ApiAgent/ApiTestDefinition.cs` | API test definition (HTTP request + expected response) |
+| `src/AiTestCrew.Agents/Shared/WebUiTestDefinition.cs` | Web UI test definition (start URL + Playwright steps) |
+| `src/AiTestCrew.Agents/Persistence/MigrationHelper.cs` | Auto-migrates legacy layouts: `testsets/` → `modules/default/`, v1 → v2 schema |
 | `src/AiTestCrew.WebApi/Program.cs` | WebApi DI wiring, CORS, migration, minimal API endpoints |
 | `src/AiTestCrew.WebApi/Endpoints/ModuleEndpoints.cs` | Module CRUD + nested test set/run/move-objective endpoints |
 | `src/AiTestCrew.WebApi/Endpoints/RunEndpoints.cs` | Trigger runs with optional moduleId/testSetId |
@@ -38,13 +41,21 @@ Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → C
 
 ## Test organisation
 
-Tests are organised into **Modules > Test Sets**. A test set accumulates test cases from multiple objectives.
+Tests are organised into **Modules > Test Sets > Test Objectives > Steps**.
+
+Each Test Objective corresponds to ONE user objective and contains multiple test steps (API calls or UI test cases). The objective's pass/fail is the aggregate of its steps.
 
 ```
 modules/{moduleId}/module.json           ← Module manifest
-modules/{moduleId}/{testSetId}.json      ← Test set with accumulated test cases
-executions/{testSetId}/{runId}.json      ← Execution history
+modules/{moduleId}/{testSetId}.json      ← Test set with TestObjectives (schema v2)
+executions/{testSetId}/{runId}.json      ← Execution history with per-objective results
 ```
+
+### Key persistence models
+- `TestObjective` — one per user objective, contains `ApiSteps: List<ApiTestDefinition>` and `WebUiSteps: List<WebUiTestDefinition>`
+- `PersistedTestSet` — contains `List<TestObjective> TestObjectives` (v2 schema)
+- `PersistedExecutionRun` — contains `List<PersistedObjectiveResult> ObjectiveResults`
+- `PersistedTaskEntry` — **deprecated** (v1 schema, kept only for migration deserialization)
 
 ## Run modes
 
@@ -64,9 +75,10 @@ dotnet run --project src/AiTestCrew.Runner -- --create-testset <moduleId> "Name"
 
 All agents extend `BaseTestAgent` and implement `ITestAgent`:
 - `CanHandleAsync(task)` — return true for the handled `TestTargetType` values
-- `ExecuteAsync(task, ct)` — must always return a `TestResult`, never throw
+- `ExecuteAsync(task, ct)` — returns ONE `TestResult` per task, never throw
+- The `TestResult.Steps` list contains one `TestStep` per test case (API call or UI test)
 - Check `task.Parameters["PreloadedTestCases"]` at the start of `ExecuteAsync` for reuse mode
-- Return `Metadata["generatedTestCases"] = testCases` so the orchestrator can persist them
+- Return `Metadata["generatedTestCases"] = testCases` (list) so the orchestrator can persist them as steps in a `TestObjective`
 
 ## Conventions
 
@@ -75,7 +87,7 @@ All agents extend `BaseTestAgent` and implement `ITestAgent`:
 - Use `TestStep.Pass/Fail/Err` factories, never construct `TestStep` directly
 - JSON serialisation: `PropertyNamingPolicy = CamelCase`, `PropertyNameCaseInsensitive = true`
 - New config settings go in `TestEnvironmentConfig` + `appsettings.example.json` (not `appsettings.json`)
-- All persistence models (`PersistedModule`, `PersistedTestSet`, `PersistedTaskEntry`, `PersistedExecutionRun`, etc.) live in `AiTestCrew.Agents/Persistence/`
+- All persistence models (`PersistedModule`, `PersistedTestSet`, `TestObjective`, `PersistedExecutionRun`, etc.) live in `AiTestCrew.Agents/Persistence/`
 - Slugification uses `SlugHelper.ToSlug()` — shared between `ModuleRepository` and `TestSetRepository`
 - WebApi uses the same DI wiring pattern as Runner — if you add a new service, register it in both `Program.cs` files
 

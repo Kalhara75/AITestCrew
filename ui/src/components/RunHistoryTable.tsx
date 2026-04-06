@@ -46,9 +46,9 @@ export function RunHistoryTable({ runs, testSetId, moduleId }: { runs: RunSummar
               </td>
               <td style={tdStyle}><StatusBadge status={r.status} /></td>
               <td style={tdStyle}>
-                <span style={{ color: '#16a34a', fontWeight: 600 }}>{r.passedTasks}</span>
-                <span style={{ color: '#94a3b8' }}> / {r.totalTasks}</span>
-                {r.failedTasks > 0 && <span style={{ color: '#dc2626', fontSize: 12, marginLeft: 4 }}>({r.failedTasks} failed)</span>}
+                <span style={{ color: '#16a34a', fontWeight: 600 }}>{r.passedObjectives}</span>
+                <span style={{ color: '#94a3b8' }}> / {r.totalObjectives}</span>
+                {r.failedObjectives > 0 && <span style={{ color: '#dc2626', fontSize: 12, marginLeft: 4 }}>({r.failedObjectives} failed)</span>}
               </td>
               <td style={{ ...tdStyle, fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 13 }}>{r.totalDuration}</td>
               <td style={{ ...tdStyle, fontSize: 13, color: '#64748b' }}>

@@ -1,18 +1,18 @@
 import { useState } from 'react';
-import type { TaskResult, StepResult } from '../types';
+import type { ObjectiveResult, StepResult } from '../types';
 import { StatusBadge } from './StatusBadge';
 
-export function StepList({ taskResults }: { taskResults: TaskResult[] }) {
+export function StepList({ objectiveResults }: { objectiveResults: ObjectiveResult[] }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {taskResults.map(task => (
-        <TaskSection key={task.taskId} task={task} />
+      {objectiveResults.map(objective => (
+        <ObjectiveSection key={objective.objectiveId} objective={objective} />
       ))}
     </div>
   );
 }
 
-function TaskSection({ task }: { task: TaskResult }) {
+function ObjectiveSection({ objective }: { objective: ObjectiveResult }) {
   const [expanded, setExpanded] = useState(true);
 
   return (
@@ -41,11 +41,11 @@ function TaskSection({ task }: { task: TaskResult }) {
         }}>
           {'\u25B6'}
         </span>
-        <StatusBadge status={task.status} />
+        <StatusBadge status={objective.status} />
         <span style={{ fontWeight: 600, fontSize: 14, color: '#1e293b', flex: 1 }}>
-          {task.agentName}
+          {objective.agentName}
           <span style={{ fontWeight: 400, color: '#64748b', marginLeft: 8 }}>
-            {task.summary.length > 80 ? task.summary.slice(0, 80) + '...' : task.summary}
+            {objective.summary.length > 80 ? objective.summary.slice(0, 80) + '...' : objective.summary}
           </span>
         </span>
         <span style={{
@@ -56,13 +56,13 @@ function TaskSection({ task }: { task: TaskResult }) {
           padding: '2px 10px',
           borderRadius: 6,
         }}>
-          {task.passedSteps}/{task.totalSteps} steps
+          {objective.passedSteps}/{objective.totalSteps} steps
         </span>
       </div>
       {expanded && (
         <div>
-          {task.steps.map((step, i) => (
-            <StepRow key={i} step={step} isLast={i === task.steps.length - 1} />
+          {objective.steps.map((step, i) => (
+            <StepRow key={i} step={step} isLast={i === objective.steps.length - 1} />
           ))}
         </div>
       )}

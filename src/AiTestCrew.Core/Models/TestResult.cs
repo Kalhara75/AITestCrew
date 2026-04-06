@@ -1,17 +1,17 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
 namespace AiTestCrew.Core.Models;
 
 /// <summary>
-/// The complete result of an agent executing a test task.
+/// The complete result of executing a single test objective.
+/// In v2, each TestResult maps 1:1 to a TestObjective.
 /// </summary>
 public class TestResult
 {
-    public required string TaskId { get; init; }
+    /// <summary>The test objective ID this result corresponds to.</summary>
+    public required string ObjectiveId { get; init; }
+
+    /// <summary>Human-readable name of the test objective.</summary>
+    public string ObjectiveName { get; init; } = "";
+
     public required string AgentName { get; init; }
     public required TestStatus Status { get; init; }
     public required string Summary { get; init; }
@@ -36,7 +36,7 @@ public class TestSuiteResult
     public TimeSpan TotalDuration { get; init; }
     public DateTime CompletedAt { get; init; } = DateTime.UtcNow;
 
-    public int TotalTasks => Results.Count;
+    public int TotalObjectives => Results.Count;
     public int Passed => Results.Count(r => r.Status == TestStatus.Passed);
     public int Failed => Results.Count(r => r.Status == TestStatus.Failed);
     public int Errors => Results.Count(r => r.Status == TestStatus.Error);

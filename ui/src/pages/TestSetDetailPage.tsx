@@ -11,6 +11,7 @@ import { StatusBadge } from '../components/StatusBadge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { MoveObjectiveDialog } from '../components/MoveObjectiveDialog';
 import { AiPatchPanel } from '../components/AiPatchPanel';
+import type { TestObjective, RunSummary } from '../types';
 
 export function TestSetDetailPage() {
   const { id, moduleId } = useParams<{ id: string; moduleId?: string }>();
@@ -21,6 +22,7 @@ export function TestSetDetailPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [moveObjective, setMoveObjective] = useState<string | null>(null);
+  const [selectedObjectiveId, setSelectedObjectiveId] = useState<string | null>(null);
 
   const { data: module } = useQuery({
     queryKey: ['module', moduleId],
@@ -48,11 +50,9 @@ export function TestSetDetailPage() {
   if (error) return <p style={{ color: '#dc2626', padding: 40, textAlign: 'center' }}>Error: {(error as Error).message}</p>;
   if (!testSet) return <p style={{ color: '#64748b', padding: 40, textAlign: 'center' }}>Test set not found.</p>;
 
-  const totalApiCases = testSet.tasks.reduce((sum, t) => sum + (t.testCases?.length ?? 0), 0);
-  const totalUiCases  = testSet.tasks.reduce((sum, t) => sum + (t.webUiTestCases?.length ?? 0), 0);
-  const totalCases = totalApiCases + totalUiCases;
+  const totalObjectives = testSet.testObjectives.length;
   const displayTitle = testSet.name || testSet.objective || testSet.id;
-  const objectives = testSet.objectives?.length > 0 ? testSet.objectives : (testSet.objective ? [testSet.objective] : []);
+  const selectedObjective = testSet.testObjectives.find(o => o.id === selectedObjectiveId) ?? null;
 
   const handleDelete = async () => {
     if (!isModuleScoped) return;
@@ -107,40 +107,8 @@ export function TestSetDetailPage() {
             <h1 style={{ margin: '0 0 16px', fontSize: 22, fontWeight: 700, color: '#0f172a', lineHeight: 1.4 }}>
               {displayTitle}
             </h1>
-
-            {/* Objectives list */}
-            {objectives.length > 0 && (
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                  Objectives ({objectives.length})
-                </div>
-                <ul style={{ margin: 0, paddingLeft: 18, listStyle: 'disc' }}>
-                  {objectives.map((obj, i) => {
-                    const displayName = testSet.objectiveNames?.[obj];
-                    return (
-                      <li key={i} style={{ fontSize: 13, color: '#475569', lineHeight: 1.8, display: 'list-item' }}>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }} title={obj}>
-                          {displayName || obj}
-                          {isModuleScoped && (
-                            <button
-                              onClick={() => setMoveObjective(obj)}
-                              style={moveBtnStyle}
-                              title="Move to another test set"
-                            >
-                              Move
-                            </button>
-                          )}
-                        </span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )}
-
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <StatPill label="Tasks" value={testSet.tasks.length} />
-              <StatPill label="Test Cases" value={totalCases} />
+              <StatPill label="Test Cases" value={totalObjectives} />
               <StatPill label="Runs" value={testSet.runCount} />
               <StatPill label="Created" value={new Date(testSet.createdAt).toLocaleDateString()} />
             </div>
@@ -148,10 +116,7 @@ export function TestSetDetailPage() {
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexDirection: 'column' }}>
             <TriggerRunButton testSetId={testSet.id} objective={testSet.objective} moduleId={moduleId} />
             {isModuleScoped && (
-              <button
-                onClick={() => setShowDeleteConfirm(true)}
-                style={deleteBtnStyle}
-              >
+              <button onClick={() => setShowDeleteConfirm(true)} style={deleteBtnStyle}>
                 Delete Test Set
               </button>
             )}
@@ -159,55 +124,75 @@ export function TestSetDetailPage() {
         </div>
       </div>
 
-      {/* Test Cases */}
+      {/* Test Cases list — clean table */}
       <div style={cardStyle({ marginBottom: 24 })}>
-        <SectionHeader title="Test Cases" count={totalCases} />
-        {isModuleScoped && totalCases > 0 && (
-          <AiPatchPanel
-            moduleId={moduleId!}
-            testSetId={id!}
-            tasks={testSet.tasks}
-            onApplied={handleTestCaseUpdated}
-          />
-        )}
-        {totalCases === 0 ? (
-          <p style={{ color: '#94a3b8', fontSize: 14 }}>No test cases in this test set.</p>
-        ) : totalUiCases > 0 && totalApiCases === 0 ? (
-          // All tasks are Web UI tasks — show the UI test case table
-          <WebUiTestCaseTable
-            tasks={testSet.tasks}
-            moduleId={moduleId}
-            testSetId={id}
-            onTestCaseUpdated={handleTestCaseUpdated}
-          />
-        ) : totalUiCases > 0 ? (
-          // Mixed: show both tables
-          <>
-            {totalApiCases > 0 && (
-              <>
-                <p style={{ fontSize: 12, color: '#64748b', fontWeight: 600, margin: '0 0 6px', textTransform: 'uppercase', letterSpacing: 0.4 }}>API Tests</p>
-                <TestCaseTable tasks={testSet.tasks} moduleId={moduleId} testSetId={id} onTestCaseUpdated={handleTestCaseUpdated} />
-              </>
-            )}
-            <p style={{ fontSize: 12, color: '#64748b', fontWeight: 600, margin: '12px 0 6px', textTransform: 'uppercase', letterSpacing: 0.4 }}>Web UI Tests</p>
-            <WebUiTestCaseTable tasks={testSet.tasks} moduleId={moduleId} testSetId={id} onTestCaseUpdated={handleTestCaseUpdated} />
-          </>
+        <SectionHeader title="Test Cases" count={totalObjectives} />
+        {totalObjectives === 0 ? (
+          <p style={{ color: '#94a3b8', fontSize: 14 }}>No test cases in this test set yet.</p>
         ) : (
-          // All API tasks
-          <TestCaseTable
-            tasks={testSet.tasks}
-            moduleId={moduleId}
-            testSetId={id}
-            onTestCaseUpdated={handleTestCaseUpdated}
+          <ObjectiveListTable
+            objectives={testSet.testObjectives}
+            runs={runs || []}
+            selectedId={selectedObjectiveId}
+            onSelect={(objId) => setSelectedObjectiveId(objId === selectedObjectiveId ? null : objId)}
+            onMove={isModuleScoped ? (obj) => setMoveObjective(obj) : undefined}
           />
         )}
       </div>
 
-      {/* Execution History */}
-      <div style={cardStyle({})}>
-        <SectionHeader title="Execution History" count={runs?.length || 0} />
-        <RunHistoryTable runs={runs || []} testSetId={testSet.id} moduleId={moduleId} />
-      </div>
+      {/* Selected objective detail panel */}
+      {selectedObjective && (
+        <div style={cardStyle({ marginBottom: 24, borderColor: '#bfdbfe', borderWidth: 2 })}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: '#0f172a' }}>
+                {selectedObjective.name}
+              </h2>
+              <p style={{ margin: '4px 0 0', fontSize: 12, color: '#94a3b8' }}>
+                {selectedObjective.agentName} &middot; {selectedObjective.targetType} &middot; {selectedObjective.stepCount} step{selectedObjective.stepCount !== 1 ? 's' : ''}
+              </p>
+            </div>
+            <button
+              onClick={() => setSelectedObjectiveId(null)}
+              style={{ background: 'none', border: 'none', fontSize: 20, color: '#94a3b8', cursor: 'pointer', padding: '4px 8px' }}
+              title="Close"
+            >&times;</button>
+          </div>
+
+          {/* Steps */}
+          <SectionHeader title="Steps" count={selectedObjective.stepCount} />
+          {isModuleScoped && selectedObjective.apiSteps.length > 0 && (
+            <AiPatchPanel
+              moduleId={moduleId!}
+              testSetId={id!}
+              objectives={[selectedObjective]}
+              onApplied={handleTestCaseUpdated}
+            />
+          )}
+          {selectedObjective.apiSteps.length > 0 && (
+            <TestCaseTable
+              objectives={[selectedObjective]}
+              moduleId={moduleId}
+              testSetId={id}
+              onTestCaseUpdated={handleTestCaseUpdated}
+            />
+          )}
+          {selectedObjective.webUiSteps.length > 0 && (
+            <WebUiTestCaseTable
+              objectives={[selectedObjective]}
+              moduleId={moduleId}
+              testSetId={id}
+              onTestCaseUpdated={handleTestCaseUpdated}
+            />
+          )}
+
+          {/* Run history for this objective */}
+          <div style={{ marginTop: 24 }}>
+            <SectionHeader title="Execution History" count={runs?.length || 0} />
+            <RunHistoryTable runs={runs || []} testSetId={testSet.id} moduleId={moduleId} />
+          </div>
+        </div>
+      )}
 
       {/* Delete confirmation dialog */}
       <ConfirmDialog
@@ -237,17 +222,100 @@ export function TestSetDetailPage() {
   );
 }
 
+/* ─── Test Case List Table ─── */
+
+function ObjectiveListTable({
+  objectives,
+  runs,
+  selectedId,
+  onSelect,
+  onMove,
+}: {
+  objectives: TestObjective[];
+  runs: RunSummary[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onMove?: (parentObjective: string) => void;
+}) {
+  // Determine last run date from the runs list
+  const lastRunDate = runs.length > 0 ? runs[0].startedAt : null;
+  const lastRunStatus = runs.length > 0 ? runs[0].status : null;
+
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <thead>
+          <tr style={{ borderBottom: '2px solid #e2e8f0' }}>
+            <th style={thStyle}>TEST CASE</th>
+            <th style={{ ...thStyle, width: 80 }}>STEPS</th>
+            <th style={{ ...thStyle, width: 90 }}>TYPE</th>
+            <th style={{ ...thStyle, width: 100 }}>STATUS</th>
+            <th style={{ ...thStyle, width: 180 }}>LAST RUN</th>
+            {onMove && <th style={{ ...thStyle, width: 60 }}></th>}
+          </tr>
+        </thead>
+        <tbody>
+          {objectives.map(obj => {
+            const isSelected = obj.id === selectedId;
+            return (
+              <tr
+                key={obj.id}
+                onClick={() => onSelect(obj.id)}
+                style={{
+                  borderBottom: '1px solid #f1f5f9',
+                  cursor: 'pointer',
+                  background: isSelected ? '#eff6ff' : 'transparent',
+                  transition: 'background 0.15s',
+                }}
+                onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = '#f8fafc'; }}
+                onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}
+              >
+                <td style={{ ...tdStyle, fontWeight: 500, color: '#0f172a' }}>
+                  {obj.name}
+                </td>
+                <td style={{ ...tdStyle, textAlign: 'center', color: '#64748b' }}>
+                  {obj.stepCount}
+                </td>
+                <td style={tdStyle}>
+                  <span style={typeBadgeStyle(obj.targetType)}>
+                    {obj.apiSteps.length > 0 ? 'API' : 'UI'}
+                  </span>
+                </td>
+                <td style={tdStyle}>
+                  <StatusBadge status={lastRunStatus} size="sm" />
+                </td>
+                <td style={{ ...tdStyle, color: '#64748b', fontSize: 12 }}>
+                  {lastRunDate ? new Date(lastRunDate).toLocaleString() : '—'}
+                </td>
+                {onMove && (
+                  <td style={tdStyle}>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onMove(obj.parentObjective); }}
+                      style={moveBtnStyle}
+                      title="Move to another test set"
+                    >
+                      Move
+                    </button>
+                  </td>
+                )}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ─── Shared components ─── */
+
 function SectionHeader({ title, count }: { title: string; count: number }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
       <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: '#0f172a' }}>{title}</h2>
       <span style={{
-        fontSize: 12,
-        fontWeight: 600,
-        color: '#64748b',
-        background: '#f1f5f9',
-        padding: '2px 10px',
-        borderRadius: 12,
+        fontSize: 12, fontWeight: 600, color: '#64748b',
+        background: '#f1f5f9', padding: '2px 10px', borderRadius: 12,
       }}>{count}</span>
     </div>
   );
@@ -256,18 +324,33 @@ function SectionHeader({ title, count }: { title: string; count: number }) {
 function StatPill({ label, value }: { label: string; value: string | number }) {
   return (
     <span style={{
-      fontSize: 13,
-      color: '#475569',
-      background: '#f8fafc',
-      padding: '4px 12px',
-      borderRadius: 6,
-      border: '1px solid #f1f5f9',
+      fontSize: 13, color: '#475569', background: '#f8fafc',
+      padding: '4px 12px', borderRadius: 6, border: '1px solid #f1f5f9',
     }}>
       <span style={{ color: '#94a3b8', marginRight: 4 }}>{label}:</span>
       <span style={{ fontWeight: 600 }}>{value}</span>
     </span>
   );
 }
+
+function typeBadgeStyle(targetType: string): React.CSSProperties {
+  const isApi = targetType.startsWith('API');
+  return {
+    fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
+    background: isApi ? '#eff6ff' : '#f0fdf4',
+    color: isApi ? '#2563eb' : '#16a34a',
+    border: `1px solid ${isApi ? '#bfdbfe' : '#bbf7d0'}`,
+  };
+}
+
+const thStyle: React.CSSProperties = {
+  textAlign: 'left', padding: '8px 12px', fontSize: 11, fontWeight: 600,
+  color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5,
+};
+
+const tdStyle: React.CSSProperties = {
+  padding: '10px 12px', verticalAlign: 'middle',
+};
 
 const deleteBtnStyle: React.CSSProperties = {
   background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca',
@@ -283,10 +366,7 @@ const moveBtnStyle: React.CSSProperties = {
 
 function cardStyle(extra: React.CSSProperties): React.CSSProperties {
   return {
-    background: '#fff',
-    borderRadius: 10,
-    border: '1px solid #e2e8f0',
-    padding: 24,
-    ...extra,
+    background: '#fff', borderRadius: 10,
+    border: '1px solid #e2e8f0', padding: 24, ...extra,
   };
 }

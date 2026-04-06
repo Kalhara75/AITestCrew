@@ -76,7 +76,7 @@ export function ModuleListPage() {
                 )}
                 <div style={{ display: 'flex', gap: 8, fontSize: 13, color: '#64748b' }}>
                   <span style={statPill}>{m.testSetCount} test set{m.testSetCount !== 1 ? 's' : ''}</span>
-                  <span style={statPill}>{m.totalTestCases} case{m.totalTestCases !== 1 ? 's' : ''}</span>
+                  <span style={statPill}>{m.totalObjectives} objective{m.totalObjectives !== 1 ? 's' : ''}</span>
                 </div>
                 <div style={{
                   fontSize: 12, color: '#94a3b8', borderTop: '1px solid #f1f5f9',

@@ -1,12 +1,11 @@
 import { useState } from 'react';
-import { updateTestCase } from '../api/modules';
-import type { ApiTestCase } from '../types';
+import { updateObjective } from '../api/modules';
+import type { ApiTestDefinition, TestObjective } from '../types';
 
 interface Props {
   open: boolean;
-  testCase: ApiTestCase;
-  taskId: string;
-  caseIndex: number;
+  objective: TestObjective;
+  stepIndex: number;
   moduleId: string;
   testSetId: string;
   onClose: () => void;
@@ -14,22 +13,26 @@ interface Props {
 }
 
 export function EditTestCaseDialog({
-  open, testCase, taskId, caseIndex, moduleId, testSetId, onClose, onSaved,
+  open, objective, stepIndex, moduleId, testSetId, onClose, onSaved,
 }: Props) {
-  const [form, setForm] = useState<ApiTestCase>(() => structuredClone(testCase));
+  const step = objective.apiSteps[stepIndex];
+  const [form, setForm] = useState<ApiTestDefinition>(() => structuredClone(step));
+  const [name, setName] = useState(objective.name);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (!open) return null;
 
-  const set = <K extends keyof ApiTestCase>(key: K, value: ApiTestCase[K]) =>
+  const set = <K extends keyof ApiTestDefinition>(key: K, value: ApiTestDefinition[K]) =>
     setForm(prev => ({ ...prev, [key]: value }));
 
   const handleSave = async () => {
     setSaving(true);
     setError(null);
     try {
-      await updateTestCase(moduleId, testSetId, taskId, caseIndex, form);
+      const updatedSteps = [...objective.apiSteps];
+      updatedSteps[stepIndex] = form;
+      await updateObjective(moduleId, testSetId, objective.id, { ...objective, name, apiSteps: updatedSteps });
       onSaved();
       onClose();
     } catch (err) {
@@ -49,7 +52,7 @@ export function EditTestCaseDialog({
         <div style={{ maxHeight: 'calc(80vh - 120px)', overflowY: 'auto', paddingRight: 8 }}>
           {/* Name */}
           <label style={labelStyle}>Name</label>
-          <input style={inputStyle} value={form.name} onChange={e => set('name', e.target.value)} />
+          <input style={inputStyle} value={name} onChange={e => setName(e.target.value)} />
 
           {/* Method + Endpoint row */}
           <div style={{ display: 'flex', gap: 12, marginTop: 14 }}>

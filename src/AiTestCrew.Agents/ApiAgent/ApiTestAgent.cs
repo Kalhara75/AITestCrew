@@ -78,8 +78,7 @@ public class ApiTestAgent : BaseTestAgent
                         : TestStep.Pass("load-spec", "No OpenAPI spec available, using LLM inference"));
                 }
 
-                // ── 2. Discovery call — hit the primary endpoint once to capture the
-                //       real response shape so Claude can generate accurate field assertions ──
+                // ── 2. Discovery call ──
                 var discovery = await DiscoverEndpointAsync(task, ct);
                 if (discovery is not null)
                 {
@@ -96,7 +95,8 @@ public class ApiTestAgent : BaseTestAgent
                 {
                     return new TestResult
                     {
-                        TaskId = task.Id,
+                        ObjectiveId = task.Id,
+                        ObjectiveName = task.Description,
                         AgentName = Name,
                         Status = TestStatus.Error,
                         Summary = "LLM failed to generate test cases",
@@ -110,7 +110,7 @@ public class ApiTestAgent : BaseTestAgent
                 Logger.LogInformation("[{Agent}] Generated {Count} test cases", Name, testCases.Count);
             }
 
-            // ── 4. Execute each test case ──
+            // ── 4. Execute each test case (each becomes a step) ──
             foreach (var tc in testCases)
             {
                 ct.ThrowIfCancellationRequested();
@@ -133,7 +133,8 @@ public class ApiTestAgent : BaseTestAgent
 
             return new TestResult
             {
-                TaskId = task.Id,
+                ObjectiveId = task.Id,
+                ObjectiveName = task.Description,
                 AgentName = Name,
                 Status = status,
                 Summary = summary,
@@ -151,7 +152,8 @@ public class ApiTestAgent : BaseTestAgent
         {
             return new TestResult
             {
-                TaskId = task.Id,
+                ObjectiveId = task.Id,
+                ObjectiveName = task.Description,
                 AgentName = Name,
                 Status = TestStatus.Error,
                 Summary = "Test execution was cancelled",
@@ -166,7 +168,8 @@ public class ApiTestAgent : BaseTestAgent
 
             return new TestResult
             {
-                TaskId = task.Id,
+                ObjectiveId = task.Id,
+                ObjectiveName = task.Description,
                 AgentName = Name,
                 Status = TestStatus.Error,
                 Summary = $"Agent error: {ex.Message}",

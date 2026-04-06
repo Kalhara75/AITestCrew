@@ -1,7 +1,7 @@
 import { apiFetch } from './client';
 import type {
   Module, TestSetListItem, TestSetDetail, RunSummary, ExecutionRun,
-  MoveObjectiveRequest, ApiTestCase, WebUiTestCase, AiPatchRequest, AiPatchPreview, AiPatchApplyRequest,
+  MoveObjectiveRequest, TestObjective, AiPatchRequest, AiPatchPreview, AiPatchApplyRequest,
 } from '../types';
 
 export const fetchModules = () =>
@@ -52,20 +52,20 @@ export const moveObjective = (moduleId: string, tsId: string, request: MoveObjec
     body: JSON.stringify(request),
   });
 
-export const updateTestCase = (
-  moduleId: string, tsId: string, taskId: string, index: number, testCase: ApiTestCase
+export const updateObjective = (
+  moduleId: string, tsId: string, objectiveId: string, objective: TestObjective
 ) =>
   apiFetch<TestSetDetail>(
-    `/modules/${moduleId}/testsets/${tsId}/tasks/${taskId}/testcases/${index}`,
-    { method: 'PUT', body: JSON.stringify(testCase) }
+    `/modules/${moduleId}/testsets/${tsId}/objectives/${objectiveId}`,
+    { method: 'PUT', body: JSON.stringify(objective) }
   );
 
-export const updateWebUiTestCase = (
-  moduleId: string, tsId: string, taskId: string, index: number, testCase: WebUiTestCase
+export const deleteObjective = (
+  moduleId: string, tsId: string, objectiveId: string
 ) =>
-  apiFetch<TestSetDetail>(
-    `/modules/${moduleId}/testsets/${tsId}/tasks/${taskId}/webuicases/${index}`,
-    { method: 'PUT', body: JSON.stringify(testCase) }
+  apiFetch<void>(
+    `/modules/${moduleId}/testsets/${tsId}/objectives/${objectiveId}`,
+    { method: 'DELETE' }
   );
 
 export const previewAiPatch = (moduleId: string, tsId: string, request: AiPatchRequest) =>
@@ -80,10 +80,3 @@ export const applyAiPatch = (moduleId: string, tsId: string, request: AiPatchApp
     { method: 'POST', body: JSON.stringify(request) }
   );
 
-export const deleteWebUiTestCase = (
-  moduleId: string, tsId: string, taskId: string, index: number
-) =>
-  apiFetch<void>(
-    `/modules/${moduleId}/testsets/${tsId}/tasks/${taskId}/webuicases/${index}`,
-    { method: 'DELETE' }
-  );

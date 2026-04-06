@@ -2,6 +2,7 @@ using System.Text.Json;
 using AiTestCrew.Agents.ApiAgent;
 using AiTestCrew.Agents.Base;
 using AiTestCrew.Agents.Persistence;
+using AiTestCrew.Agents.Shared;
 using AiTestCrew.Orchestrator;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
@@ -20,7 +21,6 @@ public static class ModuleEndpoints
             var result = modules.Select(m =>
             {
                 var testSets = tsRepo.ListByModule(m.Id);
-                var totalCases = testSets.Sum(ts => ts.Tasks.Sum(t => t.TestCases.Count));
                 return new
                 {
                     m.Id,
@@ -29,7 +29,7 @@ public static class ModuleEndpoints
                     m.CreatedAt,
                     m.UpdatedAt,
                     TestSetCount = testSets.Count,
-                    TotalTestCases = totalCases
+                    TotalObjectives = testSets.Sum(ts => ts.TestObjectives.Count)
                 };
             });
             return Results.Ok(result);
@@ -65,7 +65,7 @@ public static class ModuleEndpoints
                 module.CreatedAt,
                 module.UpdatedAt,
                 TestSetCount = testSets.Count,
-                TotalTestCases = testSets.Sum(ts => ts.Tasks.Sum(t => t.TestCases.Count))
+                TotalObjectives = testSets.Sum(ts => ts.TestObjectives.Count)
             });
         });
 
@@ -119,8 +119,7 @@ public static class ModuleEndpoints
                     ts.Objectives,
                     ts.ObjectiveNames,
                     Objective = ts.Objective,
-                    TaskCount = ts.Tasks.Count,
-                    TestCaseCount = ts.Tasks.Sum(t => t.TestCases.Count),
+                    ObjectiveCount = ts.TestObjectives.Count,
                     ts.CreatedAt,
                     ts.LastRunAt,
                     ts.RunCount,
@@ -170,7 +169,7 @@ public static class ModuleEndpoints
                 testSet.LastRunAt,
                 testSet.RunCount,
                 LastRunStatus = latestRun?.Status,
-                testSet.Tasks
+                testSet.TestObjectives
             });
         });
 
@@ -200,10 +199,10 @@ public static class ModuleEndpoints
                 r.StartedAt,
                 r.CompletedAt,
                 r.TotalDuration,
-                r.TotalTasks,
-                r.PassedTasks,
-                r.FailedTasks,
-                r.ErrorTasks
+                r.TotalObjectives,
+                r.PassedObjectives,
+                r.FailedObjectives,
+                r.ErrorObjectives
             });
             return Results.Ok(result);
         });
@@ -233,7 +232,6 @@ public static class ModuleEndpoints
             if (moduleId == request.DestinationModuleId && tsId == request.DestinationTestSetId)
                 return Results.BadRequest(new { error = "Source and destination must differ" });
 
-            // Validate source exists
             var source = await tsRepo.LoadAsync(moduleId, tsId);
             if (source is null)
                 return Results.NotFound(new { error = $"Source test set '{tsId}' not found in module '{moduleId}'" });
@@ -241,7 +239,6 @@ public static class ModuleEndpoints
             if (!source.Objectives.Contains(request.Objective, StringComparer.OrdinalIgnoreCase))
                 return Results.BadRequest(new { error = $"Objective not found in source test set" });
 
-            // Validate destination exists
             if (!moduleRepo.Exists(request.DestinationModuleId))
                 return Results.NotFound(new { error = $"Destination module '{request.DestinationModuleId}' not found" });
 
@@ -263,98 +260,45 @@ public static class ModuleEndpoints
             }
         });
 
-        // PUT /api/modules/{moduleId}/testsets/{tsId}/tasks/{taskId}/testcases/{index} — update a single test case
-        group.MapPut("/{moduleId}/testsets/{tsId}/tasks/{taskId}/testcases/{index:int}",
-            async (string moduleId, string tsId, string taskId, int index,
-                ApiTestCase updated, TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+        // PUT /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId} — update a test objective's definition
+        group.MapPut("/{moduleId}/testsets/{tsId}/objectives/{objectiveId}",
+            async (string moduleId, string tsId, string objectiveId,
+                TestObjective updated, TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
         {
             var testSet = await tsRepo.LoadAsync(moduleId, tsId);
             if (testSet is null)
                 return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
 
-            var task = testSet.Tasks.FirstOrDefault(t => t.TaskId == taskId);
-            if (task is null)
-                return Results.NotFound(new { error = $"Task '{taskId}' not found in test set '{tsId}'" });
+            var idx = testSet.TestObjectives.FindIndex(o => o.Id == objectiveId);
+            if (idx < 0)
+                return Results.NotFound(new { error = $"Objective '{objectiveId}' not found in test set '{tsId}'" });
 
-            if (index < 0 || index >= task.TestCases.Count)
-                return Results.BadRequest(new { error = $"Test case index {index} out of range (0-{task.TestCases.Count - 1})" });
+            // Preserve identity fields, update definition
+            updated.Id = objectiveId;
+            updated.ParentObjective = testSet.TestObjectives[idx].ParentObjective;
+            updated.AgentName = testSet.TestObjectives[idx].AgentName;
+            updated.TargetType = testSet.TestObjectives[idx].TargetType;
+            testSet.TestObjectives[idx] = updated;
 
-            task.TestCases[index] = updated;
             await tsRepo.SaveAsync(testSet, moduleId);
-
-            var latestRun = historyRepo.GetLatestRun(tsId);
-            return Results.Ok(new
-            {
-                testSet.Id, testSet.Name, testSet.ModuleId,
-                testSet.Objectives, testSet.ObjectiveNames,
-                Objective = testSet.Objective,
-                testSet.CreatedAt, testSet.LastRunAt, testSet.RunCount,
-                LastRunStatus = latestRun?.Status,
-                testSet.Tasks
-            });
+            return Results.Ok(TestSetResponse(testSet, historyRepo));
         });
 
-        // PUT /api/modules/{moduleId}/testsets/{tsId}/tasks/{taskId}/webuicases/{index} — update a single Web UI test case
-        group.MapPut("/{moduleId}/testsets/{tsId}/tasks/{taskId}/webuicases/{index:int}",
-            async (string moduleId, string tsId, string taskId, int index,
-                AiTestCrew.Agents.Shared.WebUiTestCase updated,
+        // DELETE /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId} — delete a test objective
+        group.MapDelete("/{moduleId}/testsets/{tsId}/objectives/{objectiveId}",
+            async (string moduleId, string tsId, string objectiveId,
                 TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
         {
             var testSet = await tsRepo.LoadAsync(moduleId, tsId);
             if (testSet is null)
                 return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
 
-            var task = testSet.Tasks.FirstOrDefault(t => t.TaskId == taskId);
-            if (task is null)
-                return Results.NotFound(new { error = $"Task '{taskId}' not found in test set '{tsId}'" });
+            var removed = testSet.TestObjectives.RemoveAll(o => o.Id == objectiveId);
+            if (removed == 0)
+                return Results.NotFound(new { error = $"Objective '{objectiveId}' not found in test set '{tsId}'" });
 
-            if (index < 0 || index >= task.WebUiTestCases.Count)
-                return Results.BadRequest(new { error = $"Web UI test case index {index} out of range (0-{task.WebUiTestCases.Count - 1})" });
-
-            task.WebUiTestCases[index] = updated;
             await tsRepo.SaveAsync(testSet, moduleId);
-
-            var latestRun = historyRepo.GetLatestRun(tsId);
-            return Results.Ok(new
-            {
-                testSet.Id, testSet.Name, testSet.ModuleId,
-                testSet.Objectives, testSet.ObjectiveNames,
-                Objective = testSet.Objective,
-                testSet.CreatedAt, testSet.LastRunAt, testSet.RunCount,
-                LastRunStatus = latestRun?.Status,
-                testSet.Tasks
-            });
-        });
-
-        // DELETE /api/modules/{moduleId}/testsets/{tsId}/tasks/{taskId}/webuicases/{index} — delete a Web UI test case
-        group.MapDelete("/{moduleId}/testsets/{tsId}/tasks/{taskId}/webuicases/{index:int}",
-            async (string moduleId, string tsId, string taskId, int index,
-                TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
-        {
-            var testSet = await tsRepo.LoadAsync(moduleId, tsId);
-            if (testSet is null)
-                return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
-
-            var task = testSet.Tasks.FirstOrDefault(t => t.TaskId == taskId);
-            if (task is null)
-                return Results.NotFound(new { error = $"Task '{taskId}' not found in test set '{tsId}'" });
-
-            if (index < 0 || index >= task.WebUiTestCases.Count)
-                return Results.BadRequest(new { error = $"Web UI test case index {index} out of range (0-{task.WebUiTestCases.Count - 1})" });
-
-            task.WebUiTestCases.RemoveAt(index);
-            await tsRepo.SaveAsync(testSet, moduleId);
-
-            var latestRun = historyRepo.GetLatestRun(tsId);
-            return Results.Ok(new
-            {
-                testSet.Id, testSet.Name, testSet.ModuleId,
-                testSet.Objectives, testSet.ObjectiveNames,
-                Objective = testSet.Objective,
-                testSet.CreatedAt, testSet.LastRunAt, testSet.RunCount,
-                LastRunStatus = latestRun?.Status,
-                testSet.Tasks
-            });
+            return Results.Ok(TestSetResponse(testSet, historyRepo));
         });
 
         // POST /api/modules/{moduleId}/testsets/{tsId}/ai-patch — preview LLM-applied changes
@@ -369,27 +313,24 @@ public static class ModuleEndpoints
             if (testSet is null)
                 return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
 
-            // Build the scoped list of test cases to send to the LLM
-            var entries = new List<TestCasePatchEntry>();
-            foreach (var task in testSet.Tasks)
-            {
-                if (request.Scope?.TaskId is not null && task.TaskId != request.Scope.TaskId)
-                    continue;
+            // Build the scoped list of objectives to send to the LLM
+            var targets = testSet.TestObjectives.AsEnumerable();
+            if (request.Scope?.ObjectiveId is not null)
+                targets = targets.Where(o => o.Id == request.Scope.ObjectiveId);
 
-                for (int i = 0; i < task.TestCases.Count; i++)
-                {
-                    if (request.Scope?.CaseIndex is not null && i != request.Scope.CaseIndex)
-                        continue;
-                    entries.Add(new TestCasePatchEntry(task.TaskId, i, task.TestCases[i]));
-                }
-            }
+            var targetList = targets.ToList();
+            if (targetList.Count == 0)
+                return Results.BadRequest(new { error = "No objectives match the specified scope" });
 
-            if (entries.Count == 0)
-                return Results.BadRequest(new { error = "No test cases match the specified scope" });
+            // For API objectives, collect all API steps across targeted objectives
+            var apiCases = targetList
+                .SelectMany(o => o.ApiSteps.Select(s => s.ToTestCase("")))
+                .ToList();
 
-            // Serialize only the test cases for the LLM prompt
-            var casesForLlm = entries.Select(e => e.TestCase).ToList();
-            var casesJson = JsonSerializer.Serialize(casesForLlm, LlmJsonHelper.JsonOpts);
+            if (apiCases.Count == 0)
+                return Results.BadRequest(new { error = "AI patch currently only supports API test objectives" });
+
+            var casesJson = JsonSerializer.Serialize(apiCases, LlmJsonHelper.JsonOpts);
 
             var prompt = $"""
                 Here are the current API test cases as a JSON array:
@@ -416,16 +357,22 @@ public static class ModuleEndpoints
                 var response = await chatService.GetChatMessageContentAsync(history);
                 var patched = LlmJsonHelper.DeserializeLlmResponse<List<ApiTestCase>>(response.Content ?? "");
 
-                if (patched is null || patched.Count != entries.Count)
+                if (patched is null || patched.Count != apiCases.Count)
                     return Results.UnprocessableEntity(new
                     {
-                        error = $"LLM returned an invalid response (expected {entries.Count} test cases, got {patched?.Count ?? 0})"
+                        error = $"LLM returned an invalid response (expected {apiCases.Count} test cases, got {patched?.Count ?? 0})"
                     });
 
-                var patchedEntries = entries.Select((e, idx) =>
-                    new TestCasePatchEntry(e.TaskId, e.CaseIndex, patched[idx])).ToList();
+                // Map patched cases back — for now scoped to single objective
+                var patchEntries = patched
+                    .Select((tc, idx) => new ObjectivePatchEntry(targetList[0].Id, tc))
+                    .ToList();
 
-                return Results.Ok(new AiPatchPreview(entries, patchedEntries));
+                var originalEntries = apiCases
+                    .Select((tc, idx) => new ObjectivePatchEntry(targetList[0].Id, tc))
+                    .ToList();
+
+                return Results.Ok(new AiPatchPreview(originalEntries, patchEntries));
             }
             catch (Exception ex)
             {
@@ -446,29 +393,36 @@ public static class ModuleEndpoints
             if (testSet is null)
                 return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
 
-            foreach (var patch in request.Patches)
+            // Group patches by objective and replace the API steps
+            foreach (var group in request.Patches.GroupBy(p => p.ObjectiveId))
             {
-                var task = testSet.Tasks.FirstOrDefault(t => t.TaskId == patch.TaskId);
-                if (task is null) continue;
-                if (patch.CaseIndex < 0 || patch.CaseIndex >= task.TestCases.Count) continue;
-                task.TestCases[patch.CaseIndex] = patch.TestCase;
+                var objective = testSet.TestObjectives.FirstOrDefault(o => o.Id == group.Key);
+                if (objective is null) continue;
+
+                objective.ApiSteps = group
+                    .Select(p => ApiTestDefinition.FromTestCase(p.TestCase))
+                    .ToList();
             }
 
             await tsRepo.SaveAsync(testSet, moduleId);
-
-            var latestRun = historyRepo.GetLatestRun(tsId);
-            return Results.Ok(new
-            {
-                testSet.Id, testSet.Name, testSet.ModuleId,
-                testSet.Objectives, testSet.ObjectiveNames,
-                Objective = testSet.Objective,
-                testSet.CreatedAt, testSet.LastRunAt, testSet.RunCount,
-                LastRunStatus = latestRun?.Status,
-                testSet.Tasks
-            });
+            return Results.Ok(TestSetResponse(testSet, historyRepo));
         });
 
         return group;
+    }
+
+    private static object TestSetResponse(PersistedTestSet testSet, ExecutionHistoryRepository historyRepo)
+    {
+        var latestRun = historyRepo.GetLatestRun(testSet.Id);
+        return new
+        {
+            testSet.Id, testSet.Name, testSet.ModuleId,
+            testSet.Objectives, testSet.ObjectiveNames,
+            Objective = testSet.Objective,
+            testSet.CreatedAt, testSet.LastRunAt, testSet.RunCount,
+            LastRunStatus = latestRun?.Status,
+            testSet.TestObjectives
+        };
     }
 }
 
@@ -477,9 +431,9 @@ public record UpdateModuleRequest(string? Name, string? Description);
 public record CreateTestSetRequest(string Name);
 public record MoveObjectiveRequest(string Objective, string DestinationModuleId, string DestinationTestSetId);
 
-// ── Test case editing records ──
+// ── Test objective editing records ──
 public record AiPatchRequest(string Instruction, AiPatchScope? Scope);
-public record AiPatchScope(string? TaskId, int? CaseIndex);
-public record TestCasePatchEntry(string TaskId, int CaseIndex, ApiTestCase TestCase);
-public record AiPatchPreview(List<TestCasePatchEntry> Original, List<TestCasePatchEntry> Patched);
-public record AiPatchApplyRequest(List<TestCasePatchEntry> Patches);
+public record AiPatchScope(string? ObjectiveId);
+public record ObjectivePatchEntry(string ObjectiveId, ApiTestCase TestCase);
+public record AiPatchPreview(List<ObjectivePatchEntry> Original, List<ObjectivePatchEntry> Patched);
+public record AiPatchApplyRequest(List<ObjectivePatchEntry> Patches);

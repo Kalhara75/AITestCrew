@@ -100,20 +100,19 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                 return BuildResult(task, steps, cfgError, sw.Elapsed, []);
             }
 
-            // ── Launch browser (shared across all phases; contexts are per-test-case) ──
+            // ── Launch browser ──
             playwright = await Playwright.CreateAsync();
             browser = await LaunchBrowserAsync(playwright);
             steps.Add(TestStep.Pass("browser-launch",
                 $"Launched {_config.PlaywrightBrowser} (headless={_config.PlaywrightHeadless})"));
 
-            // ── Optional one-time auth setup (e.g. Azure SSO for BraveCloud) ──
+            // ── Optional one-time auth setup ──
             try
             {
                 await PerformOneTimeAuthSetupAsync(browser, ct);
             }
             catch (Exception ex)
             {
-                // Non-fatal: log and continue. Test cases that need auth will fail naturally.
                 Logger.LogWarning("[{Agent}] One-time auth setup failed (non-fatal): {Msg}", Name, ex.Message);
                 steps.Add(TestStep.Pass("auth-setup", $"Auth setup skipped: {ex.Message}"));
             }
@@ -121,8 +120,6 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
             // ── Generate test cases if not in reuse mode ──
             if (testCases is null)
             {
-                // The LLM explores the live UI using browser tools, then generates test cases
-                // from selectors and URLs it directly observed — no guesswork.
                 try
                 {
                     testCases = await ExploreAndGenerateTestCasesAsync(browser, task.Description, ct);
@@ -146,7 +143,7 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                 Logger.LogInformation("[{Agent}] Generated {Count} test cases", Name, testCases.Count);
             }
 
-            // ── Execute each test case in its own isolated browser context ──
+            // ── Execute each test case (each becomes a step) ──
             foreach (var tc in testCases)
             {
                 ct.ThrowIfCancellationRequested();
@@ -173,6 +170,35 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
             if (browser is not null) await browser.CloseAsync();
             playwright?.Dispose();
         }
+    }
+
+    private TestResult BuildResult(
+        TestTask task, List<TestStep> steps, string summary,
+        TimeSpan duration, List<WebUiTestCase> testCases)
+    {
+        var failCount  = steps.Count(s => s.Status == TestStatus.Failed);
+        var errorCount = steps.Count(s => s.Status == TestStatus.Error);
+
+        var status = errorCount > 0 ? TestStatus.Error
+                   : failCount  > 0 ? TestStatus.Failed
+                   : TestStatus.Passed;
+
+        return new TestResult
+        {
+            ObjectiveId   = task.Id,
+            ObjectiveName = task.Description,
+            AgentName     = Name,
+            Status        = status,
+            Summary       = summary,
+            Steps         = steps,
+            Duration      = duration,
+            Metadata      = new Dictionary<string, object>
+            {
+                ["totalCases"]         = testCases.Count,
+                ["baseUrl"]            = TargetBaseUrl,
+                ["generatedTestCases"] = testCases
+            }
+        };
     }
 
     // ─────────────────────────────────────────────────────
@@ -515,35 +541,4 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
         return TargetBaseUrl.TrimEnd('/') + "/" + url.TrimStart('/');
     }
 
-    // ─────────────────────────────────────────────────────
-    // Result builder
-    // ─────────────────────────────────────────────────────
-
-    private TestResult BuildResult(
-        TestTask task, List<TestStep> steps, string summary,
-        TimeSpan duration, List<WebUiTestCase> testCases)
-    {
-        var failCount  = steps.Count(s => s.Status == TestStatus.Failed);
-        var errorCount = steps.Count(s => s.Status == TestStatus.Error);
-
-        var status = errorCount > 0 ? TestStatus.Error
-                   : failCount  > 0 ? TestStatus.Failed
-                   : TestStatus.Passed;
-
-        return new TestResult
-        {
-            TaskId    = task.Id,
-            AgentName = Name,
-            Status    = status,
-            Summary   = summary,
-            Steps     = steps,
-            Duration  = duration,
-            Metadata  = new Dictionary<string, object>
-            {
-                ["totalCases"]         = testCases.Count,
-                ["baseUrl"]            = TargetBaseUrl,
-                ["generatedTestCases"] = testCases
-            }
-        };
-    }
 }

@@ -104,6 +104,7 @@ app.UseCors();
 
 // ── Migrate legacy test sets to module structure ──
 await MigrationHelper.MigrateToModulesAsync(dataDir);
+await MigrationHelper.MigrateToSchemaV2Async(dataDir);
 
 // ── Map endpoints ──
 app.MapGroup("/api/modules").MapModuleEndpoints();
