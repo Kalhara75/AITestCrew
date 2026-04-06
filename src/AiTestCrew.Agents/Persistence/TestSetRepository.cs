@@ -139,6 +139,7 @@ public class TestSetRepository
     public async Task SaveAsync(PersistedTestSet testSet, string moduleId)
     {
         var path = ModuleFilePath(moduleId, testSet.Id);
+        System.IO.Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var json = JsonSerializer.Serialize(testSet, JsonOpts);
         await File.WriteAllTextAsync(path, json);
     }

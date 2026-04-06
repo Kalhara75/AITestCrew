@@ -118,6 +118,27 @@ dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset controlled-
 
 ---
 
+### Record (Web UI only)
+
+Record a Web UI test case by interacting with a real browser. The CLI opens a non-headless Chromium window and captures every form fill and button click as exact `WebUiTestCase` steps with verified DOM selectors.
+
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --record \
+  --module <moduleId> \
+  --testset <testSetId> \
+  --case-name "Happy path - valid credentials reach home" \
+  --target UI_Web_MVC
+```
+
+- `--target` is `UI_Web_MVC` (uses `LegacyWebUiUrl`) or `UI_Web_Blazor` (uses `BraveCloudUiUrl`).
+- Module and test set are created automatically if they do not exist.
+- Module/test set names are slugified so they match the WebApi directory structure.
+- The session ends when you click **Save & Stop** in the overlay, close the browser, or after 15 minutes.
+
+See [Web UI Testing — Recording Mode](#option-2--recording-mode-recommended-for-reliability) for full details.
+
+---
+
 ### List
 Display all saved test sets and exit.
 
@@ -296,7 +317,9 @@ Shows the test sets within a module as a card grid. Features:
 Shows the full test set with:
 - **Objectives list** — all objectives that have contributed test cases. Objectives with a short name display that name with the full text as a tooltip. Each has a **Move** button to relocate the objective (and its tasks) to a different test set/module.
 - **AI Edit Test Cases button** — opens the AI patch panel for natural language corrections (see [Editing Test Cases](#editing-test-cases))
-- **Test cases table** — HTTP method (colour-coded), endpoint, test name, expected status code. Click any row to open the direct editor.
+- **Test cases table** — adapts to the type of test cases in the set:
+  - *API tests* — HTTP method (colour-coded), endpoint, test name, expected status code. Click any row to open the direct editor.
+  - *Web UI tests* — test name, start URL, step count, screenshot-on-failure flag. Click any row to open the Web UI step editor. If both API and UI tasks exist in the same test set, both tables are shown with labels.
 - **Execution history** — all previous runs with status, pass/fail counts, duration, and date
 - **Trigger buttons** — "Re-run Tests" (reuse mode) and "Rebaseline" (regenerate tests)
 - **Delete Test Set** button — permanently removes the test set and all execution history after confirmation
@@ -388,6 +411,167 @@ History is saved in a try/catch wrapper — if persistence fails, the CLI output
 
 ---
 
+## Web UI Testing
+
+AITestCrew can test web applications using Playwright. Two agents are available:
+
+| Agent | Target Type | Application |
+|---|---|---|
+| **Legacy Web UI Agent** | `UI_Web_MVC` | Legacy ASP.NET MVC application — forms authentication |
+| **Brave Cloud UI Agent** | `UI_Web_Blazor` | Brave Cloud UI (Blazor) — Azure OpenID SSO |
+
+### Authoring Web UI Test Cases
+
+Two authoring paths are available. LLM generation is an optional shortcut; **Recording Mode** gives fully deterministic, human-verified test cases with no LLM involvement.
+
+---
+
+#### Option 1 — LLM Generation (from an objective)
+
+Write objectives in plain English exactly as you would for API tests:
+
+```bash
+# Legacy MVC app
+dotnet run --project src/AiTestCrew.Runner -- \
+  --module legacy --testset login \
+  "Test the login page with valid credentials, wrong password, and a locked account"
+
+# Brave Cloud UI (Blazor)
+dotnet run --project src/AiTestCrew.Runner -- \
+  --module bravecloud --testset dashboard \
+  "Test that the dashboard loads correctly and shows the expected widgets after login"
+```
+
+The agent uses a **two-phase approach** to reduce hallucinated selectors:
+
+1. **Exploration phase** — a browser opens, the LLM navigates with live Playwright tools (`snapshot`, `navigate`, `click`, `fill`), observing real page titles and URLs.
+2. **Generation phase** — the LLM receives the observed page facts (actual URL + title per page visited) and generates JSON test cases. Assertion values are taken exclusively from what was observed — no invented values.
+
+Credentials are never passed to or invented by the LLM. They are read from `LegacyWebUiUsername` / `LegacyWebUiPassword` in config and injected into the exploration prompt as authoritative values.
+
+---
+
+#### Option 2 — Recording Mode (recommended for reliability)
+
+Record a test case by performing the scenario yourself in a real browser. No LLM is involved — selectors and values are captured directly from the DOM.
+
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --record \
+  --module <moduleId> \
+  --testset <testSetId> \
+  --case-name "Happy path - valid credentials reach home" \
+  --target UI_Web_MVC
+```
+
+| Flag | Purpose |
+|---|---|
+| `--record` | Activates recording mode |
+| `--module` | Module ID or display name (slugified automatically) |
+| `--testset` | Test set ID or display name (slugified automatically) |
+| `--case-name` | Name for the new `WebUiTestCase` |
+| `--target` | `UI_Web_MVC` (uses `LegacyWebUiUrl`) or `UI_Web_Blazor` (uses `BraveCloudUiUrl`) |
+
+**What happens:**
+
+1. A non-headless Chromium window opens at the configured base URL.
+2. An **overlay panel** appears in the **bottom-right corner** of the browser. If the page is still loading when it first appears, the overlay attaches automatically once the DOM is ready.
+3. Interact with the page normally — every form fill (captured on field `change`) and click (on buttons, links, submit inputs) is recorded with its exact CSS selector and value.
+4. Use the overlay buttons to add assertions at any point:
+   - **+ Assert current URL (…)** — records an `assert-url-contains` step with the current path
+   - **+ Assert page title (…)** — records an `assert-title-contains` step with the current title
+   - Buttons update to show `✓` after being clicked to confirm the step was captured
+5. Click **Save & Stop** to end the session.
+6. The captured steps are printed to the console in a table and saved to the test set file.
+
+The module directory and manifest are created automatically if they do not exist. Module/test set names are slugified before saving so they match the WebApi's directory structure.
+
+**Example output:**
+```
+Saved 5 steps → standing-data-replication-sdr/test-recording
+Replay: dotnet run -- --reuse test-recording
+```
+
+---
+
+#### Editing Web UI Test Cases in the UI
+
+Recorded or LLM-generated web UI test cases can be reviewed and edited directly in the web dashboard.
+
+On the test set detail page, the **Web UI Tests** section shows a table with columns: Name, Start URL, Steps count, Screenshot on failure. Click any row to open the editor.
+
+**Edit Web UI Test Case** dialog fields:
+- **Name** and **Description**
+- **Start URL** — relative path where the test begins (e.g. `/Account/Login`)
+- **Take screenshot on failure** — checkbox
+- **Steps** — ordered list, each with:
+  - Action dropdown (see step types below)
+  - Selector (disabled for actions that don't use one)
+  - Value
+  - Timeout (ms) — default 5 000 ms for fills, 15 000 ms for clicks
+  - ↑ / ↓ reorder buttons, ✕ delete button
+- **+ Add Step** — appends a new blank step
+- **Delete Test Case** button (bottom-left) — removes the entire test case after inline confirmation
+
+Changes are saved via `PUT /api/modules/{moduleId}/testsets/{tsId}/tasks/{taskId}/webuicases/{index}`.
+
+---
+
+### Playwright step types
+
+| Action | Selector | Value | Description |
+|---|---|---|---|
+| `navigate` | — | URL path | Go to a URL |
+| `click` | CSS selector | — | Click an element (15 s timeout; JS fallback if Playwright actionability check stalls) |
+| `fill` | CSS selector | text | Type text into an input |
+| `select` | CSS selector | option value | Choose a dropdown option |
+| `check` / `uncheck` | CSS selector | — | Tick/untick a checkbox |
+| `hover` | CSS selector | — | Hover over an element |
+| `press` | CSS selector | key name | Press a keyboard key |
+| `assert-text` | CSS selector | expected text | Assert element text contains a value |
+| `assert-visible` / `assert-hidden` | CSS selector | — | Assert element visibility |
+| `assert-url-contains` | — | URL fragment | Assert the current URL contains a value |
+| `assert-title-contains` | — | title fragment | Assert the page title contains a value |
+| `wait` | CSS selector or — | ms (if no selector) | Wait for a selector or a fixed delay |
+
+### Configuration
+
+Add these settings to `appsettings.json` under `TestEnvironment`:
+
+```json
+"PlaywrightBrowser":  "chromium",
+"PlaywrightHeadless": true,
+"PlaywrightScreenshotDir": "screenshots",
+
+"LegacyWebUiUrl":      "https://your-legacy-app.example.com",
+"LegacyWebUiLoginPath": "/Account/Login",
+"LegacyWebUiUsername": "your-test-username",
+"LegacyWebUiPassword": "your-test-password",
+
+"BraveCloudUiUrl":                   "https://your-bravecloud-app.example.com",
+"BraveCloudUiStorageStatePath":       "bravecloud-auth-state.json",
+"BraveCloudUiUsername":               "test-account@yourdomain.com",
+"BraveCloudUiPassword":               "your-aad-password",
+"BraveCloudUiStorageStateMaxAgeHours": 8
+```
+
+### Authentication
+
+**Legacy MVC** — the agent navigates to `LegacyWebUiLoginPath`, fills the username and password from config, and submits the login form. The session is maintained for the duration of the test run. In recording mode, authentication is left to the user — navigate and log in manually within the browser window.
+
+**Brave Cloud UI (Azure SSO)** — the first run performs a full SSO login via the Azure AD login page and saves the resulting browser auth state to `BraveCloudUiStorageStatePath`. Subsequent runs within `BraveCloudUiStorageStateMaxAgeHours` (default: 8 hours) reuse the saved state and skip the SSO flow entirely.
+
+> **Important:** The Azure AD test account must have MFA disabled, or be excluded from MFA via a conditional access policy. Automated browser flows cannot handle interactive MFA prompts.
+
+### Browser installation
+
+Playwright requires browser binaries to be installed once. Run this after first checkout or package update:
+
+```bash
+pwsh -Command playwright install chromium
+```
+
+---
+
 ## Planned Future Capabilities
 
 The following are scaffolded in the codebase but not yet active:
@@ -396,7 +580,7 @@ The following are scaffolded in the codebase but not yet active:
 |---|---|
 | Parallel task execution | `MaxParallelAgents` setting exists; sequential only in Phase 1 |
 | Task dependency ordering | `DependsOn` field on `TestTask` exists; not yet enforced |
-| UI testing (MVC, Blazor, WinForms) | Target types defined; no agent implemented |
+| UI testing — WinForms | Target type defined; no agent implemented |
 | Background job testing (Hangfire) | Target type defined; no agent implemented |
 | Message bus testing | Target type defined; no agent implemented |
 | Database validation | Target type defined; no agent implemented |

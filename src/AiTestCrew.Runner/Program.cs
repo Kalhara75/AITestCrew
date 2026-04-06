@@ -6,7 +6,10 @@ using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Spectre.Console;
 using AiTestCrew.Agents.ApiAgent;
+using AiTestCrew.Agents.BraveCloudUiAgent;
+using AiTestCrew.Agents.LegacyWebUiAgent;
 using AiTestCrew.Agents.Persistence;
+using AiTestCrew.Agents.WebUiBase;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
@@ -126,6 +129,115 @@ if (cli.CreateTestSetModuleId is not null && cli.CreateTestSetName is not null)
     return;
 }
 
+// ── Record mode — human-driven capture, no LLM needed ──
+if (cli.RecordMode)
+{
+    if (cli.ModuleId is null || cli.TestSetId is null)
+    {
+        AnsiConsole.MarkupLine("[red]--record requires --module <id> and --testset <id>[/]");
+        return;
+    }
+    if (string.IsNullOrWhiteSpace(cli.CaseName))
+    {
+        AnsiConsole.MarkupLine("[red]--record requires --case-name \"<name>\"[/]");
+        return;
+    }
+
+    // Load config to get base URL
+    var recordConfig = new ConfigurationBuilder()
+        .SetBasePath(AppContext.BaseDirectory)
+        .AddJsonFile("appsettings.json", optional: true)
+        .Build()
+        .GetSection("TestEnvironment")
+        .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
+
+    var targetType = cli.RecordTarget ?? "UI_Web_MVC";
+    var baseUrl = targetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
+        ? recordConfig.BraveCloudUiUrl
+        : recordConfig.LegacyWebUiUrl;
+
+    if (string.IsNullOrWhiteSpace(baseUrl))
+    {
+        var key = targetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
+            ? "BraveCloudUiUrl" : "LegacyWebUiUrl";
+        AnsiConsole.MarkupLine($"[red]Base URL not configured. Set '{key}' in appsettings.json.[/]");
+        return;
+    }
+
+    AnsiConsole.MarkupLine($"[cyan]Recording[/] → {cli.ModuleId}/{cli.TestSetId}  case: [bold]{cli.CaseName}[/]");
+    AnsiConsole.MarkupLine($"[grey]Target: {targetType}  Base URL: {baseUrl}[/]\n");
+
+    using var loggerFactory = LoggerFactory.Create(b =>
+        b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss "; })
+         .AddFilter("AiTestCrew", LogLevel.Information));
+    var recLogger = loggerFactory.CreateLogger("Recorder");
+
+    var recorded = await PlaywrightRecorder.RecordAsync(baseUrl, cli.CaseName, recordConfig, recLogger);
+
+    if (recorded.Steps.Count == 0)
+    {
+        AnsiConsole.MarkupLine("[yellow]No steps were captured. Test case not saved.[/]");
+        return;
+    }
+
+    // Resolve slugified IDs so the saved file matches what the WebApi/UI expects
+    var moduleId  = SlugHelper.ToSlug(cli.ModuleId);
+    var testSetId = SlugHelper.ToSlug(cli.TestSetId);
+
+    // Ensure the module directory and manifest exist (idempotent)
+    var modRepo = new ModuleRepository(AppContext.BaseDirectory);
+    if (!modRepo.Exists(moduleId))
+        await modRepo.CreateAsync(cli.ModuleId); // creates manifest with display name
+
+    // Save into the test set
+    var tsRepo = new TestSetRepository(AppContext.BaseDirectory);
+    var testSet = await tsRepo.LoadAsync(moduleId, testSetId)
+                  ?? await tsRepo.CreateEmptyAsync(moduleId, cli.TestSetId);
+
+    // Create or reuse a task entry for recorded UI cases in this test set
+    var taskId = $"recorded-{SlugHelper.ToSlug(cli.CaseName)}";
+    var task   = testSet.Tasks.FirstOrDefault(t => t.TaskId == taskId);
+    if (task is null)
+    {
+        task = new AiTestCrew.Agents.Persistence.PersistedTaskEntry
+        {
+            TaskId          = taskId,
+            TaskDescription = $"Recorded: {cli.CaseName}",
+            AgentName       = targetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
+                              ? "Brave Cloud UI Agent" : "Legacy Web UI Agent",
+            Objective       = cli.CaseName,
+            TargetType      = targetType
+        };
+        testSet.Tasks.Add(task);
+    }
+    task.WebUiTestCases.Add(recorded);
+    await tsRepo.SaveAsync(testSet, moduleId);
+
+    // Print captured steps
+    var stepTable = new Table()
+        .Border(TableBorder.Rounded)
+        .AddColumn("[bold]#[/]")
+        .AddColumn("[bold]Action[/]")
+        .AddColumn("[bold]Selector[/]")
+        .AddColumn("[bold]Value[/]");
+
+    for (int i = 0; i < recorded.Steps.Count; i++)
+    {
+        var s = recorded.Steps[i];
+        var displayValue = s.Value is null ? "-" : (s.Value.Length > 40 ? s.Value[..40] + "…" : s.Value);
+        stepTable.AddRow(
+            (i + 1).ToString(),
+            Markup.Escape(s.Action),
+            Markup.Escape(s.Selector ?? "-"),
+            Markup.Escape(displayValue)
+        );
+    }
+    AnsiConsole.Write(stepTable);
+    AnsiConsole.MarkupLine($"\n[green]Saved[/] {recorded.Steps.Count} steps → {Markup.Escape(moduleId)}/{Markup.Escape(testSetId)}");
+    AnsiConsole.MarkupLine($"[grey]Replay: dotnet run -- --reuse {Markup.Escape(testSetId)}[/]");
+    return;
+}
+
 // ── Migrate legacy test sets to module structure (idempotent) ──
 await MigrationHelper.MigrateToModulesAsync(AppContext.BaseDirectory);
 
@@ -171,6 +283,20 @@ builder.Services.AddSingleton<ApiTestAgent>(sp => new ApiTestAgent(
     sp.GetRequiredService<TestEnvironmentConfig>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<ApiTestAgent>());
+
+builder.Services.AddSingleton<LegacyWebUiTestAgent>(sp => new LegacyWebUiTestAgent(
+    sp.GetRequiredService<Kernel>(),
+    sp.GetRequiredService<ILogger<LegacyWebUiTestAgent>>(),
+    sp.GetRequiredService<TestEnvironmentConfig>()
+));
+builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<LegacyWebUiTestAgent>());
+
+builder.Services.AddSingleton<BraveCloudUiTestAgent>(sp => new BraveCloudUiTestAgent(
+    sp.GetRequiredService<Kernel>(),
+    sp.GetRequiredService<ILogger<BraveCloudUiTestAgent>>(),
+    sp.GetRequiredService<TestEnvironmentConfig>()
+));
+builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<BraveCloudUiTestAgent>());
 
 // Test set persistence + execution history + modules
 builder.Services.AddSingleton(new TestSetRepository(AppContext.BaseDirectory));
@@ -319,8 +445,8 @@ static CliArgs ParseArgs(string[] args)
     var remaining = new List<string>();
     string? moduleId = null, testSetId = null, reuseId = null;
     string? createModuleName = null, createTestSetModuleId = null, createTestSetName = null;
-    string? objectiveName = null;
-    bool listModules = false;
+    string? objectiveName = null, caseName = null, recordTarget = null;
+    bool listModules = false, recordMode = false;
     var mode = RunMode.Normal;
 
     for (int i = 0; i < args.Length; i++)
@@ -368,6 +494,19 @@ static CliArgs ParseArgs(string[] args)
                 break;
             case "--obj-name":
                 throw new ArgumentException("--obj-name requires a \"Name\" argument.");
+            case "--record":
+                recordMode = true;
+                break;
+            case "--case-name" when i + 1 < args.Length:
+                caseName = args[++i];
+                break;
+            case "--case-name":
+                throw new ArgumentException("--case-name requires a \"Name\" argument.");
+            case "--target" when i + 1 < args.Length:
+                recordTarget = args[++i];
+                break;
+            case "--target":
+                throw new ArgumentException("--target requires UI_Web_MVC or UI_Web_Blazor.");
             default:
                 remaining.Add(args[i]);
                 break;
@@ -387,7 +526,10 @@ static CliArgs ParseArgs(string[] args)
         ListModules = listModules,
         CreateModuleName = createModuleName,
         CreateTestSetModuleId = createTestSetModuleId,
-        CreateTestSetName = createTestSetName
+        CreateTestSetName = createTestSetName,
+        RecordMode = recordMode,
+        CaseName = caseName,
+        RecordTarget = recordTarget
     };
 }
 
@@ -405,4 +547,7 @@ class CliArgs
     public string? CreateTestSetModuleId { get; init; }
     public string? CreateTestSetName { get; init; }
     public string? ObjectiveName { get; init; }
+    public bool RecordMode { get; init; }
+    public string? CaseName { get; init; }
+    public string? RecordTarget { get; init; }
 }

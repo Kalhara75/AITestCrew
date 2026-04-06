@@ -294,6 +294,69 @@ public static class ModuleEndpoints
             });
         });
 
+        // PUT /api/modules/{moduleId}/testsets/{tsId}/tasks/{taskId}/webuicases/{index} — update a single Web UI test case
+        group.MapPut("/{moduleId}/testsets/{tsId}/tasks/{taskId}/webuicases/{index:int}",
+            async (string moduleId, string tsId, string taskId, int index,
+                AiTestCrew.Agents.Shared.WebUiTestCase updated,
+                TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+        {
+            var testSet = await tsRepo.LoadAsync(moduleId, tsId);
+            if (testSet is null)
+                return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
+
+            var task = testSet.Tasks.FirstOrDefault(t => t.TaskId == taskId);
+            if (task is null)
+                return Results.NotFound(new { error = $"Task '{taskId}' not found in test set '{tsId}'" });
+
+            if (index < 0 || index >= task.WebUiTestCases.Count)
+                return Results.BadRequest(new { error = $"Web UI test case index {index} out of range (0-{task.WebUiTestCases.Count - 1})" });
+
+            task.WebUiTestCases[index] = updated;
+            await tsRepo.SaveAsync(testSet, moduleId);
+
+            var latestRun = historyRepo.GetLatestRun(tsId);
+            return Results.Ok(new
+            {
+                testSet.Id, testSet.Name, testSet.ModuleId,
+                testSet.Objectives, testSet.ObjectiveNames,
+                Objective = testSet.Objective,
+                testSet.CreatedAt, testSet.LastRunAt, testSet.RunCount,
+                LastRunStatus = latestRun?.Status,
+                testSet.Tasks
+            });
+        });
+
+        // DELETE /api/modules/{moduleId}/testsets/{tsId}/tasks/{taskId}/webuicases/{index} — delete a Web UI test case
+        group.MapDelete("/{moduleId}/testsets/{tsId}/tasks/{taskId}/webuicases/{index:int}",
+            async (string moduleId, string tsId, string taskId, int index,
+                TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+        {
+            var testSet = await tsRepo.LoadAsync(moduleId, tsId);
+            if (testSet is null)
+                return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
+
+            var task = testSet.Tasks.FirstOrDefault(t => t.TaskId == taskId);
+            if (task is null)
+                return Results.NotFound(new { error = $"Task '{taskId}' not found in test set '{tsId}'" });
+
+            if (index < 0 || index >= task.WebUiTestCases.Count)
+                return Results.BadRequest(new { error = $"Web UI test case index {index} out of range (0-{task.WebUiTestCases.Count - 1})" });
+
+            task.WebUiTestCases.RemoveAt(index);
+            await tsRepo.SaveAsync(testSet, moduleId);
+
+            var latestRun = historyRepo.GetLatestRun(tsId);
+            return Results.Ok(new
+            {
+                testSet.Id, testSet.Name, testSet.ModuleId,
+                testSet.Objectives, testSet.ObjectiveNames,
+                Objective = testSet.Objective,
+                testSet.CreatedAt, testSet.LastRunAt, testSet.RunCount,
+                LastRunStatus = latestRun?.Status,
+                testSet.Tasks
+            });
+        });
+
         // POST /api/modules/{moduleId}/testsets/{tsId}/ai-patch — preview LLM-applied changes
         group.MapPost("/{moduleId}/testsets/{tsId}/ai-patch",
             async (string moduleId, string tsId, AiPatchRequest request,

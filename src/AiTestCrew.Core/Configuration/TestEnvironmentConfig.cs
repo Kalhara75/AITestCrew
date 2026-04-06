@@ -40,4 +40,26 @@ public class TestEnvironmentConfig
     public int MaxParallelAgents { get; set; } = 4;
     public int DefaultTimeoutSeconds { get; set; } = 300;
     public bool VerboseLogging { get; set; } = true;
+
+    // --- Playwright browser settings ---
+    public string PlaywrightBrowser { get; set; } = "chromium";  // chromium | firefox | webkit
+    public bool PlaywrightHeadless { get; set; } = true;
+    public string? PlaywrightScreenshotDir { get; set; }
+
+    // --- Legacy ASP.NET MVC web UI ---
+    public string LegacyWebUiUrl { get; set; } = "";
+    public string LegacyWebUiLoginPath { get; set; } = "/Account/Login";
+    public string LegacyWebUiUsername { get; set; } = "";
+    public string LegacyWebUiPassword { get; set; } = "";
+
+    // --- Brave Cloud UI (Blazor / Azure OpenID SSO) ---
+    // BraveCloudUiStorageStatePath: path to save/load browser auth state (JSON).
+    // On first run the agent performs a full SSO login and saves the state.
+    // Subsequent runs within BraveCloudUiStorageStateMaxAgeHours reuse the saved state.
+    // NOTE: The test Azure AD account must have MFA disabled (or excluded via conditional access).
+    public string BraveCloudUiUrl { get; set; } = "";
+    public string? BraveCloudUiStorageStatePath { get; set; }
+    public string BraveCloudUiUsername { get; set; } = "";  // AAD email
+    public string BraveCloudUiPassword { get; set; } = "";  // AAD password
+    public int BraveCloudUiStorageStateMaxAgeHours { get; set; } = 8;
 }

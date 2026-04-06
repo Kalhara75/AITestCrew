@@ -58,16 +58,76 @@ Agents/
   Base/
     BaseTestAgent.cs              — Shared LLM communication (delegates JSON utilities to LlmJsonHelper)
     LlmJsonHelper.cs              — Static JSON cleaning/parsing utilities (shared with WebApi endpoints)
+  Shared/
+    WebUiTestCase.cs              — WebUiTestCase + WebUiStep models (shared by both UI agents)
+  WebUiBase/
+    BaseWebUiTestAgent.cs         — Shared Playwright logic: browser lifecycle, two-phase LLM generation,
+                                    step execution (with JS click fallback), screenshot capture
+    PlaywrightBrowserTools.cs     — Semantic Kernel plugin exposing snapshot/navigate/click/fill as kernel
+                                    functions; tracks PageObservation list (real URL+title per page visited)
+    PlaywrightRecorder.cs         — Human-driven recording mode: non-headless Chromium, JS overlay panel,
+                                    ExposeFunctionAsync step capture, returns WebUiTestCase with real selectors
+  LegacyWebUiAgent/
+    LegacyWebUiTestAgent.cs       — ASP.NET MVC web UI agent (forms auth, UI_Web_MVC)
+  BraveCloudUiAgent/
+    BraveCloudUiTestAgent.cs      — Blazor web UI agent (Azure SSO + storage state, UI_Web_Blazor)
   Persistence/
     PersistedModule.cs            — Module manifest model (id, name, description, timestamps)
     PersistedTestSet.cs           — JSON envelope model for saved test sets (supports multiple objectives)
     PersistedExecutionRun.cs      — Execution history models (run, task, step results)
     ModuleRepository.cs           — File I/O for modules/{id}/module.json
     TestSetRepository.cs          — File I/O for test sets (legacy flat + module-scoped, incl. move objective)
+                                    SaveAsync creates the module directory if it does not exist
     ExecutionHistoryRepository.cs — File I/O for executions/{testSetId}/{runId}.json
     SlugHelper.cs                 — Shared slugification logic
     MigrationHelper.cs            — Auto-migrates legacy testsets/ to modules/default/
 ```
+
+#### Web UI Agents
+
+Two Playwright-powered agents extend `BaseWebUiTestAgent`:
+
+```
+BaseTestAgent  (LLM, AskLlmAsync/AskLlmForJsonAsync)
+    └── BaseWebUiTestAgent  (Playwright: browser lifecycle, two-phase generation, step execution)
+            ├── LegacyWebUiTestAgent   (UI_Web_MVC,    forms auth)
+            └── BraveCloudUiTestAgent  (UI_Web_Blazor, Azure SSO + storage state)
+```
+
+**Browser lifecycle** — A new `IPlaywright` + `IBrowser` instance is created at the start of each `ExecuteAsync` call and disposed in a `finally` block. Agents are registered as singletons but hold no browser state between calls.
+
+**Two-phase LLM generation** — `BaseWebUiTestAgent.ExploreAndGenerateTestCasesAsync`:
+1. **Phase 1 — Exploration**: a `Kernel.Clone()` with the `PlaywrightBrowserTools` plugin registered runs the LLM with `FunctionChoiceBehavior.Auto()`. The LLM navigates and inspects the real page. `PlaywrightBrowserTools` accumulates a `List<PageObservation>` (actual URL + title per `snapshot()` call).
+2. **Phase 2 — JSON generation**: the exploration result and `PageObservation` list are injected into a new prompt that instructs the LLM to output only a JSON array. The base `Kernel` (no tools) is used so no further navigation occurs. Observed page facts are passed as authoritative ground truth to prevent hallucinated assertion values.
+
+**Credentials** — `GetConfiguredCredentials()` is a virtual method on `BaseWebUiTestAgent`. Each subclass overrides it to return `(Username, Password)` from config. The base class injects these into the Phase 1 exploration prompt, ensuring the LLM never invents or hard-codes credential values.
+
+**Click execution** — `ExecuteUiStepAsync` uses a minimum 15 s timeout for `click` steps (regardless of the stored `timeoutMs`) because clicks frequently trigger form submissions and full-page navigations. If Playwright's actionability check stalls (e.g. a covering overlay), it falls back to a JS `el.click()` via `EvalOnSelectorAsync`.
+
+**Storage state** — `BraveCloudUiTestAgent` saves browser cookies/localStorage to `BraveCloudUiStorageStatePath` after a successful SSO login. Subsequent calls within `BraveCloudUiStorageStateMaxAgeHours` pass this file to `browser.NewContextAsync()` via `StorageStatePath`, skipping the full Azure AD redirect flow.
+
+**Test case persistence** — `PersistedTaskEntry` has two collections:
+- `TestCases` (`List<ApiTestCase>`) — populated by API agents
+- `WebUiTestCases` (`List<WebUiTestCase>`) — populated by UI agents and the recorder
+
+`TargetType` (string, default `"API_REST"`) is also stored so the orchestrator can reconstruct tasks with the correct `TestTargetType` on reuse.
+
+#### PlaywrightRecorder
+
+`PlaywrightRecorder.RecordAsync` provides a human-driven alternative to LLM generation. It:
+- Always launches non-headless Chromium (`SlowMo = 50`)
+- Calls `page.ExposeFunctionAsync("aitcRecordStep", ...)` — JS→.NET bridge, survives page navigation
+- Calls `page.ExposeFunctionAsync("aitcStopRecording", ...)` — signals a `TaskCompletionSource`
+- Calls `page.AddInitScriptAsync(...)` — re-injects event listeners and overlay panel on every page load (deferred via `DOMContentLoaded` so `document.body` is ready)
+
+JS event listeners capture `change` events on inputs (→ `fill`) and `click` events on buttons/links (→ `click`). Selector computation uses `bestSelector(el)`: `#id → tag[name="x"] → tag[type="submit"] → input[type="x"] → a[href="path"] → tag`.
+
+The overlay panel (fixed, bottom-right, dark theme) provides:
+- **+ Assert current URL (path)** — records `assert-url-contains` with `location.pathname`
+- **+ Assert page title (title)** — records `assert-title-contains` with `document.title`
+- **Save & Stop** — signals `aitcStopRecording()`
+
+Duplicate `fill` steps on the same selector are deduplicated (update-in-place). Session ends on Save & Stop, browser close, or 15-minute timeout.
 
 ---
 
@@ -89,11 +149,16 @@ CLI entry point. Wires up DI, handles argument parsing, drives the run, renders 
 ```
 Runner/
   Program.cs                       — Top-level statements: arg parsing, DI, console output
+                                     Includes --record mode short-circuit (before DI host build):
+                                     slugifies module/testset IDs, calls PlaywrightRecorder.RecordAsync,
+                                     creates module manifest if missing, saves WebUiTestCase to test set
   AnthropicChatCompletionService.cs — Bridges Anthropic.SDK to Semantic Kernel's IChatCompletionService
   FileLoggerProvider.cs            — Writes all log messages to a timestamped file in logs/
   appsettings.json                 — Runtime configuration (copied to output directory on build)
   appsettings.example.json         — Template with placeholder values for source control
 ```
+
+**`--record` mode** runs before the DI host is built (no Orchestrator or agents needed). It resolves the module ID and test set ID via `SlugHelper.ToSlug` so the saved file path matches what the WebApi expects, then creates the module manifest via `ModuleRepository` if it does not exist.
 
 ---
 
@@ -130,7 +195,9 @@ WebApi/
 | `GET` | `/api/modules/{id}/testsets/{tsId}/runs` | Run history |
 | `GET` | `/api/modules/{id}/testsets/{tsId}/runs/{runId}` | Run detail |
 | `POST` | `/api/modules/{id}/testsets/{tsId}/move-objective` | Move objective to another test set |
-| `PUT` | `/api/modules/{id}/testsets/{tsId}/tasks/{taskId}/testcases/{index}` | Update a single test case directly |
+| `PUT` | `/api/modules/{id}/testsets/{tsId}/tasks/{taskId}/testcases/{index}` | Update a single API test case directly |
+| `PUT` | `/api/modules/{id}/testsets/{tsId}/tasks/{taskId}/webuicases/{index}` | Update a single Web UI test case directly |
+| `DELETE` | `/api/modules/{id}/testsets/{tsId}/tasks/{taskId}/webuicases/{index}` | Delete a Web UI test case |
 | `POST` | `/api/modules/{id}/testsets/{tsId}/ai-patch` | Preview LLM-applied natural language patch to test cases |
 | `POST` | `/api/modules/{id}/testsets/{tsId}/ai-patch/apply` | Apply a previewed AI patch to the test set |
 | `GET` | `/api/testsets` | List all test sets (legacy, combined view) |
@@ -165,7 +232,8 @@ ui/src/
     Layout.tsx                     — Header, nav, content area
     StatusBadge.tsx                — Color-coded Passed/Failed/Error/Running badge
     TestSetCard.tsx                — Test set summary card (module-scoped links)
-    TestCaseTable.tsx              — HTTP method, endpoint, expected status table
+    TestCaseTable.tsx              — API test cases: HTTP method, endpoint, expected status table
+    WebUiTestCaseTable.tsx         — Web UI test cases: name, start URL, step count, screenshot flag
     RunHistoryTable.tsx            — Run list with status, duration, date (module-aware links)
     StepList.tsx                   — Expandable task/step rows with detail
     TriggerRunButton.tsx           — Mode selector + trigger + progress polling (module-aware)
@@ -174,7 +242,9 @@ ui/src/
     RunObjectiveDialog.tsx         — Modal to select test set, enter objective + optional short name, trigger run
     ConfirmDialog.tsx              — Reusable confirmation modal (used for destructive actions)
     MoveObjectiveDialog.tsx        — Modal to move an objective to another module/test set
-    EditTestCaseDialog.tsx         — Modal form to directly edit all fields of a single test case
+    EditTestCaseDialog.tsx         — Modal form to directly edit all fields of a single API test case
+    EditWebUiTestCaseDialog.tsx    — Modal form to edit Web UI test case steps (action, selector, value,
+                                    timeout per step; add/reorder/delete steps; delete entire test case)
     AiPatchPanel.tsx               — Panel for natural language AI patching of test cases with preview/apply flow
   types/
     index.ts                       — TypeScript interfaces matching API responses

@@ -37,12 +37,28 @@ export interface TestSetDetail {
   tasks: TaskEntry[];
 }
 
+export interface WebUiStep {
+  action: string;       // navigate | click | fill | assert-url-contains | assert-title-contains | etc.
+  selector: string | null;
+  value: string | null;
+  timeoutMs: number;
+}
+
+export interface WebUiTestCase {
+  name: string;
+  description: string;
+  startUrl: string;
+  steps: WebUiStep[];
+  takeScreenshotOnFailure: boolean;
+}
+
 export interface TaskEntry {
   taskId: string;
   taskDescription: string;
   agentName: string;
   objective: string;
   testCases: ApiTestCase[];
+  webUiTestCases: WebUiTestCase[];
 }
 
 export interface MoveObjectiveRequest {

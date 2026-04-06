@@ -5,6 +5,7 @@ using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using AiTestCrew.Agents.ApiAgent;
 using AiTestCrew.Agents.Persistence;
+using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
@@ -139,15 +140,24 @@ public class TestOrchestrator
                 saved.Id, saved.RunCount + 1, saved.Tasks.Count);
 
             // Restore tasks with pre-loaded test cases injected into Parameters
-            tasks = saved.Tasks.Select(entry => new TestTask
+            tasks = saved.Tasks.Select(entry =>
             {
-                Id = entry.TaskId,
-                Description = entry.TaskDescription,
-                Target = TestTargetType.API_REST,
-                Parameters = new Dictionary<string, object>
+                var targetType = Enum.TryParse<TestTargetType>(entry.TargetType, out var t)
+                    ? t : TestTargetType.API_REST;
+
+                var parameters = new Dictionary<string, object>();
+                if (entry.WebUiTestCases.Count > 0)
+                    parameters["PreloadedTestCases"] = entry.WebUiTestCases;
+                else
+                    parameters["PreloadedTestCases"] = entry.TestCases;
+
+                return new TestTask
                 {
-                    ["PreloadedTestCases"] = entry.TestCases
-                }
+                    Id = entry.TaskId,
+                    Description = entry.TaskDescription,
+                    Target = targetType,
+                    Parameters = parameters
+                };
             }).ToList();
         }
         else
@@ -400,19 +410,34 @@ public class TestOrchestrator
     private static List<PersistedTaskEntry> ExtractTaskEntries(
         List<TestTask> tasks, List<TestResult> results, string objective = "")
     {
-        return results
-            .Where(r => r.Metadata.TryGetValue("generatedTestCases", out var v)
-                        && v is List<ApiTestCase> { Count: > 0 })
-            .Select(r => new PersistedTaskEntry
+        var entries = new List<PersistedTaskEntry>();
+
+        foreach (var r in results)
+        {
+            if (!r.Metadata.TryGetValue("generatedTestCases", out var v)) continue;
+
+            var entry = new PersistedTaskEntry
             {
                 TaskId = r.TaskId,
-                TaskDescription = tasks.FirstOrDefault(t => t.Id == r.TaskId)?.Description
-                                  ?? r.TaskId,
+                TaskDescription = tasks.FirstOrDefault(t => t.Id == r.TaskId)?.Description ?? r.TaskId,
                 AgentName = r.AgentName,
                 Objective = objective,
-                TestCases = (List<ApiTestCase>)r.Metadata["generatedTestCases"]
-            })
-            .ToList();
+                TargetType = tasks.FirstOrDefault(t => t.Id == r.TaskId)?.Target.ToString() ?? "API_REST"
+            };
+
+            if (v is List<ApiTestCase> apiCases && apiCases.Count > 0)
+            {
+                entry.TestCases = apiCases;
+                entries.Add(entry);
+            }
+            else if (v is List<WebUiTestCase> uiCases && uiCases.Count > 0)
+            {
+                entry.WebUiTestCases = uiCases;
+                entries.Add(entry);
+            }
+        }
+
+        return entries;
     }
 
     // ─────���───────────────────────��───────────────────────

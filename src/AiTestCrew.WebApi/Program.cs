@@ -1,6 +1,8 @@
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using AiTestCrew.Agents.ApiAgent;
+using AiTestCrew.Agents.BraveCloudUiAgent;
+using AiTestCrew.Agents.LegacyWebUiAgent;
 using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
@@ -47,6 +49,20 @@ builder.Services.AddSingleton<ApiTestAgent>(sp => new ApiTestAgent(
     sp.GetRequiredService<TestEnvironmentConfig>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<ApiTestAgent>());
+
+builder.Services.AddSingleton<LegacyWebUiTestAgent>(sp => new LegacyWebUiTestAgent(
+    sp.GetRequiredService<Kernel>(),
+    sp.GetRequiredService<ILogger<LegacyWebUiTestAgent>>(),
+    sp.GetRequiredService<TestEnvironmentConfig>()
+));
+builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<LegacyWebUiTestAgent>());
+
+builder.Services.AddSingleton<BraveCloudUiTestAgent>(sp => new BraveCloudUiTestAgent(
+    sp.GetRequiredService<Kernel>(),
+    sp.GetRequiredService<ILogger<BraveCloudUiTestAgent>>(),
+    sp.GetRequiredService<TestEnvironmentConfig>()
+));
+builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<BraveCloudUiTestAgent>());
 
 // ── Persistence — share the same data directory as the Runner ──
 var runnerBinDir = Path.GetFullPath(Path.Combine(runnerDir, "bin", "Debug", "net8.0"));

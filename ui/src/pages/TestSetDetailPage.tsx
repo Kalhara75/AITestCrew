@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchTestSet, fetchRuns } from '../api/testSets';
 import { fetchModuleTestSet, fetchModuleRuns, fetchModule, deleteTestSet } from '../api/modules';
 import { TestCaseTable } from '../components/TestCaseTable';
+import { WebUiTestCaseTable } from '../components/WebUiTestCaseTable';
 import { RunHistoryTable } from '../components/RunHistoryTable';
 import { TriggerRunButton } from '../components/TriggerRunButton';
 import { StatusBadge } from '../components/StatusBadge';
@@ -47,7 +48,9 @@ export function TestSetDetailPage() {
   if (error) return <p style={{ color: '#dc2626', padding: 40, textAlign: 'center' }}>Error: {(error as Error).message}</p>;
   if (!testSet) return <p style={{ color: '#64748b', padding: 40, textAlign: 'center' }}>Test set not found.</p>;
 
-  const totalCases = testSet.tasks.reduce((sum, t) => sum + t.testCases.length, 0);
+  const totalApiCases = testSet.tasks.reduce((sum, t) => sum + (t.testCases?.length ?? 0), 0);
+  const totalUiCases  = testSet.tasks.reduce((sum, t) => sum + (t.webUiTestCases?.length ?? 0), 0);
+  const totalCases = totalApiCases + totalUiCases;
   const displayTitle = testSet.name || testSet.objective || testSet.id;
   const objectives = testSet.objectives?.length > 0 ? testSet.objectives : (testSet.objective ? [testSet.objective] : []);
 
@@ -169,7 +172,28 @@ export function TestSetDetailPage() {
         )}
         {totalCases === 0 ? (
           <p style={{ color: '#94a3b8', fontSize: 14 }}>No test cases in this test set.</p>
+        ) : totalUiCases > 0 && totalApiCases === 0 ? (
+          // All tasks are Web UI tasks — show the UI test case table
+          <WebUiTestCaseTable
+            tasks={testSet.tasks}
+            moduleId={moduleId}
+            testSetId={id}
+            onTestCaseUpdated={handleTestCaseUpdated}
+          />
+        ) : totalUiCases > 0 ? (
+          // Mixed: show both tables
+          <>
+            {totalApiCases > 0 && (
+              <>
+                <p style={{ fontSize: 12, color: '#64748b', fontWeight: 600, margin: '0 0 6px', textTransform: 'uppercase', letterSpacing: 0.4 }}>API Tests</p>
+                <TestCaseTable tasks={testSet.tasks} moduleId={moduleId} testSetId={id} onTestCaseUpdated={handleTestCaseUpdated} />
+              </>
+            )}
+            <p style={{ fontSize: 12, color: '#64748b', fontWeight: 600, margin: '12px 0 6px', textTransform: 'uppercase', letterSpacing: 0.4 }}>Web UI Tests</p>
+            <WebUiTestCaseTable tasks={testSet.tasks} moduleId={moduleId} testSetId={id} onTestCaseUpdated={handleTestCaseUpdated} />
+          </>
         ) : (
+          // All API tasks
           <TestCaseTable
             tasks={testSet.tasks}
             moduleId={moduleId}

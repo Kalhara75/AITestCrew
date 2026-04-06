@@ -1,7 +1,7 @@
 import { apiFetch } from './client';
 import type {
   Module, TestSetListItem, TestSetDetail, RunSummary, ExecutionRun,
-  MoveObjectiveRequest, ApiTestCase, AiPatchRequest, AiPatchPreview, AiPatchApplyRequest,
+  MoveObjectiveRequest, ApiTestCase, WebUiTestCase, AiPatchRequest, AiPatchPreview, AiPatchApplyRequest,
 } from '../types';
 
 export const fetchModules = () =>
@@ -60,6 +60,14 @@ export const updateTestCase = (
     { method: 'PUT', body: JSON.stringify(testCase) }
   );
 
+export const updateWebUiTestCase = (
+  moduleId: string, tsId: string, taskId: string, index: number, testCase: WebUiTestCase
+) =>
+  apiFetch<TestSetDetail>(
+    `/modules/${moduleId}/testsets/${tsId}/tasks/${taskId}/webuicases/${index}`,
+    { method: 'PUT', body: JSON.stringify(testCase) }
+  );
+
 export const previewAiPatch = (moduleId: string, tsId: string, request: AiPatchRequest) =>
   apiFetch<AiPatchPreview>(
     `/modules/${moduleId}/testsets/${tsId}/ai-patch`,
@@ -70,4 +78,12 @@ export const applyAiPatch = (moduleId: string, tsId: string, request: AiPatchApp
   apiFetch<TestSetDetail>(
     `/modules/${moduleId}/testsets/${tsId}/ai-patch/apply`,
     { method: 'POST', body: JSON.stringify(request) }
+  );
+
+export const deleteWebUiTestCase = (
+  moduleId: string, tsId: string, taskId: string, index: number
+) =>
+  apiFetch<void>(
+    `/modules/${moduleId}/testsets/${tsId}/tasks/${taskId}/webuicases/${index}`,
+    { method: 'DELETE' }
   );

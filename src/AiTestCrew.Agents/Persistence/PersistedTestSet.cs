@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using AiTestCrew.Agents.ApiAgent;
+using AiTestCrew.Agents.Shared;
 
 namespace AiTestCrew.Agents.Persistence;
 
@@ -115,4 +116,16 @@ public class PersistedTaskEntry
 
     /// <summary>The exact test cases that were generated and should be replayed on reuse.</summary>
     public List<ApiTestCase> TestCases { get; set; } = [];
+
+    /// <summary>
+    /// Web UI test cases (populated for UI_Web_MVC and UI_Web_Blazor agents).
+    /// Empty for API agent tasks.
+    /// </summary>
+    public List<WebUiTestCase> WebUiTestCases { get; set; } = [];
+
+    /// <summary>
+    /// The TestTargetType this task was executed against, stored as a string for serialisation.
+    /// Defaults to "API_REST" so legacy JSON files without this field remain valid.
+    /// </summary>
+    public string TargetType { get; set; } = "API_REST";
 }
