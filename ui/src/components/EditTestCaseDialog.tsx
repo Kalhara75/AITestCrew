@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { updateObjective } from '../api/modules';
+import { updateObjective, deleteObjective } from '../api/modules';
 import type { ApiTestDefinition, TestObjective } from '../types';
 
 interface Props {
@@ -10,16 +10,19 @@ interface Props {
   testSetId: string;
   onClose: () => void;
   onSaved: () => void;
+  onDeleted?: () => void;
 }
 
 export function EditTestCaseDialog({
-  open, objective, stepIndex, moduleId, testSetId, onClose, onSaved,
+  open, objective, stepIndex, moduleId, testSetId, onClose, onSaved, onDeleted,
 }: Props) {
   const step = objective.apiSteps[stepIndex];
   const [form, setForm] = useState<ApiTestDefinition>(() => structuredClone(step));
   const [name, setName] = useState(objective.name);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   if (!open) return null;
 
@@ -39,6 +42,21 @@ export function EditTestCaseDialog({
       setError(err instanceof Error ? err.message : 'Save failed');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteObjective(moduleId, testSetId, objective.id);
+      onDeleted?.();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Delete failed');
+    } finally {
+      setDeleting(false);
+      setConfirmDelete(false);
     }
   };
 
@@ -117,11 +135,31 @@ export function EditTestCaseDialog({
 
         {error && <p style={errorStyle}>{error}</p>}
 
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
-          <button onClick={onClose} style={cancelBtnStyle} disabled={saving}>Cancel</button>
-          <button onClick={handleSave} style={saveBtnStyle} disabled={saving}>
-            {saving ? 'Saving...' : 'Save'}
-          </button>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 20 }}>
+          <div>
+            {onDeleted && !confirmDelete && (
+              <button onClick={() => setConfirmDelete(true)} style={deleteBtnStyle} disabled={deleting}>
+                Delete
+              </button>
+            )}
+            {onDeleted && confirmDelete && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 13, color: '#dc2626' }}>Are you sure?</span>
+                <button onClick={handleDelete} disabled={deleting} style={deleteBtnStyle}>
+                  {deleting ? 'Deleting...' : 'Yes, delete'}
+                </button>
+                <button onClick={() => setConfirmDelete(false)} style={cancelBtnStyle} disabled={deleting}>
+                  No
+                </button>
+              </div>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={onClose} style={cancelBtnStyle} disabled={saving}>Cancel</button>
+            <button onClick={handleSave} style={saveBtnStyle} disabled={saving}>
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -234,6 +272,10 @@ const smallBtnStyle: React.CSSProperties = {
 const errorStyle: React.CSSProperties = {
   color: '#dc2626', fontSize: 13, marginTop: 12, padding: '6px 12px',
   background: '#fef2f2', borderRadius: 6, border: '1px solid #fecaca',
+};
+const deleteBtnStyle: React.CSSProperties = {
+  padding: '8px 18px', background: '#fef2f2', border: '1px solid #fecaca',
+  borderRadius: 6, cursor: 'pointer', fontSize: 13, color: '#dc2626', fontWeight: 600,
 };
 const cancelBtnStyle: React.CSSProperties = {
   background: '#f1f5f9', color: '#475569', border: 'none', padding: '8px 18px',

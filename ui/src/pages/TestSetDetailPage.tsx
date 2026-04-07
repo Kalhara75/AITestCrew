@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchTestSet, fetchRuns } from '../api/testSets';
-import { fetchModuleTestSet, fetchModuleRuns, fetchModule, deleteTestSet } from '../api/modules';
+import { fetchModuleTestSet, fetchModuleRuns, fetchModule, deleteTestSet, deleteObjective } from '../api/modules';
 import { TestCaseTable } from '../components/TestCaseTable';
 import { WebUiTestCaseTable } from '../components/WebUiTestCaseTable';
 import { RunHistoryTable } from '../components/RunHistoryTable';
@@ -24,6 +24,8 @@ export function TestSetDetailPage() {
   const [deleting, setDeleting] = useState(false);
   const [moveObjective, setMoveObjective] = useState<string | null>(null);
   const [selectedObjectiveId, setSelectedObjectiveId] = useState<string | null>(null);
+  const [deleteObjectiveId, setDeleteObjectiveId] = useState<string | null>(null);
+  const [deletingObjective, setDeletingObjective] = useState(false);
 
   const { data: module } = useQuery({
     queryKey: ['module', moduleId],
@@ -73,6 +75,20 @@ export function TestSetDetailPage() {
 
   const handleTestCaseUpdated = () => {
     queryClient.invalidateQueries({ queryKey: ['testSet', moduleId, id] });
+  };
+
+  const handleDeleteObjective = async () => {
+    if (!deleteObjectiveId || !isModuleScoped) return;
+    setDeletingObjective(true);
+    try {
+      await deleteObjective(moduleId!, id!, deleteObjectiveId);
+      queryClient.invalidateQueries({ queryKey: ['testSet', moduleId, id] });
+      queryClient.invalidateQueries({ queryKey: ['runs', moduleId, id] });
+      if (selectedObjectiveId === deleteObjectiveId) setSelectedObjectiveId(null);
+    } finally {
+      setDeletingObjective(false);
+      setDeleteObjectiveId(null);
+    }
   };
 
   return (
@@ -140,6 +156,7 @@ export function TestSetDetailPage() {
             selectedId={selectedObjectiveId}
             onSelect={(objId) => setSelectedObjectiveId(objId === selectedObjectiveId ? null : objId)}
             onMove={isModuleScoped ? (obj) => setMoveObjective(obj) : undefined}
+            onDelete={isModuleScoped ? (objId) => setDeleteObjectiveId(objId) : undefined}
           />
         )}
       </div>
@@ -210,6 +227,18 @@ export function TestSetDetailPage() {
         onCancel={() => setShowDeleteConfirm(false)}
       />
 
+      {/* Delete objective confirmation dialog */}
+      <ConfirmDialog
+        open={!!deleteObjectiveId}
+        title="Delete Test Case"
+        message={`This will permanently delete this test case and remove its results from all execution runs. This action cannot be undone.`}
+        confirmLabel="Delete"
+        confirmDestructive
+        loading={deletingObjective}
+        onConfirm={handleDeleteObjective}
+        onCancel={() => setDeleteObjectiveId(null)}
+      />
+
       {/* Move objective dialog */}
       {isModuleScoped && moveObjective !== null && (
         <MoveObjectiveDialog
@@ -237,6 +266,7 @@ function ObjectiveListTable({
   selectedId,
   onSelect,
   onMove,
+  onDelete,
 }: {
   objectives: TestObjective[];
   runs: RunSummary[];
@@ -246,6 +276,7 @@ function ObjectiveListTable({
   selectedId: string | null;
   onSelect: (id: string) => void;
   onMove?: (parentObjective: string) => void;
+  onDelete?: (objectiveId: string) => void;
 }) {
   return (
     <div style={{ overflowX: 'auto' }}>
@@ -259,6 +290,7 @@ function ObjectiveListTable({
             <th style={{ ...thStyle, width: 180 }}>LAST RUN</th>
             <th style={{ ...thStyle, width: 60 }}></th>
             {onMove && <th style={{ ...thStyle, width: 60 }}></th>}
+            {onDelete && <th style={{ ...thStyle, width: 60 }}></th>}
           </tr>
         </thead>
         <tbody>
@@ -310,6 +342,17 @@ function ObjectiveListTable({
                       title="Move to another test set"
                     >
                       Move
+                    </button>
+                  </td>
+                )}
+                {onDelete && (
+                  <td style={tdStyle}>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onDelete(obj.id); }}
+                      style={deleteRowBtnStyle}
+                      title="Delete test case"
+                    >
+                      Delete
                     </button>
                   </td>
                 )}
@@ -371,6 +414,12 @@ const deleteBtnStyle: React.CSSProperties = {
   background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca',
   padding: '8px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600,
   cursor: 'pointer', width: '100%',
+};
+
+const deleteRowBtnStyle: React.CSSProperties = {
+  background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca',
+  padding: '1px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+  cursor: 'pointer', lineHeight: '18px', flexShrink: 0,
 };
 
 const moveBtnStyle: React.CSSProperties = {

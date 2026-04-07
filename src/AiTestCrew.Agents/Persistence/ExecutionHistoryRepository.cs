@@ -100,6 +100,42 @@ public class ExecutionHistoryRepository
         return Task.CompletedTask;
     }
 
+    /// <summary>Removes all results for a specific objective from every run in the test set.
+    /// Deletes runs that become empty; recomputes aggregate counts on remaining runs.</summary>
+    public async Task RemoveObjectiveFromHistoryAsync(string testSetId, string objectiveId)
+    {
+        var dir = Path.Combine(_baseDir, testSetId);
+        if (!System.IO.Directory.Exists(dir)) return;
+
+        foreach (var file in System.IO.Directory.EnumerateFiles(dir, "*.json"))
+        {
+            try
+            {
+                var json = await File.ReadAllTextAsync(file);
+                var run = JsonSerializer.Deserialize<PersistedExecutionRun>(json, JsonOpts);
+                if (run is null) continue;
+                run.MigrateToV2();
+
+                var removed = run.ObjectiveResults.RemoveAll(r => r.ObjectiveId == objectiveId);
+                if (removed == 0) continue;
+
+                if (run.ObjectiveResults.Count == 0)
+                {
+                    File.Delete(file);
+                }
+                else
+                {
+                    run.TotalObjectives = run.ObjectiveResults.Count;
+                    run.PassedObjectives = run.ObjectiveResults.Count(r => r.Status == "Passed");
+                    run.FailedObjectives = run.ObjectiveResults.Count(r => r.Status == "Failed");
+                    run.ErrorObjectives = run.ObjectiveResults.Count(r => r.Status == "Error");
+                    await File.WriteAllTextAsync(file, JsonSerializer.Serialize(run, JsonOpts));
+                }
+            }
+            catch { /* skip malformed files */ }
+        }
+    }
+
     /// <summary>Directory where execution history is stored.</summary>
     public string Directory => _baseDir;
 }

@@ -285,6 +285,7 @@ public static class ModuleEndpoints
                 return Results.NotFound(new { error = $"Objective '{objectiveId}' not found in test set '{tsId}'" });
 
             await tsRepo.SaveAsync(testSet, moduleId);
+            await historyRepo.RemoveObjectiveFromHistoryAsync(tsId, objectiveId);
             return Results.Ok(TestSetResponse(testSet, historyRepo));
         });
 

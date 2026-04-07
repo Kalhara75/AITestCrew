@@ -101,6 +101,7 @@ export function TestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdat
           testSetId={testSetId}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); onTestCaseUpdated?.(); }}
+          onDeleted={() => { setEditing(null); onTestCaseUpdated?.(); }}
         />
       )}
     </div>
