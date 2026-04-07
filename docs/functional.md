@@ -493,9 +493,9 @@ dotnet run --project src/AiTestCrew.Runner -- --record \
 
 **What happens:**
 
-1. A non-headless Chromium window opens at the configured base URL.
+1. A non-headless **maximized** Chromium window opens at the configured base URL.
 2. An **overlay panel** appears in the **bottom-right corner** of the browser. If the page is still loading when it first appears, the overlay attaches automatically once the DOM is ready.
-3. Interact with the page normally — every form fill (captured on field `change`) and click (on buttons, links, submit inputs) is recorded with its exact CSS selector and value.
+3. Interact with the page normally — every form fill (captured via `input` events as you type) and click (on buttons, links, menu items, tree nodes) is recorded with its CSS or Playwright `text=` selector and value. Keyboard events like **Escape** (for dismissing modals) are also captured.
 4. Use the overlay buttons to add assertions at any point:
    - **+ Assert current URL (…)** — records an `assert-url-contains` step with the current path
    - **+ Assert page title (…)** — records an `assert-title-contains` step with the current title
@@ -541,8 +541,9 @@ Changes are saved via `PUT /api/modules/{moduleId}/testsets/{tsId}/objectives/{o
 | Action | Selector | Value | Description |
 |---|---|---|---|
 | `navigate` | — | URL path | Go to a URL |
-| `click` | CSS selector | — | Click an element (15 s timeout; JS fallback if Playwright actionability check stalls) |
-| `fill` | CSS selector | text | Type text into an input |
+| `click` | CSS selector | — | Click an element (15 s timeout; auto-dismisses modal overlays on failure; Force + JS fallback) |
+| `fill` | CSS selector | text | Type text into an input (dispatches `input`, `change`, and `keyup` events for JS filter compatibility) |
+| `type` | CSS selector | text | Type text character-by-character (fires `keydown`/`keypress`/`keyup` per key — use for search-as-you-type inputs) |
 | `select` | CSS selector | option value | Choose a dropdown option |
 | `check` / `uncheck` | CSS selector | — | Tick/untick a checkbox |
 | `hover` | CSS selector | — | Hover over an element |

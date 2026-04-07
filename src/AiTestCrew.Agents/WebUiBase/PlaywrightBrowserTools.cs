@@ -63,17 +63,20 @@ public sealed class PlaywrightBrowserTools
                         const type = (el.type || '').toLowerCase();
                         const id   = el.id;
                         const name = el.getAttribute('name');
-                        if (id)   return `#${id}`;
+                        const title = el.getAttribute('title');
+                        const dynamicIdPattern = /(_active|_selected|_current|_focused|_hover|_open|_collapsed|_expanded|_pb_|_dd_|_wnd_|\d{4,}|^[0-9a-f-]{36}$)/i;
+                        if (id && !dynamicIdPattern.test(id)) return `#${id}`;
                         if (name) return `${tag}[name="${name}"]`;
                         if (type === 'submit') return `${tag}[type="submit"]`;
                         if (type === 'button') return `${tag}[type="button"]`;
                         if (type && tag === 'input') return `input[type="${type}"]`;
+                        if (title) return `${tag}[title="${title}"]`;
                         const href = el.getAttribute('href');
-                        if (href && tag === 'a') {
-                            try { return `a[href="${new URL(href, location.href).pathname}"]`; } catch {}
+                        if (href && tag === 'a' && href !== '#' && !href.endsWith('#') && !href.startsWith('javascript:')) {
+                            try { return `a[href*="${new URL(href, location.href).pathname}"]`; } catch {}
                         }
                         const role = el.getAttribute('role');
-                        if (role) return `[role="${role}"]`;
+                        if (role && role !== 'menuitem' && role !== 'menu') return `[role="${role}"]`;
                         return tag;
                     }
 

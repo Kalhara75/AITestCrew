@@ -326,8 +326,10 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
             - For wait: selector = null, value = milliseconds as a string (e.g. "2000").
 
             ALLOWED STEP ACTIONS (exact strings only):
-            navigate, click, fill, select, check, uncheck, hover, press,
+            navigate, click, fill, type, select, check, uncheck, hover, press,
             assert-text, assert-visible, assert-hidden, assert-url-contains, assert-title-contains, wait
+            - "fill" sets the value at once (triggers input+change+keyup). Good for most fields.
+            - "type" types character-by-character (triggers keydown/keypress/keyup per key). Use for search/filter inputs that react to each keystroke.
 
             Output ONLY a valid JSON array. No markdown. No explanation.
             Each element: name, description, startUrl, takeScreenshotOnFailure (true),
@@ -500,7 +502,6 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                 break;
 
             case "click":
-                // Clicks often trigger form submissions/navigation — use at least 15s
                 var clickTimeout = Math.Max(timeout, 15_000f);
                 try
                 {
@@ -508,8 +509,29 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                 }
                 catch (PlaywrightException)
                 {
-                    // Fall back to JS click for elements that resist Playwright's actionability checks
-                    await page.EvalOnSelectorAsync(step.Selector!, "el => el.click()");
+                    // Click failed — a modal/overlay (e.g. Welcome dialog) may be blocking
+                    // the target or preventing the tree menu from being interactable.
+                    // Dismiss any modal, then retry.
+                    await TryDismissOverlaysAsync(page);
+
+                    try
+                    {
+                        await page.ClickAsync(step.Selector!,
+                            new PageClickOptions { Timeout = 5_000f });
+                    }
+                    catch (PlaywrightException)
+                    {
+                        // Force bypasses actionability; JS click bypasses the viewport entirely.
+                        try
+                        {
+                            await page.ClickAsync(step.Selector!,
+                                new PageClickOptions { Force = true, Timeout = 5_000f });
+                        }
+                        catch (PlaywrightException)
+                        {
+                            await page.EvalOnSelectorAsync(step.Selector!, "el => el.click()");
+                        }
+                    }
                 }
                 // Allow navigation triggered by the click to settle
                 try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle,
@@ -520,6 +542,24 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
             case "fill":
                 await page.FillAsync(step.Selector!, step.Value ?? "",
                     new PageFillOptions { Timeout = timeout });
+                // FillAsync dispatches 'input' and 'change' but NOT keyboard events.
+                // Many JS-based filters (e.g. jQuery keyup handlers) need keyup to trigger,
+                // so dispatch it explicitly after fill.
+                await page.EvalOnSelectorAsync(step.Selector!,
+                    @"el => {
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+                    }");
+                // Brief pause so debounced JS handlers (menu filters, search-as-you-type)
+                // have time to process and update the DOM before the next step runs.
+                await page.WaitForTimeoutAsync(500);
+                break;
+
+            case "type":
+                // Character-by-character typing — fires keydown/keypress/keyup per character.
+                // Use this instead of 'fill' when the target relies on per-keystroke JS handlers.
+                await page.Locator(step.Selector!).PressSequentiallyAsync(step.Value ?? "",
+                    new LocatorPressSequentiallyOptions { Delay = 50, Timeout = timeout });
                 break;
 
             case "select":
@@ -591,6 +631,89 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
             default:
                 Logger.LogWarning("[{Agent}] Unknown step action '{Action}' — skipping", Name, step.Action);
                 break;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────
+    // Modal / overlay dismissal
+    // ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Best-effort attempt to dismiss modal dialogs or overlays that block interaction
+    /// with the page (e.g. a Welcome popup after login). Tries Escape key first, then
+    /// common close-button selectors. Failures are silently ignored.
+    /// </summary>
+    private async Task TryDismissOverlaysAsync(IPage page)
+    {
+        Logger.LogInformation("[{Agent}] Click failed — attempting to dismiss modal overlays", Name);
+
+        // 1. Try pressing Escape — works for most modal implementations
+        try
+        {
+            await page.Keyboard.PressAsync("Escape");
+            await page.WaitForTimeoutAsync(500);
+        }
+        catch { /* non-fatal */ }
+
+        // 2. Try clicking common close-button selectors (Bootstrap, Kendo, generic)
+        var closeSelectors = new[]
+        {
+            ".modal .close",
+            ".modal-dialog .close",
+            ".modal .btn-close",
+            "[data-dismiss='modal']",
+            "[data-bs-dismiss='modal']",
+            ".modal button[aria-label='Close']",
+            ".modal-header button",
+            ".k-window .k-window-action",       // Kendo UI window close
+            ".k-dialog .k-window-action",       // Kendo UI dialog close
+            "[role='dialog'] button.close",
+            "[role='dialog'] button[aria-label='Close']"
+        };
+
+        foreach (var sel in closeSelectors)
+        {
+            try
+            {
+                var btn = page.Locator(sel).First;
+                if (await btn.IsVisibleAsync(new LocatorIsVisibleOptions { Timeout = 200 }))
+                {
+                    await btn.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 1_000 });
+                    await page.WaitForTimeoutAsync(500);
+                    Logger.LogInformation("[{Agent}] Dismissed overlay via '{Sel}'", Name, sel);
+                    return;
+                }
+            }
+            catch { /* try next selector */ }
+        }
+
+        // 3. Nuclear option — use JS to remove any modal/dialog/overlay elements from the DOM
+        try
+        {
+            var removed = await page.EvaluateAsync<int>(@"() => {
+                let count = 0;
+                // Remove modal backdrops
+                document.querySelectorAll('.modal-backdrop, .k-overlay').forEach(el => { el.remove(); count++; });
+                // Close/hide modal dialogs
+                document.querySelectorAll('.modal.show, .modal.in, .k-window, [role=""dialog""]').forEach(el => {
+                    el.style.display = 'none';
+                    el.classList.remove('show', 'in');
+                    count++;
+                });
+                // Restore body scroll (modals often set overflow:hidden on body)
+                document.body.classList.remove('modal-open');
+                document.body.style.overflow = '';
+                return count;
+            }");
+            if (removed > 0)
+            {
+                Logger.LogInformation("[{Agent}] JS removed/hid {Count} overlay elements", Name, removed);
+                await page.WaitForTimeoutAsync(300);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug("[{Agent}] JS overlay removal failed: {Msg}", Name, ex.Message);
         }
     }
 

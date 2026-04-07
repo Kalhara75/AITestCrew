@@ -105,7 +105,9 @@ BaseTestAgent  (LLM, AskLlmAsync/AskLlmForJsonAsync)
 
 **Per-step reporting** — `ExecuteUiTestCaseAsync` reports each Playwright step as an individual `TestStep` in the results. Each step is labelled `"Test Case Name [N/Total] action"` with its own pass/fail status and duration. If a step fails, a screenshot is captured (when configured), remaining steps are marked "Skipped — previous step failed", and execution of that test case stops. Screenshots are captured for all failure types (Playwright errors, assertion failures, unexpected exceptions) and the filename is stored in the step's `Detail` field.
 
-**Click execution** — `ExecuteUiStepAsync` uses a minimum 15 s timeout for `click` steps (regardless of the stored `timeoutMs`) because clicks frequently trigger form submissions and full-page navigations. If Playwright's actionability check stalls (e.g. a covering overlay), it falls back to a JS `el.click()` via `EvalOnSelectorAsync`.
+**Click execution** — `ExecuteUiStepAsync` uses a minimum 15 s timeout for `click` steps (regardless of the stored `timeoutMs`) because clicks frequently trigger form submissions and full-page navigations. If Playwright's actionability check stalls (e.g. a covering overlay), it auto-dismisses modal overlays via `TryDismissOverlaysAsync` (Escape key → common close-button selectors → JS DOM removal of `.modal-backdrop`, `.k-overlay`, `[role="dialog"]`, Kendo Windows), then retries with `Force = true`, and finally falls back to a JS `el.click()` via `EvalOnSelectorAsync`.
+
+**Fill execution** — After `FillAsync`, the step dispatcher dispatches explicit `input` and `keyup` events on the target element. Many JS-based components (e.g. jQuery `keyup` menu filters, Kendo search inputs) rely on keyboard events that `FillAsync` does not fire. A 500 ms pause follows to let debounced handlers update the DOM. A separate `type` action is available for character-by-character typing via `PressSequentiallyAsync`.
 
 **Storage state** — `BraveCloudUiTestAgent` saves browser cookies/localStorage to `BraveCloudUiStorageStatePath` after a successful SSO login. Subsequent calls within `BraveCloudUiStorageStateMaxAgeHours` pass this file to `browser.NewContextAsync()` via `StorageStatePath`, skipping the full Azure AD redirect flow.
 
@@ -120,12 +122,22 @@ BaseTestAgent  (LLM, AskLlmAsync/AskLlmForJsonAsync)
 #### PlaywrightRecorder
 
 `PlaywrightRecorder.RecordAsync` provides a human-driven alternative to LLM generation. It:
-- Always launches non-headless Chromium (`SlowMo = 50`)
+- Launches non-headless **maximized** Chromium (`--start-maximized`, `NoViewport`, `SlowMo = 50`)
 - Calls `page.ExposeFunctionAsync("aitcRecordStep", ...)` — JS→.NET bridge, survives page navigation
 - Calls `page.ExposeFunctionAsync("aitcStopRecording", ...)` — signals a `TaskCompletionSource`
 - Calls `page.AddInitScriptAsync(...)` — re-injects event listeners and overlay panel on every page load (deferred via `DOMContentLoaded` so `document.body` is ready)
 
-JS event listeners capture `change` events on inputs (→ `fill`) and `click` events on buttons/links (→ `click`). Selector computation uses `bestSelector(el)`: `#id → tag[name="x"] → tag[type="submit"] → input[type="x"] → a[href="path"] → tag`.
+**Event capture:**
+- **`input` events** on form fields (→ `fill`) — captured as the user types (not on blur), ensuring fills are recorded before any subsequent click. `change` events are used only for `<select>` elements.
+- **`click` events** (→ `click`) — with Kendo PanelBar-aware handling: group header clicks (e.g. "Standing Data") are resolved to `text="GroupName"` selectors via `bestSelectorForPanelBarHeader()`. Kendo Window close buttons are recorded as `press Escape` for simpler replay.
+- **`keydown` events** — captures Escape key presses (modal dismissal).
+
+**Selector computation** uses `bestSelector(el)` with an extended fallback chain:
+`#stableId → tag[name] → tag[type="submit"] → tag[title] → a[href*="path"] → tag[data-*] → tag[role] → tag.uniqueClass → text="ownText" → text="innerText" → tag`.
+- IDs matching dynamic/stateful patterns (`_active`, `_pb_`, `_wnd_`, GUIDs) are skipped.
+- Link selectors use `href*=` (contains) to match both absolute URLs and relative paths with query strings.
+- `title` attributes are preferred for Kendo PanelBar child items (e.g. `li[title="NMI Search"]`).
+- Generic Kendo state classes (`k-state-*`, `k-first`, `k-item`, `k-link`) are excluded from class-based selectors.
 
 The overlay panel (fixed, bottom-right, dark theme) provides:
 - **+ Assert current URL (path)** — records `assert-url-contains` with `location.pathname`
