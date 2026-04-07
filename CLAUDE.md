@@ -100,6 +100,7 @@ All agents extend `BaseTestAgent` and implement `ITestAgent`:
 | `/add-validation <agent> "<rule>"` | Add a new validation rule |
 | `/implement-feature "<description>"` | Implement any new feature |
 | `/review-agent <AgentName>` | Review an agent for quality and pattern compliance |
+| `/bravo-web-reference` | Bravo Web DOM patterns, Kendo UI selectors, and recorder/replay rules |
 
 ## Documentation
 
