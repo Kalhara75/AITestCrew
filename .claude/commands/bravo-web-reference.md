@@ -140,6 +140,55 @@ After successful login, the page redirects to `/Home/Index` and the WELCOME moda
 
 ---
 
+## Kendo Grid — data grids (`.k-grid`)
+
+### DOM structure (hyperlink column)
+
+```html
+<div class="k-widget k-grid k-display-block k-reorderable" id="SearchGrid" data-role="grid">
+  <div class="k-grid-content" style="height: 578px;">
+    <table role="grid" data-role="selectable" class="k-selectable">
+      <tbody role="rowgroup">
+        <tr data-uid="..." role="row">
+          <td role="gridcell">
+            <span id="nmicell">
+              <a href="https://host/Bes.WEB.SDR/NMISearch?m=Y">5310051118</a>
+            </span>
+          </td>
+          <!-- more cells -->
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+```
+
+### Dynamic href pattern (critical for recording)
+
+Grid hyperlinks use a **placeholder href** (typically the current page URL) in the HTML. The real navigation URL is set dynamically by a **`mousedown` handler** just before the `click` event fires:
+
+1. Page renders: `<a href="https://host/Bes.WEB.SDR/NMISearch?m=Y">5310051118</a>`
+2. User presses mouse button → Kendo `mousedown` JS changes href to `/Bes.WEB.SDR/NMIView/OpenNMI?nmi=5310051118&dsId=1&primarykey=506`
+3. `click` event fires → recorder sees the **modified** href
+4. Browser navigates to the dynamic URL
+
+**Impact on recording:** The recorder's `click` handler sees the post-mousedown href, but during replay Playwright looks for the element **before** any mousedown fires — the href is still the placeholder, so the selector never matches.
+
+### Selector rules
+
+| What | Correct selector | Why |
+|---|---|---|
+| Grid hyperlink | `text="5310051118"` | Text content is stable; href is dynamic and unreliable |
+| **Never** use | `a[href*="/NMIView/OpenNMI"]` | href is set by mousedown JS — doesn't exist at page load or during replay |
+| **Never** use | `span#nmicell` | `id="nmicell"` is repeated on every row — not unique |
+| **Avoid** | `td[role="gridcell"]` | Every cell has this role — not unique |
+
+### Recorder implementation
+
+`bestSelector()` in `PlaywrightRecorder.cs` skips href-based selectors for `<a>` tags inside `.k-grid` (`!el.closest('.k-grid')`). This forces fallthrough to text-based selection (`text="5310051118"`), which works for all Kendo Grid hyperlink columns.
+
+---
+
 ## Kendo CSS class reference
 
 ### State classes (NEVER use for selectors — they change dynamically)
@@ -183,3 +232,4 @@ After successful login, the page redirects to `/Home/Index` and the WELCOME moda
 4. **PanelBar headers need dedicated detection** — `bestSelectorForPanelBarHeader()` walks up to `.k-link.k-header`, finds the text `<span>`, returns `text="GroupName"`.
 5. **WELCOME modal after every login** — tests must dismiss it before sidebar interaction. `TryDismissOverlaysAsync` handles this automatically on click failure.
 6. **`FillAsync` doesn't trigger `keyup`** — menu search filters won't activate without explicit event dispatch.
+7. **Kendo Grid hrefs are dynamic** — Grid `<a>` tags have placeholder hrefs at page load; real URLs are set by `mousedown` JS handlers. The recorder must skip `href`-based selectors for links inside `.k-grid` and use `text="..."` instead. Applies to all Kendo Grid hyperlink columns, not just NMI Search.

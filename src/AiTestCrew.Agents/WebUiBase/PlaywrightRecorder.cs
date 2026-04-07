@@ -174,16 +174,19 @@ public static class PlaywrightRecorder
                 //    This is highly stable and unique within a menu.
                 if (title) return tag + '[title="' + title + '"]';
 
-                // 5. Links — use pathname (no query string) as a *contains* selector
-                //    because the actual href may be absolute with ?m=Y params.
-                if (tag === 'a') {
+                // 5. Links — use pathname + query string as a *contains* selector
+                //    so grid links (where only the query string differs) get a
+                //    unique selector while still matching absolute hrefs.
+                //    Skip links inside Kendo Grids — their href is set dynamically
+                //    by a mousedown handler and won't match during replay.
+                //    Fall through to text-based selection for those.
+                if (tag === 'a' && !el.closest('.k-grid')) {
                     const href = el.getAttribute('href');
                     if (href && href !== '#' && !href.startsWith('javascript:') && !href.startsWith('#')) {
                         try {
-                            const path = new URL(href, location.href).pathname;
-                            // Use CSS [href*=path] (contains) instead of [href=path] (exact)
-                            // so it matches both relative and absolute hrefs with query strings.
-                            return 'a[href*="' + path + '"]';
+                            const url = new URL(href, location.href);
+                            const pathWithQuery = url.pathname + url.search;
+                            return 'a[href*="' + pathWithQuery + '"]';
                         } catch {}
                     }
                 }
