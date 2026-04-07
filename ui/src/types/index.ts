@@ -203,6 +203,44 @@ export interface TriggerRunResponse {
   startedAt: string;
 }
 
+// ── Module-level run types ──
+
+export interface TestSetRunProgress {
+  testSetId: string;
+  testSetName: string;
+  status: 'Pending' | 'Running' | 'Completed' | 'Failed';
+  childRunId: string | null;
+  error: string | null;
+}
+
+export interface ModuleRunStatus {
+  moduleRunId: string;
+  moduleId: string;
+  moduleName: string;
+  status: 'Running' | 'Completed' | 'CompletedWithFailures' | 'Failed';
+  startedAt: string;
+  completedAt: string | null;
+  error: string | null;
+  completedCount: number;
+  totalCount: number;
+  currentTestSetId: string | null;
+  testSets: TestSetRunProgress[];
+}
+
+export interface TriggerModuleRunResponse {
+  moduleRunId: string;
+  moduleId: string;
+  status: string;
+  startedAt: string;
+  totalTestSets: number;
+}
+
+export interface ActiveRunResponse {
+  type: 'module' | 'testset' | null;
+  moduleRun: ModuleRunStatus | null;
+  run: RunStatusResponse | null;
+}
+
 // Legacy types kept for backward compatibility
 export interface WebUiTestCase {
   name: string;

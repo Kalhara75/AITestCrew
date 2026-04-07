@@ -2,6 +2,7 @@ import { apiFetch } from './client';
 import type {
   Module, TestSetListItem, TestSetDetail, RunSummary, ExecutionRun,
   MoveObjectiveRequest, TestObjective, AiPatchRequest, AiPatchPreview, AiPatchApplyRequest,
+  TriggerModuleRunResponse, ModuleRunStatus,
 } from '../types';
 
 export const fetchModules = () =>
@@ -79,4 +80,10 @@ export const applyAiPatch = (moduleId: string, tsId: string, request: AiPatchApp
     `/modules/${moduleId}/testsets/${tsId}/ai-patch/apply`,
     { method: 'POST', body: JSON.stringify(request) }
   );
+
+export const triggerModuleRun = (moduleId: string) =>
+  apiFetch<TriggerModuleRunResponse>(`/modules/${moduleId}/run`, { method: 'POST' });
+
+export const fetchModuleRunStatus = (moduleId: string) =>
+  apiFetch<ModuleRunStatus>(`/modules/${moduleId}/run/status`);
 

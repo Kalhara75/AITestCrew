@@ -364,7 +364,18 @@ From a test set detail page:
 - **Rebaseline** — regenerates all test cases via LLM and re-executes.
 - **Run (per test case)** — the **Run** button on each test case row triggers execution of only that single objective. The API receives `objectiveId` in the run request, and the orchestrator filters to only that task. The test case's status and last run date update independently without affecting other test cases.
 
+From a module detail page:
+- **Run All** — triggers sequential execution of all test sets in the module (Reuse mode). Each test set runs in order; if a test set fails, execution continues to the next. A progress banner shows a segmented progress bar with per-test-set status (Pending / Running / Completed / Failed) and clickable links to each test set.
+
 Only one run can be active at a time (the API returns 409 if another is in progress).
+
+### Run Progress Persistence
+
+Run progress is tracked globally across the UI, not in local component state. This means:
+- Navigating away from a page and returning will still show progress for any active run
+- The module list page shows a progress bar and "Running X/Y test sets..." on module cards during a module-level run
+- The module detail page shows a segmented progress banner during a module-level run, and each test set card highlights when it is the currently executing test set
+- After a page refresh, the UI recovers any active run by calling `GET /api/runs/active` on startup
 
 ### URL Routes
 

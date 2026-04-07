@@ -3,7 +3,9 @@ using AiTestCrew.Agents.ApiAgent;
 using AiTestCrew.Agents.Base;
 using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Agents.Shared;
+using AiTestCrew.Core.Models;
 using AiTestCrew.Orchestrator;
+using AiTestCrew.WebApi.Services;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 
@@ -287,6 +289,93 @@ public static class ModuleEndpoints
             await tsRepo.SaveAsync(testSet, moduleId);
             await historyRepo.RemoveObjectiveFromHistoryAsync(tsId, objectiveId);
             return Results.Ok(TestSetResponse(testSet, historyRepo));
+        });
+
+        // POST /api/modules/{moduleId}/run — run all test sets in a module
+        group.MapPost("/{moduleId}/run", async (string moduleId,
+            ModuleRepository moduleRepo, TestSetRepository tsRepo,
+            RunTracker runTracker, ModuleRunTracker moduleRunTracker,
+            TestOrchestrator orchestrator, ILogger<TestOrchestrator> logger) =>
+        {
+            var module = await moduleRepo.GetAsync(moduleId);
+            if (module is null)
+                return Results.NotFound(new { error = $"Module '{moduleId}' not found" });
+
+            var testSets = tsRepo.ListByModule(moduleId);
+            if (testSets.Count == 0)
+                return Results.BadRequest(new { error = "Module has no test sets to run" });
+
+            // Filter to test sets that have objectives
+            var runnableTestSets = testSets.Where(ts => ts.TestObjectives.Count > 0).ToList();
+            if (runnableTestSets.Count == 0)
+                return Results.BadRequest(new { error = "Module has no test sets with objectives to run" });
+
+            if (runTracker.HasActiveRun() || moduleRunTracker.HasActiveModuleRun())
+                return Results.Conflict(new { error = "A test run is already in progress" });
+
+            var moduleRunId = Guid.NewGuid().ToString("N")[..12];
+            var tsProgress = runnableTestSets.Select(ts => new TestSetRunProgress
+            {
+                TestSetId = ts.Id,
+                TestSetName = ts.Name ?? ts.Objective ?? ts.Id,
+                Status = "Pending"
+            }).ToList();
+
+            moduleRunTracker.Create(moduleRunId, moduleId, module.Name, tsProgress);
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    foreach (var ts in runnableTestSets)
+                    {
+                        var childRunId = Guid.NewGuid().ToString("N")[..12];
+                        moduleRunTracker.AdvanceToTestSet(moduleRunId, ts.Id, childRunId);
+                        runTracker.Create(childRunId, "", "Reuse", ts.Id);
+
+                        try
+                        {
+                            await orchestrator.RunAsync(
+                                "", RunMode.Reuse, ts.Id,
+                                externalRunId: childRunId,
+                                moduleId: moduleId,
+                                targetTestSetId: ts.Id);
+                            runTracker.Complete(childRunId, ts.Id);
+                            moduleRunTracker.CompleteTestSet(moduleRunId, ts.Id, true, null);
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogError(ex, "Module run {ModuleRunId}: test set {TestSetId} failed", moduleRunId, ts.Id);
+                            runTracker.Fail(childRunId, ex.Message);
+                            moduleRunTracker.CompleteTestSet(moduleRunId, ts.Id, false, ex.Message);
+                        }
+                    }
+                    moduleRunTracker.Complete(moduleRunId);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Module run {ModuleRunId} failed", moduleRunId);
+                    moduleRunTracker.Fail(moduleRunId, ex.Message);
+                }
+            });
+
+            return Results.Accepted($"/api/modules/{moduleId}/run/status", new
+            {
+                moduleRunId,
+                moduleId,
+                status = "Running",
+                startedAt = DateTime.UtcNow,
+                totalTestSets = runnableTestSets.Count
+            });
+        });
+
+        // GET /api/modules/{moduleId}/run/status — poll module run progress
+        group.MapGet("/{moduleId}/run/status", (string moduleId, ModuleRunTracker moduleRunTracker) =>
+        {
+            var status = moduleRunTracker.GetByModuleId(moduleId);
+            if (status is null)
+                return Results.NotFound(new { error = $"No active or recent run for module '{moduleId}'" });
+            return Results.Ok(status);
         });
 
         // POST /api/modules/{moduleId}/testsets/{tsId}/ai-patch — preview LLM-applied changes

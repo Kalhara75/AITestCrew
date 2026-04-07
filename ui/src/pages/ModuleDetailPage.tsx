@@ -5,11 +5,15 @@ import { fetchModule, fetchModuleTestSets } from '../api/modules';
 import { TestSetCard } from '../components/TestSetCard';
 import { CreateTestSetDialog } from '../components/CreateTestSetDialog';
 import { RunObjectiveDialog } from '../components/RunObjectiveDialog';
+import { ModuleRunBanner } from '../components/ModuleRunBanner';
+import { useActiveRun } from '../contexts/ActiveRunContext';
 
 export function ModuleDetailPage() {
   const { moduleId } = useParams<{ moduleId: string }>();
   const [showCreateTestSet, setShowCreateTestSet] = useState(false);
   const [showRunObjective, setShowRunObjective] = useState(false);
+  const { moduleRun, isModuleRunning, startModuleRun, error: runError } = useActiveRun();
+  const isRunning = moduleId ? isModuleRunning(moduleId) : false;
 
   const { data: module, isLoading: loadingModule, error: moduleError } = useQuery({
     queryKey: ['module', moduleId],
@@ -59,18 +63,44 @@ export function ModuleDetailPage() {
             </button>
             <button
               onClick={() => setShowRunObjective(true)}
-              disabled={!testSets || testSets.length === 0}
+              disabled={!testSets || testSets.length === 0 || isRunning}
               style={{
                 ...btnStyle('#16a34a'),
-                opacity: !testSets || testSets.length === 0 ? 0.5 : 1,
-                cursor: !testSets || testSets.length === 0 ? 'not-allowed' : 'pointer',
+                opacity: !testSets || testSets.length === 0 || isRunning ? 0.5 : 1,
+                cursor: !testSets || testSets.length === 0 || isRunning ? 'not-allowed' : 'pointer',
               }}
             >
               Run Objective
             </button>
+            <button
+              onClick={() => moduleId && startModuleRun(moduleId)}
+              disabled={!testSets || testSets.length === 0 || isRunning}
+              style={{
+                ...btnStyle('#7c3aed'),
+                opacity: !testSets || testSets.length === 0 || isRunning ? 0.5 : 1,
+                cursor: !testSets || testSets.length === 0 || isRunning ? 'not-allowed' : 'pointer',
+              }}
+            >
+              Run All
+            </button>
           </div>
         </div>
       </div>
+
+      {/* Module run progress banner */}
+      {isRunning && moduleRun && (
+        <ModuleRunBanner moduleRun={moduleRun} moduleId={moduleId!} />
+      )}
+
+      {/* Module run error */}
+      {runError && (
+        <div style={{
+          background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8,
+          padding: '10px 16px', marginBottom: 16, fontSize: 13, color: '#dc2626',
+        }}>
+          {runError}
+        </div>
+      )}
 
       {/* Test Sets Grid */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -103,7 +133,14 @@ export function ModuleDetailPage() {
           gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))',
           gap: 20,
         }}>
-          {testSets.map(ts => <TestSetCard key={ts.id} ts={ts} moduleId={moduleId!} />)}
+          {testSets.map(ts => (
+            <TestSetCard
+              key={ts.id}
+              ts={ts}
+              moduleId={moduleId!}
+              isRunning={isRunning && moduleRun?.currentTestSetId === ts.id}
+            />
+          ))}
         </div>
       )}
 

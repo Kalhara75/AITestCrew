@@ -2,7 +2,13 @@ import { Link } from 'react-router-dom';
 import type { TestSetListItem } from '../types';
 import { StatusBadge } from './StatusBadge';
 
-export function TestSetCard({ ts, moduleId }: { ts: TestSetListItem; moduleId: string }) {
+interface Props {
+  ts: TestSetListItem;
+  moduleId: string;
+  isRunning?: boolean;
+}
+
+export function TestSetCard({ ts, moduleId, isRunning }: Props) {
   const linkTo = `/modules/${moduleId}/testsets/${ts.id}`;
   const displayTitle = ts.name || ts.objective || ts.id;
 
@@ -13,7 +19,8 @@ export function TestSetCard({ ts, moduleId }: { ts: TestSetListItem; moduleId: s
         borderRadius: 10,
         padding: 24,
         boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-        border: '1px solid #e2e8f0',
+        border: `1px solid ${isRunning ? '#bfdbfe' : '#e2e8f0'}`,
+        borderLeft: isRunning ? '3px solid #2563eb' : undefined,
         cursor: 'pointer',
         transition: 'box-shadow 0.15s, border-color 0.15s',
         height: '100%',
@@ -22,16 +29,16 @@ export function TestSetCard({ ts, moduleId }: { ts: TestSetListItem; moduleId: s
       }}
         onMouseEnter={e => {
           e.currentTarget.style.boxShadow = '0 4px 16px rgba(0,0,0,0.1)';
-          e.currentTarget.style.borderColor = '#cbd5e1';
+          if (!isRunning) e.currentTarget.style.borderColor = '#cbd5e1';
         }}
         onMouseLeave={e => {
           e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.06)';
-          e.currentTarget.style.borderColor = '#e2e8f0';
+          if (!isRunning) e.currentTarget.style.borderColor = '#e2e8f0';
         }}
       >
         {/* Status badge row */}
         <div style={{ marginBottom: 12 }}>
-          <StatusBadge status={ts.lastRunStatus} />
+          <StatusBadge status={isRunning ? 'Running' : ts.lastRunStatus} />
         </div>
 
         {/* Title */}

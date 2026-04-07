@@ -79,6 +79,7 @@ builder.Services.AddSingleton<TestOrchestrator>();
 
 // ── Run tracker (in-memory active runs) ──
 builder.Services.AddSingleton<RunTracker>();
+builder.Services.AddSingleton<ModuleRunTracker>();
 
 // ── CORS (allow Vite dev server) ──
 builder.Services.AddCors(options =>

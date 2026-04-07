@@ -49,6 +49,8 @@ public class RunTracker
     }
 
     public bool HasActiveRun() => _runs.Values.Any(r => r.Status == "Running");
+
+    public RunStatus? GetActiveRun() => _runs.Values.FirstOrDefault(r => r.Status == "Running");
 }
 
 public class RunStatus

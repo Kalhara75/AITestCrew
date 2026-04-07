@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
-import { triggerRun, fetchRunStatus } from '../api/runs';
+import { triggerRun } from '../api/runs';
+import { useActiveRun } from '../contexts/ActiveRunContext';
 
 interface Props {
   testSetId: string;
@@ -10,14 +10,17 @@ interface Props {
 }
 
 export function TriggerObjectiveRunButton({ testSetId, objectiveId, moduleId, disabled }: Props) {
-  const queryClient = useQueryClient();
-  const [running, setRunning] = useState(false);
+  const { individualRun, setIndividualRun } = useActiveRun();
   const [error, setError] = useState<string | null>(null);
+
+  // This button is "active" if the global individual run targets this specific objective
+  const isActive = individualRun?.testSetId === testSetId && individualRun?.objectiveId === objectiveId;
+  // Any individual run is in progress (disable other run buttons)
+  const anyRunning = !!individualRun;
 
   const handleRun = async (e: React.MouseEvent) => {
     e.stopPropagation();
     setError(null);
-    setRunning(true);
 
     try {
       const res = await triggerRun({
@@ -26,29 +29,13 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, moduleId, di
         moduleId,
         objectiveId,
       });
-
-      // Poll until complete
-      const poll = async () => {
-        const status = await fetchRunStatus(res.runId);
-        if (status.status === 'Completed') {
-          setRunning(false);
-          queryClient.invalidateQueries({ queryKey: ['testSet', moduleId, testSetId] });
-          queryClient.invalidateQueries({ queryKey: ['runs', moduleId, testSetId] });
-        } else if (status.status === 'Failed') {
-          setRunning(false);
-          setError(status.error || 'Run failed');
-        } else {
-          setTimeout(poll, 3000);
-        }
-      };
-      setTimeout(poll, 2000);
+      setIndividualRun({ runId: res.runId, testSetId, moduleId, objectiveId });
     } catch (err) {
-      setRunning(false);
       setError(err instanceof Error ? err.message : 'Failed to trigger run');
     }
   };
 
-  if (running) {
+  if (isActive) {
     return (
       <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
         <div style={{
@@ -67,16 +54,16 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, moduleId, di
     <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
       <button
         onClick={handleRun}
-        disabled={disabled}
+        disabled={disabled || anyRunning}
         style={{
           background: 'none',
-          color: disabled ? '#94a3b8' : '#2563eb',
-          border: `1px solid ${disabled ? '#e2e8f0' : '#bfdbfe'}`,
+          color: disabled || anyRunning ? '#94a3b8' : '#2563eb',
+          border: `1px solid ${disabled || anyRunning ? '#e2e8f0' : '#bfdbfe'}`,
           padding: '1px 8px',
           borderRadius: 4,
           fontSize: 11,
           fontWeight: 600,
-          cursor: disabled ? 'not-allowed' : 'pointer',
+          cursor: disabled || anyRunning ? 'not-allowed' : 'pointer',
           lineHeight: '18px',
         }}
         title="Run this test case"

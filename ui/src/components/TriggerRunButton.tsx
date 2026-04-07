@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { triggerRun, fetchRunStatus } from '../api/runs';
+import { triggerRun } from '../api/runs';
+import { useActiveRun } from '../contexts/ActiveRunContext';
 
 interface Props {
   testSetId: string;
@@ -11,29 +11,27 @@ interface Props {
 
 export function TriggerRunButton({ testSetId, objective, moduleId }: Props) {
   const navigate = useNavigate();
-  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const { individualRun, individualRunStatus, setIndividualRun } = useActiveRun();
   const [error, setError] = useState<string | null>(null);
 
-  // Poll run status while a run is active
-  useQuery({
-    queryKey: ['runStatus', activeRunId],
-    queryFn: () => fetchRunStatus(activeRunId!),
-    enabled: !!activeRunId,
-    refetchInterval: 3000,
-    select(data) {
-      if (data.status === 'Completed' && data.testSetId) {
-        setActiveRunId(null);
-        const basePath = moduleId
-          ? `/modules/${moduleId}/testsets/${data.testSetId}`
-          : `/testsets/${data.testSetId}`;
-        navigate(`${basePath}/runs/${data.runId}`);
-      } else if (data.status === 'Failed') {
-        setActiveRunId(null);
-        setError(data.error || 'Run failed');
-      }
-      return data;
-    },
-  });
+  // This button is "active" if the global individual run targets this test set
+  const isActive = individualRun?.testSetId === testSetId;
+
+  // Navigate on completion
+  if (isActive && individualRunStatus) {
+    if (individualRunStatus.status === 'Completed' && individualRunStatus.testSetId) {
+      const basePath = moduleId
+        ? `/modules/${moduleId}/testsets/${individualRunStatus.testSetId}`
+        : `/testsets/${individualRunStatus.testSetId}`;
+      // Defer navigation to avoid state update during render
+      setTimeout(() => navigate(`${basePath}/runs/${individualRunStatus.runId}`), 0);
+    } else if (individualRunStatus.status === 'Failed') {
+      setTimeout(() => {
+        setIndividualRun(null);
+        setError(individualRunStatus.error || 'Run failed');
+      }, 0);
+    }
+  }
 
   const handleRun = async (mode: string) => {
     setError(null);
@@ -44,13 +42,13 @@ export function TriggerRunButton({ testSetId, objective, moduleId }: Props) {
         objective: mode !== 'Reuse' ? objective : undefined,
         moduleId,
       });
-      setActiveRunId(res.runId);
+      setIndividualRun({ runId: res.runId, testSetId, moduleId });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger run');
     }
   };
 
-  if (activeRunId) {
+  if (isActive) {
     return (
       <div style={{
         display: 'flex',

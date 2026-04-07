@@ -9,7 +9,7 @@ public static class RunEndpoints
 {
     public static RouteGroupBuilder MapRunEndpoints(this RouteGroupBuilder group)
     {
-        group.MapPost("/", (RunRequest request, RunTracker tracker,
+        group.MapPost("/", (RunRequest request, RunTracker tracker, ModuleRunTracker moduleRunTracker,
             TestOrchestrator orchestrator, ILogger<TestOrchestrator> logger) =>
         {
             // Validate request
@@ -39,7 +39,7 @@ public static class RunEndpoints
             }
 
             // Only one run at a time
-            if (tracker.HasActiveRun())
+            if (tracker.HasActiveRun() || moduleRunTracker.HasActiveModuleRun())
                 return Results.Conflict(new { error = "A test run is already in progress" });
 
             var runId = Guid.NewGuid().ToString("N")[..12];
@@ -86,6 +86,20 @@ public static class RunEndpoints
             var status = tracker.Get(runId);
             if (status is null) return Results.NotFound(new { error = $"Run '{runId}' not found" });
             return Results.Ok(status);
+        });
+
+        // GET /api/runs/active — check for any active run (module-level or individual)
+        group.MapGet("/active", (RunTracker tracker, ModuleRunTracker moduleRunTracker) =>
+        {
+            var moduleRun = moduleRunTracker.GetActiveRun();
+            if (moduleRun is not null)
+                return Results.Ok(new { type = "module", moduleRun, run = (RunStatus?)null });
+
+            var activeRun = tracker.GetActiveRun();
+            if (activeRun is not null)
+                return Results.Ok(new { type = "testset", moduleRun = (ModuleRunStatus?)null, run = activeRun });
+
+            return Results.Ok(new { type = (string?)null, moduleRun = (ModuleRunStatus?)null, run = (RunStatus?)null });
         });
 
         return group;

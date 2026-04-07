@@ -192,7 +192,8 @@ WebApi/
     TestSetEndpoints.cs            — Legacy flat test set endpoints (backward compat)
     RunEndpoints.cs                — POST /api/runs (trigger with optional objectiveId), GET /api/runs/{id}/status (poll)
   Services/
-    RunTracker.cs                  — ConcurrentDictionary tracking active/completed runs
+    RunTracker.cs                  — ConcurrentDictionary tracking active/completed individual runs
+    ModuleRunTracker.cs            — ConcurrentDictionary tracking module-level composite runs (sequential test set execution)
   appsettings.example.json         — Template config
 ```
 
@@ -220,8 +221,11 @@ WebApi/
 | `GET` | `/api/testsets/{id}` | Full test set detail (legacy) |
 | `GET` | `/api/testsets/{id}/runs` | Execution history (legacy) |
 | `GET` | `/api/testsets/{id}/runs/{runId}` | Full execution detail (legacy) |
+| `POST` | `/api/modules/{id}/run` | Trigger module-level run (all test sets, sequential, Reuse mode) |
+| `GET` | `/api/modules/{id}/run/status` | Poll module-level run progress (per-test-set status) |
 | `POST` | `/api/runs` | Trigger a test run (supports `moduleId` + `testSetId` + optional `objectiveId` for single-objective execution) |
 | `GET` | `/api/runs/{runId}/status` | Poll run progress |
+| `GET` | `/api/runs/active` | Check for any active run (module-level or individual) — used for page-refresh recovery |
 | `GET` | `/api/health` | Health check |
 | `GET` | `/screenshots/{filename}` | Serve Playwright failure screenshots (static files from `PlaywrightScreenshotDir`) |
 
@@ -233,13 +237,16 @@ Single-page application built with React 18, TypeScript, and Vite. Communicates 
 
 ```
 ui/src/
-  main.tsx                         — React root + QueryClientProvider + BrowserRouter
+  main.tsx                         — React root + QueryClientProvider + ActiveRunProvider + BrowserRouter
   App.tsx                          — Route definitions with Layout wrapper
   api/
     client.ts                      — fetch wrapper with base URL + error handling
-    modules.ts                     — API functions for modules and module-scoped test sets/runs
+    modules.ts                     — API functions for modules and module-scoped test sets/runs (incl. triggerModuleRun, fetchModuleRunStatus)
     testSets.ts                    — API functions for legacy flat test sets and runs
-    runs.ts                        — API functions for triggering and polling runs
+    runs.ts                        — API functions for triggering and polling runs (incl. fetchActiveRun)
+  contexts/
+    ActiveRunContext.tsx            — Global run state: tracks module-level and individual runs, polls status,
+                                     recovers active run on page refresh via GET /api/runs/active
   pages/
     ModuleListPage.tsx             — Module card grid (root page)
     ModuleDetailPage.tsx           — Test sets within a module + create/run dialogs
@@ -253,7 +260,9 @@ ui/src/
     WebUiTestCaseTable.tsx         — Web UI test cases: name, start URL, step count, screenshot flag
     RunHistoryTable.tsx            — Run list with status, duration, date (module-aware links)
     StepList.tsx                   — Expandable objective/step rows with detail
-    TriggerRunButton.tsx           — Mode selector + trigger + progress polling (module-aware)
+    TriggerRunButton.tsx           — Mode selector + trigger (uses ActiveRunContext for global progress)
+    TriggerObjectiveRunButton.tsx  — Single-objective run button (uses ActiveRunContext for global progress)
+    ModuleRunBanner.tsx            — Segmented progress bar + per-test-set status during module runs
     CreateModuleDialog.tsx         — Modal form to create a module
     CreateTestSetDialog.tsx        — Modal form to create a test set within a module
     RunObjectiveDialog.tsx         — Modal to select test set, enter objective + optional short name, trigger run
@@ -629,7 +638,8 @@ TestSetRepository           → Singleton (new instance, baseDir = AppContext.Ba
 ExecutionHistoryRepository  → Singleton (new instance, baseDir = AppContext.BaseDirectory)
 ModuleRepository            → Singleton (new instance, baseDir = AppContext.BaseDirectory)
 TestOrchestrator            → Singleton (receives IEnumerable<ITestAgent> + all repos)
-RunTracker                  → Singleton (WebApi only — tracks async run state)
+RunTracker                  → Singleton (WebApi only — tracks individual async run state)
+ModuleRunTracker            → Singleton (WebApi only — tracks module-level composite runs)
 ```
 
 ---

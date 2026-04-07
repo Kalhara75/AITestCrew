@@ -3,9 +3,11 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { fetchModules } from '../api/modules';
 import { CreateModuleDialog } from '../components/CreateModuleDialog';
+import { useActiveRun } from '../contexts/ActiveRunContext';
 
 export function ModuleListPage() {
   const [showCreate, setShowCreate] = useState(false);
+  const { moduleRun, isModuleRunning } = useActiveRun();
 
   const { data: modules, isLoading, error, refetch } = useQuery({
     queryKey: ['modules'],
@@ -54,39 +56,90 @@ export function ModuleListPage() {
           gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
           gap: 20,
         }}>
-          {modules.map(m => (
-            <Link key={m.id} to={`/modules/${m.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-              <div style={cardStyle}
-                onMouseEnter={e => {
-                  e.currentTarget.style.boxShadow = '0 4px 16px rgba(0,0,0,0.1)';
-                  e.currentTarget.style.borderColor = '#cbd5e1';
-                }}
-                onMouseLeave={e => {
-                  e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.06)';
-                  e.currentTarget.style.borderColor = '#e2e8f0';
-                }}
-              >
-                <h3 style={{ margin: '0 0 8px', fontSize: 17, fontWeight: 700, color: '#0f172a' }}>
-                  {m.name}
-                </h3>
-                {m.description && (
-                  <p style={{ margin: '0 0 16px', fontSize: 13, color: '#64748b', lineHeight: 1.5 }}>
-                    {m.description}
-                  </p>
-                )}
-                <div style={{ display: 'flex', gap: 8, fontSize: 13, color: '#64748b' }}>
-                  <span style={statPill}>{m.testSetCount} test set{m.testSetCount !== 1 ? 's' : ''}</span>
-                  <span style={statPill}>{m.totalObjectives} objective{m.totalObjectives !== 1 ? 's' : ''}</span>
-                </div>
+          {modules.map(m => {
+            const running = isModuleRunning(m.id);
+            return (
+              <Link key={m.id} to={`/modules/${m.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
                 <div style={{
-                  fontSize: 12, color: '#94a3b8', borderTop: '1px solid #f1f5f9',
-                  paddingTop: 12, marginTop: 16,
-                }}>
-                  Created: {new Date(m.createdAt).toLocaleDateString()}
+                  ...cardStyle,
+                  ...(running ? { borderLeft: '3px solid #2563eb', borderColor: '#bfdbfe' } : {}),
+                  overflow: 'hidden',
+                  position: 'relative' as const,
+                }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.boxShadow = '0 4px 16px rgba(0,0,0,0.1)';
+                    if (!running) e.currentTarget.style.borderColor = '#cbd5e1';
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.06)';
+                    if (!running) e.currentTarget.style.borderColor = '#e2e8f0';
+                  }}
+                >
+                  {/* Animated progress bar at top when running */}
+                  {running && moduleRun && (
+                    <>
+                      <div style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        height: 3,
+                        background: '#e2e8f0',
+                      }}>
+                        <div style={{
+                          height: '100%',
+                          width: `${moduleRun.totalCount > 0 ? (moduleRun.completedCount / moduleRun.totalCount) * 100 : 0}%`,
+                          background: '#2563eb',
+                          transition: 'width 0.5s ease',
+                          borderRadius: '0 2px 2px 0',
+                        }} />
+                      </div>
+                      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+                    </>
+                  )}
+
+                  <h3 style={{ margin: '0 0 8px', fontSize: 17, fontWeight: 700, color: '#0f172a' }}>
+                    {m.name}
+                  </h3>
+                  {m.description && (
+                    <p style={{ margin: '0 0 16px', fontSize: 13, color: '#64748b', lineHeight: 1.5 }}>
+                      {m.description}
+                    </p>
+                  )}
+                  <div style={{ display: 'flex', gap: 8, fontSize: 13, color: '#64748b' }}>
+                    <span style={statPill}>{m.testSetCount} test set{m.testSetCount !== 1 ? 's' : ''}</span>
+                    <span style={statPill}>{m.totalObjectives} objective{m.totalObjectives !== 1 ? 's' : ''}</span>
+                  </div>
+
+                  {/* Footer: show progress when running, otherwise show created date */}
+                  <div style={{
+                    fontSize: 12, color: running ? '#1e40af' : '#94a3b8',
+                    borderTop: '1px solid #f1f5f9',
+                    paddingTop: 12, marginTop: 16,
+                    display: 'flex', alignItems: 'center', gap: 8,
+                  }}>
+                    {running && moduleRun ? (
+                      <>
+                        <div style={{
+                          width: 12, height: 12,
+                          border: '2px solid #bfdbfe',
+                          borderTop: '2px solid #2563eb',
+                          borderRadius: '50%',
+                          animation: 'spin 0.8s linear infinite',
+                          flexShrink: 0,
+                        }} />
+                        <span style={{ fontWeight: 500 }}>
+                          Running {moduleRun.completedCount}/{moduleRun.totalCount} test sets...
+                        </span>
+                      </>
+                    ) : (
+                      <span>Created: {new Date(m.createdAt).toLocaleDateString()}</span>
+                    )}
+                  </div>
                 </div>
-              </div>
-            </Link>
-          ))}
+              </Link>
+            );
+          })}
         </div>
       )}
 

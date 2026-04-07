@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { triggerRun, fetchRunStatus } from '../api/runs';
+import { triggerRun } from '../api/runs';
+import { useActiveRun } from '../contexts/ActiveRunContext';
 import type { TestSetListItem } from '../types';
 
 interface Props {
@@ -13,30 +13,29 @@ interface Props {
 
 export function RunObjectiveDialog({ open, moduleId, testSets, onClose }: Props) {
   const navigate = useNavigate();
+  const { individualRun, individualRunStatus, setIndividualRun } = useActiveRun();
   const [objective, setObjective] = useState('');
   const [objectiveName, setObjectiveName] = useState('');
   const [selectedTestSetId, setSelectedTestSetId] = useState(testSets[0]?.id ?? '');
   const [error, setError] = useState<string | null>(null);
-  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  // Track whether this dialog instance started the run
+  const [startedRunId, setStartedRunId] = useState<string | null>(null);
 
-  // Poll run status while active
-  useQuery({
-    queryKey: ['runStatus', activeRunId],
-    queryFn: () => fetchRunStatus(activeRunId!),
-    enabled: !!activeRunId,
-    refetchInterval: 3000,
-    select(data) {
-      if (data.status === 'Completed' && data.testSetId) {
-        setActiveRunId(null);
-        onClose();
-        navigate(`/modules/${moduleId}/testsets/${data.testSetId}/runs/${data.runId}`);
-      } else if (data.status === 'Failed') {
-        setActiveRunId(null);
-        setError(data.error || 'Run failed');
-      }
-      return data;
-    },
-  });
+  const isActive = !!startedRunId && individualRun?.runId === startedRunId;
+
+  // Navigate on completion for runs started by this dialog
+  useEffect(() => {
+    if (!isActive || !individualRunStatus) return;
+    if (individualRunStatus.status === 'Completed' && individualRunStatus.testSetId) {
+      setStartedRunId(null);
+      onClose();
+      navigate(`/modules/${moduleId}/testsets/${individualRunStatus.testSetId}/runs/${individualRunStatus.runId}`);
+    } else if (individualRunStatus.status === 'Failed') {
+      setStartedRunId(null);
+      setIndividualRun(null);
+      setError(individualRunStatus.error || 'Run failed');
+    }
+  }, [individualRunStatus?.status, isActive]);
 
   if (!open) return null;
 
@@ -52,20 +51,21 @@ export function RunObjectiveDialog({ open, moduleId, testSets, onClose }: Props)
         moduleId,
         testSetId: selectedTestSetId,
       });
-      setActiveRunId(res.runId);
+      setStartedRunId(res.runId);
+      setIndividualRun({ runId: res.runId, testSetId: selectedTestSetId, moduleId });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger run');
     }
   };
 
   return (
-    <div style={overlayStyle} onClick={activeRunId ? undefined : onClose}>
+    <div style={overlayStyle} onClick={isActive ? undefined : onClose}>
       <div style={dialogStyle} onClick={e => e.stopPropagation()}>
         <h2 style={{ margin: '0 0 20px', fontSize: 18, fontWeight: 700, color: '#0f172a' }}>
           Run Test Objective
         </h2>
 
-        {activeRunId ? (
+        {isActive ? (
           <div style={{
             display: 'flex', alignItems: 'center', gap: 12, padding: '20px 0',
             justifyContent: 'center',
