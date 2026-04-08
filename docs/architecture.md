@@ -343,7 +343,7 @@ ParseArgs()  ──── --list ───────────────�
     │       │           └─ For each ApiTestDefinition (step):
     │       │                   ExecuteTestCaseAsync()
     │       │                       ├─ Build HttpRequestMessage
-    │       │                       ├─ InjectAuth()
+    │       │                       ├─ InjectAuthAsync() → ITokenProvider
     │       │                       ├─ HttpClient.SendAsync()
     │       │                       └─ ValidateResponseAsync()
     │       │                               ├─ Rule checks (status, contains)
@@ -697,6 +697,6 @@ TestOrchestrator.RunAsync(objective, Normal)
 ## Security Considerations
 
 - **API keys and tokens** in `appsettings.json` must be protected. The file is copied to the binary output directory on build. It should not be committed to source control — use `appsettings.example.json` as the template.
-- **Auth credentials are never passed to the LLM.** They are injected directly into `HttpRequestMessage` by `InjectAuth()` after the LLM-generated headers are applied.
+- **Auth credentials are never passed to the LLM.** They are injected directly into `HttpRequestMessage` by `InjectAuthAsync()` via `ITokenProvider` after the LLM-generated headers are applied. When auto-login is enabled (`AuthUsername` + `AuthPassword`), the `LoginTokenProvider` acquires and caches JWTs automatically; otherwise `StaticTokenProvider` passes the configured `AuthToken` as-is.
 - **LLM validation is advisory for security headers.** Missing `X-Content-Type-Options`, `X-Frame-Options`, and `Strict-Transport-Security` are noted in the validation reason text but do not cause test failures.
 - **Response bodies are truncated** to 2,000 characters before being sent to the LLM for validation, and to 500 characters in the console detail view, to limit token usage and avoid leaking large payloads into logs inadvertently.

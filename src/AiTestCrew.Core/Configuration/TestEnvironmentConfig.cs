@@ -35,6 +35,8 @@ public class TestEnvironmentConfig
     public string? AuthToken { get; set; }
     public string AuthScheme { get; set; } = "Bearer";
     public string AuthHeaderName { get; set; } = "Authorization";
+    public string? AuthUsername { get; set; }
+    public string? AuthPassword { get; set; }
 
     // --- Execution settings ---
     public int MaxParallelAgents { get; set; } = 4;

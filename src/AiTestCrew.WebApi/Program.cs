@@ -1,6 +1,7 @@
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using AiTestCrew.Agents.ApiAgent;
+using AiTestCrew.Agents.Auth;
 using AiTestCrew.Agents.BraveCloudUiAgent;
 using AiTestCrew.Agents.LegacyWebUiAgent;
 using AiTestCrew.Agents.Persistence;
@@ -40,13 +41,28 @@ else
 var kernel = kernelBuilder.Build();
 builder.Services.AddSingleton(kernel);
 
-// ── HttpClient + API Agent ──
+// ── HttpClient + Token Provider + API Agent ──
 builder.Services.AddHttpClient();
+builder.Services.AddSingleton<ITokenProvider>(sp =>
+{
+    var cfg = sp.GetRequiredService<TestEnvironmentConfig>();
+    if (!string.IsNullOrWhiteSpace(cfg.AuthUsername)
+        && !string.IsNullOrWhiteSpace(cfg.AuthPassword)
+        && string.IsNullOrWhiteSpace(cfg.AuthToken))
+    {
+        return new LoginTokenProvider(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
+            cfg,
+            sp.GetRequiredService<ILogger<LoginTokenProvider>>());
+    }
+    return new StaticTokenProvider(cfg.AuthToken);
+});
 builder.Services.AddSingleton<ApiTestAgent>(sp => new ApiTestAgent(
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<ApiTestAgent>>(),
     sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
-    sp.GetRequiredService<TestEnvironmentConfig>()
+    sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<ITokenProvider>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<ApiTestAgent>());
 

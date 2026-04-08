@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using AiTestCrew.Agents.Base;
 using AiTestCrew.Core.Configuration;
+using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
 
 namespace AiTestCrew.Agents.ApiAgent;
@@ -26,6 +27,7 @@ public class ApiTestAgent : BaseTestAgent
 {
     private readonly HttpClient _http;
     private readonly TestEnvironmentConfig _config;
+    private readonly ITokenProvider _tokenProvider;
 
     public override string Name => "API Agent";
     public override string Role => "Senior REST API Test Engineer";
@@ -34,10 +36,12 @@ public class ApiTestAgent : BaseTestAgent
         Kernel kernel,
         ILogger<ApiTestAgent> logger,
         HttpClient httpClient,
-        TestEnvironmentConfig config) : base(kernel, logger)
+        TestEnvironmentConfig config,
+        ITokenProvider tokenProvider) : base(kernel, logger)
     {
         _http = httpClient;
         _config = config;
+        _tokenProvider = tokenProvider;
     }
 
     public override Task<bool> CanHandleAsync(TestTask task) =>
@@ -286,9 +290,9 @@ public class ApiTestAgent : BaseTestAgent
                 request.Headers.TryAddWithoutValidation(key, value);
             }
 
-            // Inject auth credentials from config (overrides anything the LLM generated
+            // Inject auth credentials (overrides anything the LLM generated
             // for the same header, ensuring real credentials are always used).
-            InjectAuth(request);
+            await InjectAuthAsync(request, ct);
 
             // Add body for non-GET requests
             if (tc.Body is not null && tc.Method.ToUpperInvariant() != "GET")
@@ -451,7 +455,7 @@ public class ApiTestAgent : BaseTestAgent
         try
         {
             var request = new HttpRequestMessage(HttpMethod.Get, url);
-            InjectAuth(request);
+            await InjectAuthAsync(request, ct);
 
             Logger.LogDebug("[{Agent}] Discovery GET {Url}", Name, url);
             var response = await _http.SendAsync(request, ct);
@@ -493,20 +497,21 @@ public class ApiTestAgent : BaseTestAgent
     }
 
     /// <summary>
-    /// Injects the configured auth credential into the request.
+    /// Injects auth credentials into the request via the token provider.
     /// Called after the LLM-generated headers are applied so real credentials
     /// always take precedence.
     /// </summary>
-    private void InjectAuth(HttpRequestMessage request)
+    private async Task InjectAuthAsync(HttpRequestMessage request, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(_config.AuthToken)) return;
+        var token = await _tokenProvider.GetTokenAsync(ct);
+        if (string.IsNullOrWhiteSpace(token)) return;
 
         // Remove any auth header the LLM may have guessed so we don't duplicate it
         request.Headers.Remove(_config.AuthHeaderName);
 
         var headerValue = _config.AuthScheme.Equals("None", StringComparison.OrdinalIgnoreCase)
-            ? _config.AuthToken                            // raw value  e.g. X-Api-Key: abc
-            : $"{_config.AuthScheme} {_config.AuthToken}"; // scheme + token  e.g. Bearer eyJ…
+            ? token                            // raw value  e.g. X-Api-Key: abc
+            : $"{_config.AuthScheme} {token}"; // scheme + token  e.g. Bearer eyJ…
 
         request.Headers.TryAddWithoutValidation(_config.AuthHeaderName, headerValue);
     }

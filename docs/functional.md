@@ -190,9 +190,11 @@ All settings are in `src/AiTestCrew.Runner/appsettings.json` under the `TestEnvi
 >
 > Avoid pasting full URLs into objectives — they will include the base path the LLM will also prepend.
 | `OpenApiSpecUrl` | Optional URL to an OpenAPI/Swagger JSON spec | `null` |
-| `AuthToken` | Token injected into every request | `null` |
+| `AuthToken` | Static token injected into every request (skip auto-login) | `null` |
 | `AuthScheme` | `"Bearer"`, `"Basic"`, or `"None"` | `"Bearer"` |
 | `AuthHeaderName` | Header name for auth | `"Authorization"` |
+| `AuthUsername` | Username for auto-login (used when `AuthToken` is empty) | `null` |
+| `AuthPassword` | Password for auto-login (used when `AuthToken` is empty) | `null` |
 | `DefaultTimeoutSeconds` | Per-objective execution timeout | `300` |
 | `VerboseLogging` | Show agent-level log lines in console | `true` |
 
@@ -200,9 +202,10 @@ All settings are in `src/AiTestCrew.Runner/appsettings.json` under the `TestEnvi
 
 Authentication is injected automatically from config. The LLM is instructed not to add auth headers itself, so tests focus on functional behaviour rather than auth scenarios.
 
-- **Bearer token**: Set `AuthToken` to a JWT, `AuthScheme` to `"Bearer"`, `AuthHeaderName` to `"Authorization"`.
+- **Auto-login (recommended)**: Set `AuthUsername` and `AuthPassword`, leave `AuthToken` empty. The system calls `POST {ApiBaseUrl}/AccessManagement/Login` to acquire a JWT automatically. The token is cached and refreshed only when it expires (decoded from the JWT `exp` claim with a 60-second safety margin).
+- **Static Bearer token**: Set `AuthToken` to a JWT, `AuthScheme` to `"Bearer"`, `AuthHeaderName` to `"Authorization"`. When `AuthToken` is set, auto-login is disabled.
 - **API key header**: Set `AuthScheme` to `"None"`, `AuthHeaderName` to `"X-Api-Key"`, `AuthToken` to the key value.
-- **No auth**: Leave `AuthToken` empty — the LLM will generate auth failure tests (401/403) as part of the test suite.
+- **No auth**: Leave all auth fields empty — the LLM will generate auth failure tests (401/403) as part of the test suite.
 
 ### OpenAPI Spec
 
