@@ -60,6 +60,18 @@ public class PersistedTestSet
     /// </summary>
     public int SchemaVersion { get; set; }
 
+    /// <summary>
+    /// Starting URL for setup steps (e.g. the login page).
+    /// Empty string means setup steps execute on whatever page the browser opens to.
+    /// </summary>
+    public string SetupStartUrl { get; set; } = "";
+
+    /// <summary>
+    /// Optional setup steps (e.g. login) that run before every test case in this test set.
+    /// Recorded via PlaywrightRecorder or defined manually. Empty list = no setup.
+    /// </summary>
+    public List<WebUiStep> SetupSteps { get; set; } = [];
+
     /// <summary>Flat list of individually runnable test objectives (v2 schema).</summary>
     public List<TestObjective> TestObjectives { get; set; } = [];
 

@@ -253,6 +253,96 @@ if (cli.RecordMode)
     return;
 }
 
+// ── Record-setup mode — capture reusable setup steps (e.g. login) for a test set ──
+if (cli.RecordSetupMode)
+{
+    if (cli.ModuleId is null || cli.TestSetId is null)
+    {
+        AnsiConsole.MarkupLine("[red]--record-setup requires --module <id> and --testset <id>[/]");
+        return;
+    }
+
+    // Load config to get base URL
+    var setupConfig = new ConfigurationBuilder()
+        .SetBasePath(AppContext.BaseDirectory)
+        .AddJsonFile("appsettings.json", optional: true)
+        .Build()
+        .GetSection("TestEnvironment")
+        .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
+
+    var setupTargetType = cli.RecordTarget ?? "UI_Web_MVC";
+    var setupBaseUrl = setupTargetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
+        ? setupConfig.BraveCloudUiUrl
+        : setupConfig.LegacyWebUiUrl;
+
+    if (string.IsNullOrWhiteSpace(setupBaseUrl))
+    {
+        var key = setupTargetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
+            ? "BraveCloudUiUrl" : "LegacyWebUiUrl";
+        AnsiConsole.MarkupLine($"[red]Base URL not configured. Set '{key}' in appsettings.json.[/]");
+        return;
+    }
+
+    AnsiConsole.MarkupLine($"[cyan]Recording setup steps[/] → {cli.ModuleId}/{cli.TestSetId}");
+    AnsiConsole.MarkupLine($"[grey]Target: {setupTargetType}  Base URL: {setupBaseUrl}[/]");
+    AnsiConsole.MarkupLine("[grey]Perform your login/setup steps in the browser, then click Save & Stop.[/]\n");
+
+    using var setupLoggerFactory = LoggerFactory.Create(b =>
+        b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss "; })
+         .AddFilter("AiTestCrew", LogLevel.Information));
+    var setupRecLogger = setupLoggerFactory.CreateLogger("Recorder");
+
+    var setupRecorded = await PlaywrightRecorder.RecordAsync(setupBaseUrl, "setup", setupConfig, setupRecLogger);
+
+    if (setupRecorded.Steps.Count == 0)
+    {
+        AnsiConsole.MarkupLine("[yellow]No steps were captured. Setup steps not saved.[/]");
+        return;
+    }
+
+    // Resolve slugified IDs
+    var setupModuleId  = SlugHelper.ToSlug(cli.ModuleId);
+    var setupTestSetId = SlugHelper.ToSlug(cli.TestSetId);
+
+    // Ensure module exists
+    var setupModRepo = new ModuleRepository(AppContext.BaseDirectory);
+    if (!setupModRepo.Exists(setupModuleId))
+        await setupModRepo.CreateAsync(cli.ModuleId);
+
+    // Load or create the test set, then save setup steps into it
+    var setupTsRepo = new TestSetRepository(AppContext.BaseDirectory);
+    var setupTestSet = await setupTsRepo.LoadAsync(setupModuleId, setupTestSetId)
+                       ?? await setupTsRepo.CreateEmptyAsync(setupModuleId, cli.TestSetId);
+
+    setupTestSet.SetupStartUrl = setupRecorded.StartUrl;
+    setupTestSet.SetupSteps = setupRecorded.Steps;
+    await setupTsRepo.SaveAsync(setupTestSet, setupModuleId);
+
+    // Print captured steps
+    var setupTable = new Table()
+        .Border(TableBorder.Rounded)
+        .AddColumn("[bold]#[/]")
+        .AddColumn("[bold]Action[/]")
+        .AddColumn("[bold]Selector[/]")
+        .AddColumn("[bold]Value[/]");
+
+    for (int i = 0; i < setupRecorded.Steps.Count; i++)
+    {
+        var s = setupRecorded.Steps[i];
+        var displayValue = s.Value is null ? "-" : (s.Value.Length > 40 ? s.Value[..40] + "…" : s.Value);
+        setupTable.AddRow(
+            (i + 1).ToString(),
+            Markup.Escape(s.Action),
+            Markup.Escape(s.Selector ?? "-"),
+            Markup.Escape(displayValue)
+        );
+    }
+    AnsiConsole.Write(setupTable);
+    AnsiConsole.MarkupLine($"\n[green]Saved[/] {setupRecorded.Steps.Count} setup steps → {Markup.Escape(setupModuleId)}/{Markup.Escape(setupTestSetId)}");
+    AnsiConsole.MarkupLine("[grey]These steps will run before every test case in this test set during replay.[/]");
+    return;
+}
+
 // ── Migrate legacy test sets to module structure (idempotent) ──
 await MigrationHelper.MigrateToModulesAsync(AppContext.BaseDirectory);
 await MigrationHelper.MigrateToSchemaV2Async(AppContext.BaseDirectory);
@@ -462,7 +552,7 @@ static CliArgs ParseArgs(string[] args)
     string? moduleId = null, testSetId = null, reuseId = null;
     string? createModuleName = null, createTestSetModuleId = null, createTestSetName = null;
     string? objectiveName = null, caseName = null, recordTarget = null;
-    bool listModules = false, recordMode = false;
+    bool listModules = false, recordMode = false, recordSetupMode = false;
     var mode = RunMode.Normal;
 
     for (int i = 0; i < args.Length; i++)
@@ -513,6 +603,9 @@ static CliArgs ParseArgs(string[] args)
             case "--record":
                 recordMode = true;
                 break;
+            case "--record-setup":
+                recordSetupMode = true;
+                break;
             case "--case-name" when i + 1 < args.Length:
                 caseName = args[++i];
                 break;
@@ -544,6 +637,7 @@ static CliArgs ParseArgs(string[] args)
         CreateTestSetModuleId = createTestSetModuleId,
         CreateTestSetName = createTestSetName,
         RecordMode = recordMode,
+        RecordSetupMode = recordSetupMode,
         CaseName = caseName,
         RecordTarget = recordTarget
     };
@@ -564,6 +658,7 @@ class CliArgs
     public string? CreateTestSetName { get; init; }
     public string? ObjectiveName { get; init; }
     public bool RecordMode { get; init; }
+    public bool RecordSetupMode { get; init; }
     public string? CaseName { get; init; }
     public string? RecordTarget { get; init; }
 }

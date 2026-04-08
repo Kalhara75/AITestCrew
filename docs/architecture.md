@@ -75,6 +75,8 @@ Agents/
   Persistence/
     PersistedModule.cs            — Module manifest model (id, name, description, timestamps)
     PersistedTestSet.cs           — JSON envelope model for saved test sets (contains List<TestObjective> TestObjectives, v2 schema)
+                                    Includes SetupSteps (List<WebUiStep>) and SetupStartUrl for reusable
+                                    pre-test-case setup (e.g. login) — runs before every test case in the set
     PersistedExecutionRun.cs      — Execution history models (run, objective results with PersistedObjectiveResult, step results)
     ModuleRepository.cs           — File I/O for modules/{id}/module.json
     TestSetRepository.cs          — File I/O for test sets (legacy flat + module-scoped, incl. move objective)
@@ -103,7 +105,9 @@ BaseTestAgent  (LLM, AskLlmAsync/AskLlmForJsonAsync)
 
 **Credentials** — `GetConfiguredCredentials()` is a virtual method on `BaseWebUiTestAgent`. Each subclass overrides it to return `(Username, Password)` from config. The base class injects these into the Phase 1 exploration prompt, ensuring the LLM never invents or hard-codes credential values.
 
-**Per-step reporting** — `ExecuteUiTestCaseAsync` reports each Playwright step as an individual `TestStep` in the results. Each step is labelled `"Test Case Name [N/Total] action"` with its own pass/fail status and duration. If a step fails, a screenshot is captured (when configured), remaining steps are marked "Skipped — previous step failed", and execution of that test case stops. Screenshots are captured for all failure types (Playwright errors, assertion failures, unexpected exceptions) and the filename is stored in the step's `Detail` field.
+**Setup steps** — `PersistedTestSet` can hold optional `SetupSteps` (`List<WebUiStep>`) and a `SetupStartUrl`. When present, the orchestrator injects them into `TestTask.Parameters["SetupSteps"]` and `["SetupStartUrl"]` alongside `PreloadedTestCases`. `ExecuteUiTestCaseAsync` runs setup steps before each test case: navigate to `SetupStartUrl`, execute setup steps (labelled `[setup N/M]`), then navigate to the test case's own `StartUrl` and execute its steps. This avoids duplicating login/auth steps in every test case. Setup steps are recorded via `--record-setup` CLI flag or edited in the web dashboard. If a setup step fails, remaining setup and all test case steps are skipped.
+
+**Per-step reporting** — `ExecuteUiTestCaseAsync` reports each Playwright step as an individual `TestStep` in the results. Each step is labelled `"Test Case Name [N/Total] action"` (or `"Test Case Name [setup N/M] action"` for setup steps) with its own pass/fail status and duration. If a step fails, a screenshot is captured (when configured), remaining steps are marked "Skipped — previous step failed", and execution of that test case stops. Screenshots are captured for all failure types (Playwright errors, assertion failures, unexpected exceptions) and the filename is stored in the step's `Detail` field.
 
 **Click execution** — `ExecuteUiStepAsync` uses a minimum 15 s timeout for `click` steps (regardless of the stored `timeoutMs`) because clicks frequently trigger form submissions and full-page navigations. If Playwright's actionability check stalls (e.g. a covering overlay), it auto-dismisses modal overlays via `TryDismissOverlaysAsync` (Escape key → common close-button selectors → JS DOM removal of `.modal-backdrop`, `.k-overlay`, `[role="dialog"]`, Kendo Windows), then retries with `Force = true`, and finally falls back to a JS `el.click()` via `EvalOnSelectorAsync`.
 
@@ -177,6 +181,8 @@ Runner/
 
 **`--record` mode** runs before the DI host is built (no Orchestrator or agents needed). It resolves the module ID and test set ID via `SlugHelper.ToSlug` so the saved file path matches what the WebApi expects, then creates the module manifest via `ModuleRepository` if it does not exist.
 
+**`--record-setup` mode** also runs before the DI host. It reuses `PlaywrightRecorder.RecordAsync` but saves the captured steps into `PersistedTestSet.SetupSteps` and `SetupStartUrl` instead of creating a new `TestObjective`. These setup steps (typically login) run before every test case in the test set during replay.
+
 ---
 
 ### AiTestCrew.WebApi
@@ -215,6 +221,8 @@ WebApi/
 | `POST` | `/api/modules/{id}/testsets/{tsId}/move-objective` | Move objective to another test set |
 | `PUT` | `/api/modules/{id}/testsets/{tsId}/objectives/{objectiveId}` | Update a step within an objective (step index in body) |
 | `DELETE` | `/api/modules/{id}/testsets/{tsId}/objectives/{objectiveId}` | Delete an objective from the test set |
+| `PUT` | `/api/modules/{id}/testsets/{tsId}/setup-steps` | Create/update reusable setup steps (e.g. login) for a test set |
+| `DELETE` | `/api/modules/{id}/testsets/{tsId}/setup-steps` | Clear setup steps from a test set |
 | `POST` | `/api/modules/{id}/testsets/{tsId}/ai-patch` | Preview LLM-applied natural language patch to test cases |
 | `POST` | `/api/modules/{id}/testsets/{tsId}/ai-patch/apply` | Apply a previewed AI patch to the test set |
 | `GET` | `/api/testsets` | List all test sets (legacy, combined view) |
@@ -271,6 +279,8 @@ ui/src/
     EditTestCaseDialog.tsx         — Modal form to directly edit all fields of a single API test case
     EditWebUiTestCaseDialog.tsx    — Modal form to edit Web UI test case steps (action, selector, value,
                                     timeout per step; add/reorder/delete steps; delete entire test case)
+    SetupStepsPanel.tsx            — Collapsible panel for viewing/editing test-set-level setup steps
+                                    (e.g. login); shown on TestSetDetailPage above the test cases list
     AiPatchPanel.tsx               — Panel for natural language AI patching of test cases with preview/apply flow
   types/
     index.ts                       — TypeScript interfaces matching API responses
@@ -359,10 +369,14 @@ ParseArgs()  ──── --list ───────────────�
             │
             ├─ For each TestObjective (or single filtered objective):
             │       Injects ApiSteps/WebUiSteps into TestTask.Parameters["PreloadedTestCases"]
+            │       If test set has SetupSteps, also injects SetupSteps + SetupStartUrl
             │       agent.ExecuteAsync(task) → returns ONE TestResult with ObjectiveId
             │           ├─ Detects "PreloadedTestCases" in Parameters
             │           ├─ Skips spec load, discovery, and LLM generation
-            │           └─ Executes saved ApiTestDefinition steps directly
+            │           ├─ (Web UI) For each test case:
+            │           │       Run SetupSteps first (navigate SetupStartUrl → execute setup)
+            │           │       Then navigate to test case StartUrl → execute test steps
+            │           └─ Executes saved ApiTestDefinition/WebUiTestCase steps directly
             │
             ├─ TestSetRepository.UpdateRunStatsAsync()  [bumps RunCount, LastRunAt]
             └─ GenerateSummaryAsync()  [LLM narrative]

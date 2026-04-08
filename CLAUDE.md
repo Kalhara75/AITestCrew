@@ -72,6 +72,7 @@ dotnet run --project src/AiTestCrew.Runner -- --reuse <id>                      
 dotnet run --project src/AiTestCrew.Runner -- --rebaseline "obj"                             # Regenerate & save
 dotnet run --project src/AiTestCrew.Runner -- --create-module "Name"                         # Create a module
 dotnet run --project src/AiTestCrew.Runner -- --create-testset <moduleId> "Name"             # Create empty test set
+dotnet run --project src/AiTestCrew.Runner -- --record-setup --module sdr --testset nmi      # Record reusable setup steps (e.g. login)
 ```
 
 ## Agent pattern

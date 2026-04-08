@@ -137,6 +137,14 @@ public class TestOrchestrator
                     parameters["PreloadedTestCases"] = obj.ApiSteps
                         .Select(s => s.ToTestCase("")).ToList();
 
+                // Inject test-set-level setup steps (e.g. login) so the agent
+                // can run them before each test case.
+                if (saved.SetupSteps.Count > 0)
+                {
+                    parameters["SetupSteps"] = saved.SetupSteps;
+                    parameters["SetupStartUrl"] = saved.SetupStartUrl;
+                }
+
                 return new TestTask
                 {
                     Id = obj.Id,

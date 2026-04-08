@@ -75,6 +75,8 @@ export interface TestSetDetail {
   createdAt: string;
   lastRunAt: string;
   runCount: number;
+  setupStartUrl: string;
+  setupSteps: WebUiStep[];
   lastRunStatus: string | null;
   objectiveStatuses?: Record<string, ObjectiveStatus>;
   testObjectives: TestObjective[];

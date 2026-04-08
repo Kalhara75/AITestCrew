@@ -141,6 +141,24 @@ dotnet run --project src/AiTestCrew.Runner -- --record \
 
 See [Web UI Testing — Recording Mode](#option-2--recording-mode-recommended-for-reliability) for full details.
 
+### Record Setup Steps (Web UI only)
+
+Record reusable setup steps (e.g. login) that run automatically before every test case in a test set. This avoids duplicating login steps in each test and lets you change credentials in one place.
+
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --record-setup \
+  --module <moduleId> \
+  --testset <testSetId> \
+  --target UI_Web_MVC
+```
+
+- Opens a browser — perform your login/setup actions, then click **Save & Stop**.
+- The recorded steps are saved as the test set's `setupSteps` (not as a test objective).
+- During replay (`--reuse`), setup steps run before each test case in a fresh browser context: navigate to `setupStartUrl`, execute setup steps, then navigate to the test case's own start URL and execute its steps.
+- Setup steps can also be viewed, edited, and cleared in the web dashboard under the test set detail page.
+- If a setup step fails during replay, the remaining setup steps and all test case steps are skipped for that test case.
+- Running `--record-setup` again for the same test set replaces the existing setup steps.
+
 ---
 
 ### List

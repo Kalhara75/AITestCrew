@@ -12,6 +12,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { MoveObjectiveDialog } from '../components/MoveObjectiveDialog';
 import { TriggerObjectiveRunButton } from '../components/TriggerObjectiveRunButton';
 import { AiPatchPanel } from '../components/AiPatchPanel';
+import { SetupStepsPanel } from '../components/SetupStepsPanel';
 import type { TestObjective, RunSummary, ObjectiveStatus } from '../types';
 
 export function TestSetDetailPage() {
@@ -140,6 +141,17 @@ export function TestSetDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Setup Steps (e.g. login) — shown for module-scoped test sets with web UI objectives */}
+      {isModuleScoped && (
+        <SetupStepsPanel
+          setupStartUrl={testSet.setupStartUrl ?? ''}
+          setupSteps={testSet.setupSteps ?? []}
+          moduleId={moduleId!}
+          testSetId={testSet.id}
+          onUpdated={() => queryClient.invalidateQueries({ queryKey: ['testSet', moduleId, id] })}
+        />
+      )}
 
       {/* Test Cases list — clean table */}
       <div style={cardStyle({ marginBottom: 24 })}>

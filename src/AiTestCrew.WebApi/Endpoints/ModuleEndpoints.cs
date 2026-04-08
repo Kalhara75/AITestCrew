@@ -291,6 +291,36 @@ public static class ModuleEndpoints
             return Results.Ok(TestSetResponse(testSet, historyRepo));
         });
 
+        // PUT /api/modules/{moduleId}/testsets/{tsId}/setup-steps — save/update setup steps
+        group.MapPut("/{moduleId}/testsets/{tsId}/setup-steps",
+            async (string moduleId, string tsId, SetupStepsRequest request,
+                TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+        {
+            var testSet = await tsRepo.LoadAsync(moduleId, tsId);
+            if (testSet is null)
+                return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
+
+            testSet.SetupStartUrl = request.SetupStartUrl ?? "";
+            testSet.SetupSteps = request.SetupSteps ?? [];
+            await tsRepo.SaveAsync(testSet, moduleId);
+            return Results.Ok(TestSetResponse(testSet, historyRepo));
+        });
+
+        // DELETE /api/modules/{moduleId}/testsets/{tsId}/setup-steps — clear setup steps
+        group.MapDelete("/{moduleId}/testsets/{tsId}/setup-steps",
+            async (string moduleId, string tsId,
+                TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+        {
+            var testSet = await tsRepo.LoadAsync(moduleId, tsId);
+            if (testSet is null)
+                return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
+
+            testSet.SetupStartUrl = "";
+            testSet.SetupSteps = [];
+            await tsRepo.SaveAsync(testSet, moduleId);
+            return Results.Ok(TestSetResponse(testSet, historyRepo));
+        });
+
         // POST /api/modules/{moduleId}/run — run all test sets in a module
         group.MapPost("/{moduleId}/run", async (string moduleId,
             ModuleRepository moduleRepo, TestSetRepository tsRepo,
@@ -498,6 +528,7 @@ public static class ModuleEndpoints
             testSet.Objectives, testSet.ObjectiveNames,
             Objective = testSet.Objective,
             testSet.CreatedAt, testSet.LastRunAt, testSet.RunCount,
+            testSet.SetupStartUrl, testSet.SetupSteps,
             LastRunStatus = AggregateStatus(objStatuses, currentIds),
             ObjectiveStatuses = objStatuses
                 .Where(kvp => currentIds.Contains(kvp.Key))
@@ -541,3 +572,4 @@ public record AiPatchScope(string? ObjectiveId);
 public record ObjectivePatchEntry(string ObjectiveId, ApiTestCase TestCase);
 public record AiPatchPreview(List<ObjectivePatchEntry> Original, List<ObjectivePatchEntry> Patched);
 public record AiPatchApplyRequest(List<ObjectivePatchEntry> Patches);
+public record SetupStepsRequest(string? SetupStartUrl, List<WebUiStep>? SetupSteps);

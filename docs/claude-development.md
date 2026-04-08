@@ -206,6 +206,18 @@ Then verify it works:
 
 ---
 
+### Recording reusable login/setup steps
+
+Record setup steps (e.g. login) that run before every test case in a test set:
+
+```
+dotnet run --project src/AiTestCrew.Runner -- --record-setup --module sdr --testset nmi-search
+```
+
+Perform login in the browser, click **Save & Stop**. The steps are saved to the test set's `setupSteps` field. On replay, they run before each test case automatically. Setup steps can also be viewed and edited in the web dashboard.
+
+---
+
 ### Running a regression check on saved tests
 
 ```

@@ -2,7 +2,7 @@ import { apiFetch } from './client';
 import type {
   Module, TestSetListItem, TestSetDetail, RunSummary, ExecutionRun,
   MoveObjectiveRequest, TestObjective, AiPatchRequest, AiPatchPreview, AiPatchApplyRequest,
-  TriggerModuleRunResponse, ModuleRunStatus,
+  TriggerModuleRunResponse, ModuleRunStatus, WebUiStep,
 } from '../types';
 
 export const fetchModules = () =>
@@ -79,6 +79,18 @@ export const applyAiPatch = (moduleId: string, tsId: string, request: AiPatchApp
   apiFetch<TestSetDetail>(
     `/modules/${moduleId}/testsets/${tsId}/ai-patch/apply`,
     { method: 'POST', body: JSON.stringify(request) }
+  );
+
+export const updateSetupSteps = (moduleId: string, tsId: string, setupStartUrl: string, setupSteps: WebUiStep[]) =>
+  apiFetch<TestSetDetail>(
+    `/modules/${moduleId}/testsets/${tsId}/setup-steps`,
+    { method: 'PUT', body: JSON.stringify({ setupStartUrl, setupSteps }) }
+  );
+
+export const clearSetupSteps = (moduleId: string, tsId: string) =>
+  apiFetch<TestSetDetail>(
+    `/modules/${moduleId}/testsets/${tsId}/setup-steps`,
+    { method: 'DELETE' }
   );
 
 export const triggerModuleRun = (moduleId: string) =>

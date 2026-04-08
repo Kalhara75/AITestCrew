@@ -90,6 +90,21 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                 Logger.LogInformation("[{Agent}] Reuse mode: {Count} saved test cases", Name, testCases.Count);
             }
 
+            // ── Check for test-set-level setup steps (e.g. login) ──
+            List<WebUiStep>? setupSteps = null;
+            string? setupStartUrl = null;
+            if (task.Parameters.TryGetValue("SetupSteps", out var ss) && ss is List<WebUiStep> ssTyped)
+                setupSteps = ssTyped;
+            if (task.Parameters.TryGetValue("SetupStartUrl", out var su) && su is string suStr)
+                setupStartUrl = suStr;
+            if (setupSteps is { Count: > 0 })
+            {
+                steps.Add(TestStep.Pass("setup-steps",
+                    $"Will run {setupSteps.Count} setup step(s) before each test case"));
+                Logger.LogInformation("[{Agent}] Setup steps: {Count} steps, startUrl={Url}",
+                    Name, setupSteps.Count, setupStartUrl ?? "(none)");
+            }
+
             // ── Validate base URL ──
             if (string.IsNullOrWhiteSpace(TargetBaseUrl))
             {
@@ -147,7 +162,7 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
             foreach (var tc in testCases)
             {
                 ct.ThrowIfCancellationRequested();
-                var tcSteps = await ExecuteUiTestCaseAsync(browser, tc, ct);
+                var tcSteps = await ExecuteUiTestCaseAsync(browser, tc, setupSteps, setupStartUrl, ct);
                 steps.AddRange(tcSteps);
             }
 
@@ -353,7 +368,10 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
     // Test case execution — fresh context per test case
     // ─────────────────────────────────────────────────────
 
-    private async Task<List<TestStep>> ExecuteUiTestCaseAsync(IBrowser browser, WebUiTestCase tc, CancellationToken ct)
+    private async Task<List<TestStep>> ExecuteUiTestCaseAsync(
+        IBrowser browser, WebUiTestCase tc,
+        List<WebUiStep>? setupSteps, string? setupStartUrl,
+        CancellationToken ct)
     {
         Logger.LogInformation("[{Agent}] Executing test case: {Name}", Name, tc.Name);
         var stepResults = new List<TestStep>();
@@ -365,6 +383,79 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
 
         try
         {
+            // ── Run setup steps first (e.g. login) if configured ──
+            if (setupSteps is { Count: > 0 })
+            {
+                if (!string.IsNullOrWhiteSpace(setupStartUrl))
+                {
+                    var sUrl = ResolveUrl(setupStartUrl);
+                    await page.GotoAsync(sUrl, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
+                }
+
+                for (var s = 0; s < setupSteps.Count; s++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var step = setupSteps[s];
+                    var stepLabel = $"{tc.Name} [setup {s + 1}/{setupSteps.Count}] {step.Action}";
+                    var sw = Stopwatch.StartNew();
+
+                    try
+                    {
+                        await ExecuteUiStepAsync(page, step);
+                        sw.Stop();
+                        stepResults.Add(new TestStep
+                        {
+                            Action = stepLabel,
+                            Summary = $"{step.Action} {step.Selector ?? ""} {step.Value ?? ""}".Trim(),
+                            Status = TestStatus.Passed,
+                            Duration = sw.Elapsed
+                        });
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        sw.Stop();
+                        Logger.LogWarning("[{Agent}] Setup step {Idx}/{Total} failed in '{Case}': {Msg}",
+                            Name, s + 1, setupSteps.Count, tc.Name, ex.Message);
+
+                        var screenshotPath = tc.TakeScreenshotOnFailure
+                            ? await CaptureScreenshotAsync(page, tc.Name)
+                            : null;
+                        var detail = screenshotPath is not null
+                            ? $"{ex.Message} | Screenshot: {screenshotPath}"
+                            : ex.Message;
+
+                        stepResults.Add(new TestStep
+                        {
+                            Action = stepLabel,
+                            Summary = $"Setup failed: {ex.Message}",
+                            Status = TestStatus.Failed,
+                            Detail = detail,
+                            Duration = sw.Elapsed
+                        });
+
+                        // Setup failure → skip remaining setup + all test steps
+                        for (var rs = s + 1; rs < setupSteps.Count; rs++)
+                        {
+                            var sk = setupSteps[rs];
+                            stepResults.Add(TestStep.Fail(
+                                $"{tc.Name} [setup {rs + 1}/{setupSteps.Count}] {sk.Action}",
+                                "Skipped — setup step failed",
+                                $"{sk.Action} {sk.Selector ?? ""} {sk.Value ?? ""}".Trim()));
+                        }
+                        for (var j = 0; j < tc.Steps.Count; j++)
+                        {
+                            var sk = tc.Steps[j];
+                            stepResults.Add(TestStep.Fail(
+                                $"{tc.Name} [{j + 1}/{tc.Steps.Count}] {sk.Action}",
+                                "Skipped — setup failed",
+                                $"{sk.Action} {sk.Selector ?? ""} {sk.Value ?? ""}".Trim()));
+                        }
+                        return stepResults;
+                    }
+                }
+            }
+
+            // ── Navigate to the test case's own start URL ──
             if (!string.IsNullOrWhiteSpace(tc.StartUrl))
             {
                 var url = ResolveUrl(tc.StartUrl);
