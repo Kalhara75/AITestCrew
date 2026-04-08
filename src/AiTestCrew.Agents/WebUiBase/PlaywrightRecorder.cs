@@ -147,6 +147,14 @@ public static class PlaywrightRecorder
             if (window.__aitcRecorderActive) return;
             window.__aitcRecorderActive = true;
 
+            // ── Element assertion pick mode state ────────────────────────────────
+            var __pickMode = false;
+            var __pickedEl = null;
+            var __highlightDiv = null;
+            var __pickMenuDiv = null;
+            // Expose toggle on window so inline onclick can reach it
+            window.__aitcTogglePick = function() {}; // placeholder, set after functions defined
+
             // ── Selector builder ──────────────────────────────────────────────────
             // Builds the most specific, replay-stable CSS/Playwright selector.
             // Tailored for Kendo UI (PanelBar, Window, Grid) + Bootstrap stack.
@@ -266,7 +274,11 @@ public static class PlaywrightRecorder
             }
 
             function isOverlayEl(el) {
-                return el && (el.closest('#__aitc_overlay') !== null);
+                return el && (
+                    el.closest('#__aitc_overlay') !== null ||
+                    el.closest('#__aitc_pick_highlight') !== null ||
+                    el.closest('#__aitc_pick_menu') !== null
+                );
             }
 
             function isFormField(el) {
@@ -281,12 +293,137 @@ public static class PlaywrightRecorder
                 }
             }
 
+            // ── Element assertion pick mode ──────────────────────────────────────
+
+            function enterPickMode() {
+                __pickMode = true;
+                document.body.style.cursor = 'crosshair';
+                var btn = document.getElementById('__aitc_pick_btn');
+                if (btn) {
+                    btn.textContent = 'Cancel pick mode';
+                    btn.style.background = '#45475a';
+                }
+                document.addEventListener('mousemove', onPickMouseMove, true);
+            }
+
+            function exitPickMode() {
+                __pickMode = false;
+                __pickedEl = null;
+                document.body.style.cursor = '';
+                if (__highlightDiv) __highlightDiv.style.display = 'none';
+                if (__pickMenuDiv) __pickMenuDiv.style.display = 'none';
+                var btn = document.getElementById('__aitc_pick_btn');
+                if (btn) {
+                    btn.textContent = '+ Assert element\u2026';
+                    btn.style.background = '#313244';
+                }
+                document.removeEventListener('mousemove', onPickMouseMove, true);
+            }
+
+            function onPickMouseMove(e) {
+                if (!__highlightDiv) return;
+                var el = document.elementFromPoint(e.clientX, e.clientY);
+                if (!el || isOverlayEl(el)) {
+                    __highlightDiv.style.display = 'none';
+                    return;
+                }
+                var rect = el.getBoundingClientRect();
+                __highlightDiv.style.left   = rect.left + 'px';
+                __highlightDiv.style.top    = rect.top + 'px';
+                __highlightDiv.style.width  = rect.width + 'px';
+                __highlightDiv.style.height = rect.height + 'px';
+                __highlightDiv.style.display = 'block';
+            }
+
+            function showPickMenu(el) {
+                if (!__pickMenuDiv) return;
+                __pickedEl = el;
+                var sel = bestSelector(el);
+                var isField = isFormField(el);
+                var textVal = (el.innerText || '').trim();
+                if (textVal.length > 100) textVal = textVal.substring(0, 100) + '\u2026';
+
+                var weakSelector = !sel || sel === 'div' || sel === 'span' || sel === 'li' || sel === 'img' || sel === 'ul';
+
+                var html = '<div style="padding:6px 12px 4px;color:#a6e3a1;font-size:11px;border-bottom:1px solid #45475a;margin-bottom:4px;">' +
+                    (weakSelector ? '<span style="color:#f9e2af;">&#9888; Selector may not be unique</span><br>' : '') +
+                    (sel || 'unknown') + '</div>';
+
+                var menuBtnStyle = 'display:block;width:100%;text-align:left;padding:6px 12px;' +
+                    'background:transparent;color:#cdd6f4;border:none;cursor:pointer;font-family:monospace;font-size:12px;';
+
+                html += '<button onmouseover="this.style.background=\'#313244\'" onmouseout="this.style.background=\'transparent\'" ' +
+                    'style="' + menuBtnStyle + '" data-assert="assert-text">Assert text contains</button>';
+
+                if (isField) {
+                    html += '<button onmouseover="this.style.background=\'#313244\'" onmouseout="this.style.background=\'transparent\'" ' +
+                        'style="' + menuBtnStyle + '" data-assert="assert-value">Assert value equals</button>';
+                }
+
+                html += '<button onmouseover="this.style.background=\'#313244\'" onmouseout="this.style.background=\'transparent\'" ' +
+                    'style="' + menuBtnStyle + '" data-assert="assert-visible">Assert is visible</button>';
+
+                html += '<button onmouseover="this.style.background=\'#313244\'" onmouseout="this.style.background=\'transparent\'" ' +
+                    'style="' + menuBtnStyle + '" data-assert="assert-hidden">Assert is hidden</button>';
+
+                html += '<div style="border-top:1px solid #45475a;margin-top:4px;padding-top:4px;">' +
+                    '<button onmouseover="this.style.background=\'#313244\'" onmouseout="this.style.background=\'transparent\'" ' +
+                    'style="' + menuBtnStyle + 'color:#f38ba8;" data-assert="cancel">Cancel</button></div>';
+
+                __pickMenuDiv.innerHTML = html;
+
+                // Position near the picked element
+                var rect = el.getBoundingClientRect();
+                var menuX = Math.min(rect.right + 8, window.innerWidth - 260);
+                var menuY = Math.min(rect.top, window.innerHeight - 200);
+                if (menuX < 0) menuX = 8;
+                if (menuY < 0) menuY = 8;
+                __pickMenuDiv.style.left = menuX + 'px';
+                __pickMenuDiv.style.top  = menuY + 'px';
+                __pickMenuDiv.style.display = 'block';
+
+                // Attach click handlers to menu buttons
+                __pickMenuDiv.querySelectorAll('button[data-assert]').forEach(function(btn) {
+                    btn.addEventListener('click', function(ev) {
+                        ev.stopPropagation();
+                        var assertType = btn.getAttribute('data-assert');
+                        if (assertType === 'cancel') { exitPickMode(); return; }
+                        if (assertType === 'assert-value') {
+                            recordPickAssertion('assert-text', sel, el.value || '');
+                        } else if (assertType === 'assert-text') {
+                            recordPickAssertion('assert-text', sel, textVal);
+                        } else {
+                            recordPickAssertion(assertType, sel, null);
+                        }
+                    });
+                });
+            }
+
+            function recordPickAssertion(action, selector, value) {
+                send({ action: action, selector: selector || null, value: value, timeoutMs: 5000 });
+                // Show confirmation in overlay
+                var toast = document.getElementById('__aitc_pick_toast');
+                if (toast) {
+                    var label = action + (selector ? ' ' + selector : '');
+                    if (label.length > 50) label = label.substring(0, 50) + '\u2026';
+                    toast.textContent = '\u2713 ' + label;
+                    toast.style.display = 'block';
+                    setTimeout(function() { toast.style.display = 'none'; }, 2000);
+                }
+                exitPickMode();
+            }
+
+            window.__aitcTogglePick = function() {
+                if (__pickMode) exitPickMode(); else enterPickMode();
+            };
+
             // ── Capture fills via input event (fires on every keystroke) ──
             // Using 'input' instead of 'change' ensures fill values are recorded AS the
             // user types, not on blur. This guarantees fills appear before any subsequent
             // click (e.g. submit) — the change/blur event ordering with click is unreliable
             // across browsers. Deduplication on the .NET side keeps only the final value.
             document.addEventListener('input', function (e) {
+                if (__pickMode) return;
                 const el = e.target;
                 if (!el || isOverlayEl(el)) return;
                 if (!isFormField(el)) return;
@@ -297,6 +434,7 @@ public static class PlaywrightRecorder
 
             // ── Capture select changes (input event doesn't cover <select>) ──
             document.addEventListener('change', function (e) {
+                if (__pickMode) return;
                 const el = e.target;
                 if (!el || isOverlayEl(el)) return;
                 if (el.tagName.toLowerCase() !== 'select') return;
@@ -312,6 +450,15 @@ public static class PlaywrightRecorder
             document.addEventListener('click', function (e) {
                 const target = e.target;
                 if (!target || isOverlayEl(target)) return;
+
+                // ── Pick mode: intercept click to select element for assertion ──
+                if (__pickMode) {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    if (__highlightDiv) __highlightDiv.style.display = 'none';
+                    showPickMenu(target);
+                    return;
+                }
 
                 // Skip focus-clicks on form fields — fill events handle these
                 if (isFormField(target)) return;
@@ -371,6 +518,7 @@ public static class PlaywrightRecorder
             // ── Capture Escape key (dismisses Kendo Windows / modals) ──
             document.addEventListener('keydown', function (e) {
                 if (e.key === 'Escape') {
+                    if (__pickMode) { exitPickMode(); return; }
                     send({ action: 'press', selector: null, value: 'Escape', timeoutMs: 5000 });
                 }
             }, true);
@@ -392,7 +540,7 @@ public static class PlaywrightRecorder
                     '<button onclick="(function(btn){' +
                         'const j=JSON.stringify({action:\'assert-url-contains\',selector:null,value:location.pathname,timeoutMs:5000});' +
                         'window.aitcRecordStep(j);' +
-                        'btn.textContent=\'+ Assert current URL (\'+location.pathname+\') ✓\';' +
+                        'btn.textContent=\'+ Assert current URL (\'+location.pathname+\') \u2713\';' +
                     '})(this)" style="display:block;width:100%;margin-bottom:4px;padding:5px 8px;' +
                     'background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:5px;cursor:pointer;">' +
                     '+ Assert current URL (' + location.pathname + ')</button>' +
@@ -400,10 +548,17 @@ public static class PlaywrightRecorder
                     '<button onclick="(function(btn){' +
                         'const j=JSON.stringify({action:\'assert-title-contains\',selector:null,value:document.title,timeoutMs:5000});' +
                         'window.aitcRecordStep(j);' +
-                        'btn.textContent=\'+ Assert title: \'+document.title+\' ✓\';' +
-                    '})(this)" style="display:block;width:100%;margin-bottom:12px;padding:5px 8px;' +
+                        'btn.textContent=\'+ Assert title: \'+document.title+\' \u2713\';' +
+                    '})(this)" style="display:block;width:100%;margin-bottom:4px;padding:5px 8px;' +
                     'background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:5px;cursor:pointer;">' +
                     '+ Assert page title (' + document.title + ')</button>' +
+
+                    '<button id="__aitc_pick_btn" onclick="window.__aitcTogglePick()" style="display:block;width:100%;margin-bottom:12px;padding:5px 8px;' +
+                    'background:#313244;color:#cdd6f4;border:1px solid #45475a;border-left:3px solid #a6e3a1;border-radius:5px;cursor:pointer;">' +
+                    '+ Assert element\u2026</button>' +
+
+                    '<div id="__aitc_pick_toast" style="display:none;margin-bottom:8px;padding:4px 8px;' +
+                    'background:#313244;color:#a6e3a1;border-radius:4px;font-size:11px;"></div>' +
 
                     '<button onclick="window.aitcStopRecording()" ' +
                     'style="display:block;width:100%;padding:7px;' +
@@ -411,6 +566,24 @@ public static class PlaywrightRecorder
                     'Save &amp; Stop</button>';
 
                 document.body.appendChild(panel);
+
+                // ── Highlight overlay (follows cursor during pick mode) ──
+                __highlightDiv = document.createElement('div');
+                __highlightDiv.id = '__aitc_pick_highlight';
+                __highlightDiv.style.cssText =
+                    'position:fixed;pointer-events:none;z-index:2147483645;' +
+                    'background:rgba(166,227,161,0.18);border:2px solid #a6e3a1;border-radius:3px;' +
+                    'transition:all 0.07s ease;display:none;';
+                document.body.appendChild(__highlightDiv);
+
+                // ── Assertion type context menu ──
+                __pickMenuDiv = document.createElement('div');
+                __pickMenuDiv.id = '__aitc_pick_menu';
+                __pickMenuDiv.style.cssText =
+                    'position:fixed;z-index:2147483646;background:#1e1e2e;color:#cdd6f4;' +
+                    'border:1px solid #45475a;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.5);' +
+                    'padding:6px 0;font-family:monospace;font-size:13px;display:none;min-width:220px;';
+                document.body.appendChild(__pickMenuDiv);
             }
 
             if (document.readyState === 'loading') {

@@ -146,7 +146,14 @@ BaseTestAgent  (LLM, AskLlmAsync/AskLlmForJsonAsync)
 The overlay panel (fixed, bottom-right, dark theme) provides:
 - **+ Assert current URL (path)** — records `assert-url-contains` with `location.pathname`
 - **+ Assert page title (title)** — records `assert-title-contains` with `document.title`
+- **+ Assert element…** — enters **pick mode** for element-level assertions (see below)
 - **Save & Stop** — signals `aitcStopRecording()`
+
+**Element assertion pick mode** lets the user point-and-click on any DOM element to create an assertion:
+1. Clicking the button activates pick mode — the cursor changes to crosshair and a green translucent highlight follows the mouse.
+2. Clicking an element opens a context menu with assertion options: **Assert text contains** (`assert-text` with `innerText`), **Assert value equals** (`assert-text` with `el.value`, form fields only), **Assert is visible** (`assert-visible`), **Assert is hidden** (`assert-hidden`).
+3. Selecting an option records the step and returns to normal recording. Escape cancels pick mode.
+4. All event handlers (input, change, click, keydown) are suppressed during pick mode to prevent accidental step recording.
 
 Duplicate `fill` steps on the same selector are deduplicated (update-in-place). Session ends on Save & Stop, browser close, or 15-minute timeout.
 

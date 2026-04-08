@@ -531,6 +531,12 @@ dotnet run --project src/AiTestCrew.Runner -- --record \
 4. Use the overlay buttons to add assertions at any point:
    - **+ Assert current URL (…)** — records an `assert-url-contains` step with the current path
    - **+ Assert page title (…)** — records an `assert-title-contains` step with the current title
+   - **+ Assert element…** — enters **pick mode**: hover to highlight elements, click to select one, then choose an assertion type from the context menu:
+     - **Assert text contains** — records `assert-text` with the element's visible text
+     - **Assert value equals** — records `assert-text` with the form field's current value (shown only for input/textarea/select)
+     - **Assert is visible** — records `assert-visible`
+     - **Assert is hidden** — records `assert-hidden`
+   - Press **Escape** to cancel pick mode at any time
    - Buttons update to show `✓` after being clicked to confirm the step was captured
 5. Click **Save & Stop** to end the session.
 6. The captured steps are printed to the console in a table and saved to the test set file.
