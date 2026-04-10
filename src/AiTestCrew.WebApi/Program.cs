@@ -86,6 +86,15 @@ var dataDir = Directory.Exists(Path.Combine(runnerBinDir, "testsets"))
               || Directory.Exists(Path.Combine(runnerBinDir, "modules"))
     ? runnerBinDir
     : AppContext.BaseDirectory;
+
+// Resolve the storage state path relative to the shared data directory so that
+// auth state saved by the Runner CLI is found by the WebApi (and vice versa).
+if (!string.IsNullOrEmpty(envConfig.BraveCloudUiStorageStatePath)
+    && !Path.IsPathRooted(envConfig.BraveCloudUiStorageStatePath))
+{
+    envConfig.BraveCloudUiStorageStatePath = Path.Combine(dataDir, envConfig.BraveCloudUiStorageStatePath);
+}
+
 builder.Services.AddSingleton(new TestSetRepository(dataDir));
 builder.Services.AddSingleton(new ExecutionHistoryRepository(dataDir));
 builder.Services.AddSingleton(new ModuleRepository(dataDir));

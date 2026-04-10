@@ -30,9 +30,14 @@ public static class PlaywrightRecorder
         string caseName,
         TestEnvironmentConfig config,
         ILogger logger,
+        string? storageStatePath = null,
         CancellationToken ct = default)
     {
-        baseUrl = baseUrl.TrimEnd('/');
+        // Only trim trailing slash for bare domains (e.g. "https://example.com/")
+        // but preserve it for subpaths (e.g. "https://example.com/ui/") where it matters for routing.
+        var uri = new Uri(baseUrl);
+        if (uri.AbsolutePath == "/")
+            baseUrl = baseUrl.TrimEnd('/');
 
         var steps = new List<WebUiStep>();
         var stopSignal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -51,11 +56,19 @@ public static class PlaywrightRecorder
 
         try
         {
-            // NoViewport lets the page use the actual maximized window size
-            var context = await browser.NewContextAsync(new BrowserNewContextOptions
+            // NoViewport lets the page use the actual maximized window size.
+            // If a storage state file exists, inject it so the browser starts authenticated
+            // (e.g. after SSO + 2FA — avoids re-recording login steps).
+            var contextOptions = new BrowserNewContextOptions
             {
                 ViewportSize = ViewportSize.NoViewport
-            });
+            };
+            if (!string.IsNullOrEmpty(storageStatePath) && File.Exists(storageStatePath))
+            {
+                contextOptions.StorageStatePath = storageStatePath;
+                logger.LogInformation("[Recorder] Loading auth state from: {Path}", storageStatePath);
+            }
+            var context = await browser.NewContextAsync(contextOptions);
             var page = await context.NewPageAsync();
 
             // ── Expose functions (survive page navigation) ──────────────────────────────
@@ -173,46 +186,60 @@ public static class PlaywrightRecorder
                 // 2. name attribute (form fields)
                 if (name) return tag + '[name="' + name + '"]';
 
-                // 3. type-based (submit/button inputs)
+                // 3. type-based (submit inputs only — type="button" is too generic,
+                //    especially in MudBlazor where every button has it)
                 if (type === 'submit') return tag + '[type="submit"]';
-                if (type === 'button') return tag + '[type="button"]';
-                if (type && tag === 'input') return 'input[type="' + type + '"]';
+                if (type && tag === 'input' && type !== 'button') return 'input[type="' + type + '"]';
 
-                // 4. title attribute — Kendo PanelBar child items have title="NMI Search" etc.
+                // 4. aria-label — MudBlazor icon buttons, toolbar actions, etc.
+                var ariaLabel = el.getAttribute('aria-label');
+                if (ariaLabel && ariaLabel.length <= 60
+                    && !/^toggle /i.test(ariaLabel)) { // skip "Toggle CRM" etc. — use text instead
+                    return tag + '[aria-label="' + ariaLabel + '"]';
+                }
+
+                // 5. title attribute — Kendo PanelBar child items have title="NMI Search" etc.
                 //    This is highly stable and unique within a menu.
                 if (title) return tag + '[title="' + title + '"]';
 
-                // 5. Links — use pathname + query string as a *contains* selector
-                //    so grid links (where only the query string differs) get a
-                //    unique selector while still matching absolute hrefs.
+                // 6. Links — use the raw href attribute as a *contains* selector.
+                //    CSS [href*=] matches the raw attribute value, NOT the resolved URL,
+                //    so we must use getAttribute('href') directly (not new URL()).
                 //    Skip links inside Kendo Grids — their href is set dynamically
                 //    by a mousedown handler and won't match during replay.
                 //    Fall through to text-based selection for those.
                 if (tag === 'a' && !el.closest('.k-grid')) {
                     const href = el.getAttribute('href');
                     if (href && href !== '#' && !href.startsWith('javascript:') && !href.startsWith('#')) {
-                        try {
-                            const url = new URL(href, location.href);
-                            const pathWithQuery = url.pathname + url.search;
-                            return 'a[href*="' + pathWithQuery + '"]';
-                        } catch {}
+                        return 'a[href*="' + href + '"]';
                     }
                 }
 
-                // 6. data-* attributes (common in UI frameworks)
+                // 7. MudBlazor component text — nav links, buttons with labels
+                if (el.querySelector) {
+                    var mudTextEl = el.querySelector('.mud-nav-link-text, .mud-button-label');
+                    if (mudTextEl) {
+                        var mt = mudTextEl.textContent.trim();
+                        if (mt && mt.length > 1 && mt.length <= 50) {
+                            return 'text="' + mt + '"';
+                        }
+                    }
+                }
+
+                // 8. data-* attributes (common in UI frameworks)
                 for (const attr of ['data-id', 'data-name', 'data-value', 'data-key', 'data-feature', 'data-role']) {
                     const val = el.getAttribute(attr);
                     if (val) return tag + '[' + attr + '="' + val + '"]';
                 }
 
-                // 7. ARIA role (skip generic "menuitem" — too many in Kendo PanelBar)
+                // 9. ARIA role (skip generic "menuitem" — too many in Kendo PanelBar)
                 const role = el.getAttribute('role');
                 if (role && role !== 'menuitem' && role !== 'menu' && role !== 'group') {
                     return tag + '[role="' + role + '"]';
                 }
 
-                // 8. Distinctive class names (skip utility/state/Kendo-state classes)
-                const stateClassPattern = /^(active|selected|open|closed|hover|focus|show|hide|in|out|k-state-|k-first|k-last|k-item|k-link|k-header|k-group|k-panel|ng-|is-|has-|js-)/;
+                // 10. Distinctive class names (skip utility/state/Kendo-state classes)
+                const stateClassPattern = /^(active|selected|open|closed|hover|focus|show|hide|in|out|k-state-|k-first|k-last|k-item|k-link|k-header|k-group|k-panel|ng-|is-|has-|js-|mud-ripple|mud-expanded|mud-nav-link|mud-icon|mud-svg)/;
                 const classes = Array.from(el.classList || []).filter(c => !stateClassPattern.test(c));
                 if (classes.length > 0) {
                     const cls = CSS.escape(classes[0]);
@@ -221,7 +248,7 @@ public static class PlaywrightRecorder
                     }
                 }
 
-                // 9. Text-based selector (own text nodes only — avoids grabbing all child text)
+                // 11. Text-based selector (own text nodes only — avoids grabbing all child text)
                 const ownText = Array.from(el.childNodes)
                     .filter(n => n.nodeType === 3) // TEXT_NODE
                     .map(n => n.textContent.trim())
@@ -231,10 +258,62 @@ public static class PlaywrightRecorder
                     return 'text="' + ownText + '"';
                 }
 
-                // 10. innerText fallback (only if short — not a tree group with children)
+                // 12. innerText fallback (only if short — not a tree group with children)
                 const inner = (el.innerText || '').trim();
                 if (inner && inner.length > 1 && inner.length <= 50 && !inner.includes('\n')) {
                     return 'text="' + inner + '"';
+                }
+
+                // 13. Contextual fallback for icon-only buttons in data grids / toolbars.
+                //     Uses Playwright chained selectors (>>) to combine row context + cell + position.
+                if (tag === 'button') {
+                    // Grid row action button: <td data-label="Actions"> inside a <tr> with identifiable text
+                    var td = el.closest('td[data-label]');
+                    if (td) {
+                        var tr = td.closest('tr');
+                        if (tr) {
+                            var cellLabel = td.getAttribute('data-label');
+                            var cells = tr.querySelectorAll('td[data-label]');
+                            var rowId = null;
+                            for (var ci = 0; ci < cells.length; ci++) {
+                                var cellText = cells[ci].innerText.trim();
+                                if (cellText && cellText.length > 0 && cellText.length <= 40 && !cellText.includes('\n')) {
+                                    rowId = cellText;
+                                    break;
+                                }
+                            }
+                            var btns = td.querySelectorAll('button');
+                            var btnIdx = Array.from(btns).indexOf(el);
+                            if (rowId && btnIdx >= 0) {
+                                return 'tr:has-text("' + rowId + '") >> td[data-label="' + cellLabel + '"] >> button >> nth=' + btnIdx;
+                            }
+                        }
+                    }
+
+                    // SVG icon fingerprint — identify icon-only buttons by their Material Design SVG path.
+                    // CSS/XPath can't reliably query SVG path[d] in HTML documents, so we use
+                    // a custom "click-icon" action that finds the button via JS evaluation.
+                    // When the same icon appears multiple times, include the occurrence index.
+                    var svgPaths = el.querySelectorAll('svg path[d]');
+                    for (var pi = 0; pi < svgPaths.length; pi++) {
+                        var iconPath = svgPaths[pi].getAttribute('d');
+                        if (iconPath && iconPath.length > 20 && !iconPath.startsWith('M0 0')) {
+                            var prefix = iconPath.substring(0, 30);
+                            // Count which occurrence of this icon the clicked button is
+                            var allMatches = document.querySelectorAll('svg path[d]');
+                            var matchIdx = 0;
+                            var matchCount = 0;
+                            for (var mi = 0; mi < allMatches.length; mi++) {
+                                var md = allMatches[mi].getAttribute('d');
+                                if (md && md.startsWith(prefix)) {
+                                    if (allMatches[mi].closest('button') === el) { matchIdx = matchCount; }
+                                    matchCount++;
+                                }
+                            }
+                            // Format: prefix|index (e.g. "M15.5 14h...|1" for second occurrence)
+                            return '__icon__' + prefix + (matchCount > 1 ? '|' + matchIdx : '');
+                        }
+                    }
                 }
 
                 return tag;
@@ -483,6 +562,21 @@ public static class PlaywrightRecorder
                     return;
                 }
 
+                // ── Special case: MudBlazor nav links / buttons / tree items ──
+                // When the click lands on or inside a .mud-nav-link-text or .mud-button-label,
+                // use the text directly — this avoids the walk-up finding a wrong <button>.
+                var mudClickText = target.closest('.mud-nav-link-text, .mud-button-label, .mud-treeview-item-body');
+                if (!mudClickText && target.querySelector) {
+                    mudClickText = target.querySelector('.mud-nav-link-text, .mud-button-label');
+                }
+                if (mudClickText) {
+                    var mct = mudClickText.textContent.trim();
+                    if (mct && mct.length > 1 && mct.length <= 50) {
+                        send({ action: 'click', selector: 'text="' + mct + '"', value: null, timeoutMs: 15000 });
+                        return;
+                    }
+                }
+
                 // ── General click handling ──
                 // Walk up from target to find the nearest meaningful interactive element.
                 // Skip <a href="#"> / <a href="...#"> — Kendo uses these as widget wrappers.
@@ -512,6 +606,11 @@ public static class PlaywrightRecorder
                 if (isOverlayEl(el)) return;
                 const sel = bestSelector(el);
                 if (!sel || sel === 'div' || sel === 'span' || sel === 'li' || sel === 'img' || sel === 'ul') return;
+                // Icon-only button: bestSelector returns __icon__<svgPathPrefix>
+                if (sel.startsWith('__icon__')) {
+                    send({ action: 'click-icon', selector: null, value: sel.substring(8), timeoutMs: 15000 });
+                    return;
+                }
                 send({ action: 'click', selector: sel, value: null, timeoutMs: 15000 });
             }, true);
 

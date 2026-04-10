@@ -12,5 +12,6 @@
     <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.1" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
     <PackageReference Include="Microsoft.Playwright" Version="1.44.0" />
+    <PackageReference Include="Otp.NET" Version="1.4.0" />
   </ItemGroup>
 </Project>

@@ -630,6 +630,51 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                 catch { /* non-fatal — page may not navigate */ }
                 break;
 
+            case "click-icon":
+                // Click an icon-only button identified by its SVG path prefix (Value).
+                // Value format: "svgPathPrefix" or "svgPathPrefix|N" where N is the
+                // zero-based occurrence index when the same icon appears multiple times.
+                // CSS/XPath can't reliably query SVG path[d] in HTML documents,
+                // so we use JS evaluation to find and click the button.
+                // Polls with retries (like Playwright's auto-wait) because the button
+                // may not exist yet after SPA navigation.
+                var iconValue = step.Value ?? "";
+                var iconParts = iconValue.Split('|', 2);
+                var svgPrefix = iconParts[0];
+                var iconNth = iconParts.Length > 1 && int.TryParse(iconParts[1], out var n) ? n : 0;
+                var iconTimeout = Math.Max(step.TimeoutMs, 15_000);
+                var iconSw = System.Diagnostics.Stopwatch.StartNew();
+                var iconClicked = false;
+                while (iconSw.ElapsedMilliseconds < iconTimeout)
+                {
+                    iconClicked = await page.EvaluateAsync<bool>(@"([prefix, nth]) => {
+                        let idx = 0;
+                        for (const p of document.querySelectorAll('svg path')) {
+                            const d = p.getAttribute('d');
+                            if (d && d.startsWith(prefix)) {
+                                if (idx === nth) {
+                                    const btn = p.closest('button');
+                                    if (btn) { btn.click(); return true; }
+                                }
+                                idx++;
+                            }
+                        }
+                        return false;
+                    }", new object[] { svgPrefix, iconNth });
+                    if (iconClicked) break;
+                    await page.WaitForTimeoutAsync(500);
+                }
+                if (!iconClicked)
+                    throw new PlaywrightException(
+                        $"Timeout {iconTimeout}ms: no button found with SVG icon path starting with: {svgPrefix[..Math.Min(30, svgPrefix.Length)]} (nth={iconNth})");
+                // JS btn.click() returns before Blazor processes the event.
+                // Wait briefly so Blazor can initiate any API calls, then wait for network idle.
+                await page.WaitForTimeoutAsync(1000);
+                try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle,
+                    new PageWaitForLoadStateOptions { Timeout = 30_000 }); }
+                catch { /* non-fatal — page may not navigate */ }
+                break;
+
             case "fill":
                 await page.FillAsync(step.Selector!, step.Value ?? "",
                     new PageFillOptions { Timeout = timeout });

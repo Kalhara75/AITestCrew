@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Playwright;
 using Microsoft.SemanticKernel;
+using OtpNet;
 using AiTestCrew.Agents.WebUiBase;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Models;
@@ -14,21 +15,26 @@ namespace AiTestCrew.Agents.BraveCloudUiAgent;
 /// which redirects to the Azure AD login page. Credentials are filled
 /// automatically from config.
 ///
+/// MFA / TOTP support (three modes):
+///   1. Fully automated — set BraveCloudUiTotpSecret to the base32 shared secret.
+///      The agent computes the 6-digit TOTP code and enters it automatically.
+///   2. Semi-automated — leave TotpSecret empty, set PlaywrightHeadless=false.
+///      The agent pauses on the MFA screen for manual code entry (up to 120 s).
+///   3. Fail-fast — leave TotpSecret empty with PlaywrightHeadless=true.
+///      Throws immediately with remediation instructions.
+///
 /// Session persistence: after a successful SSO login the browser auth state
 /// (cookies + localStorage) is saved to BraveCloudUiStorageStatePath.
 /// Subsequent runs within BraveCloudUiStorageStateMaxAgeHours reuse this
 /// saved state and skip the full SSO flow.
 ///
 /// Configuration required (TestEnvironment section):
-///   BraveCloudUiUrl                   — root URL of the application
-///   BraveCloudUiUsername              — Azure AD account email (MFA must be disabled)
-///   BraveCloudUiPassword              — Azure AD account password
-///   BraveCloudUiStorageStatePath      — (optional) path for saved auth state JSON
-///   BraveCloudUiStorageStateMaxAgeHours — how long saved state is considered valid (default 8)
-///
-/// IMPORTANT: The test Azure AD account must have MFA disabled or be excluded
-/// from MFA via a conditional access policy. Automated flows cannot handle
-/// interactive MFA prompts.
+///   BraveCloudUiUrl                      — root URL of the application
+///   BraveCloudUiUsername                 — Azure AD account email
+///   BraveCloudUiPassword                 — Azure AD account password
+///   BraveCloudUiTotpSecret               — (optional) base32 TOTP secret for automated MFA
+///   BraveCloudUiStorageStatePath         — (optional) path for saved auth state JSON
+///   BraveCloudUiStorageStateMaxAgeHours  — how long saved state is considered valid (default 8)
 /// </summary>
 public class BraveCloudUiTestAgent : BaseWebUiTestAgent
 {
@@ -79,9 +85,16 @@ public class BraveCloudUiTestAgent : BaseWebUiTestAgent
     /// <summary>Provide storage state to the browser context if a fresh file exists.</summary>
     protected override BrowserNewContextOptions BuildContextOptions()
     {
+        // Use 1920×1080 viewport to match a typical maximized recording session.
+        // The default 1280×720 is too small for Blazor apps with side menus — items
+        // near the bottom get clipped and selectors time out.
+        var opts = new BrowserNewContextOptions
+        {
+            ViewportSize = new ViewportSize { Width = 1920, Height = 1080 }
+        };
         if (HasFreshStorageState())
-            return new BrowserNewContextOptions { StorageStatePath = _config.BraveCloudUiStorageStatePath };
-        return new BrowserNewContextOptions();
+            opts.StorageStatePath = ResolveStorageStatePath();
+        return opts;
     }
 
     private async Task PerformSsoLoginAsync(IPage page, IBrowserContext context)
@@ -109,6 +122,9 @@ public class BraveCloudUiTestAgent : BaseWebUiTestAgent
         await page.FillAsync("input[type='password']", _config.BraveCloudUiPassword);
         await page.ClickAsync("input[type='submit']");
 
+        // Handle TOTP / MFA challenge if presented (appears between password and KMSI prompt)
+        await HandleTotpIfPresentAsync(page);
+
         // Handle "Stay signed in?" prompt (kmsi — keep me signed in)
         try
         {
@@ -130,26 +146,116 @@ public class BraveCloudUiTestAgent : BaseWebUiTestAgent
         Logger.LogInformation("[{Agent}] SSO login successful — now at: {Url}", Name, page.Url);
 
         // Save auth state for future runs
-        if (!string.IsNullOrEmpty(_config.BraveCloudUiStorageStatePath))
+        var resolvedPath = ResolveStorageStatePath();
+        if (!string.IsNullOrEmpty(resolvedPath))
         {
-            var dir = Path.GetDirectoryName(_config.BraveCloudUiStorageStatePath);
+            var dir = Path.GetDirectoryName(resolvedPath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
             await context.StorageStateAsync(new BrowserContextStorageStateOptions
             {
-                Path = _config.BraveCloudUiStorageStatePath
+                Path = resolvedPath
             });
             Logger.LogInformation("[{Agent}] Saved auth storage state to: {Path}",
-                Name, _config.BraveCloudUiStorageStatePath);
+                Name, resolvedPath);
         }
+    }
+
+    /// <summary>
+    /// Detects whether Azure AD is showing a TOTP code entry page after password submission.
+    /// If detected, either computes the code automatically or waits for manual entry.
+    /// If not detected (remembered device, conditional access satisfied), returns immediately.
+    /// </summary>
+    private async Task HandleTotpIfPresentAsync(IPage page)
+    {
+        const string totpInputSelector = "input#idTxtBx_SAOTCC_OTC, input[name='otc']";
+
+        bool totpPageDetected;
+        try
+        {
+            await page.WaitForSelectorAsync(totpInputSelector,
+                new PageWaitForSelectorOptions { Timeout = 5_000 });
+            totpPageDetected = true;
+        }
+        catch (TimeoutException)
+        {
+            Logger.LogInformation("[{Agent}] No TOTP prompt detected — MFA was skipped", Name);
+            return;
+        }
+
+        if (!totpPageDetected) return;
+
+        if (!string.IsNullOrEmpty(_config.BraveCloudUiTotpSecret))
+        {
+            // Automated TOTP entry
+            Logger.LogInformation("[{Agent}] TOTP prompt detected — computing code from secret", Name);
+
+            var secretBytes = Base32Encoding.ToBytes(_config.BraveCloudUiTotpSecret);
+            var totp = new Totp(secretBytes);
+            var code = totp.ComputeTotp();
+
+            await page.FillAsync(totpInputSelector, code);
+            await page.ClickAsync("#idSubmit_SAOTCC_Continue, input[type='submit']");
+
+            Logger.LogInformation("[{Agent}] TOTP code submitted", Name);
+
+            // Check for error (wrong code / clock skew)
+            try
+            {
+                var errorEl = await page.WaitForSelectorAsync(
+                    "#idSpan_SAOTCC_Error, .alert-error",
+                    new PageWaitForSelectorOptions { Timeout = 3_000 });
+                if (errorEl != null)
+                {
+                    var errorText = await errorEl.TextContentAsync() ?? "Unknown error";
+                    throw new InvalidOperationException(
+                        $"TOTP verification failed: {errorText}. " +
+                        "Check that BraveCloudUiTotpSecret is correct and the system clock is synchronized.");
+                }
+            }
+            catch (TimeoutException)
+            {
+                // No error appeared — TOTP was accepted
+            }
+        }
+        else if (_config.PlaywrightHeadless)
+        {
+            throw new InvalidOperationException(
+                "Azure AD MFA (TOTP) prompt detected but BraveCloudUiTotpSecret is not configured " +
+                "and the browser is running in headless mode. Either: " +
+                "(1) Set BraveCloudUiTotpSecret to the base32 TOTP secret for automated entry, or " +
+                "(2) Set PlaywrightHeadless=false so you can enter the code manually in the browser.");
+        }
+        else
+        {
+            // Semi-automated: browser is visible, wait for manual entry
+            Logger.LogWarning(
+                "[{Agent}] TOTP prompt detected but no secret configured. " +
+                "Please enter the MFA code in the browser window. Waiting up to 120 seconds...", Name);
+
+            await page.WaitForSelectorAsync(totpInputSelector,
+                new PageWaitForSelectorOptions { State = WaitForSelectorState.Hidden, Timeout = 120_000 });
+
+            Logger.LogInformation("[{Agent}] Manual MFA entry completed", Name);
+        }
+    }
+
+    /// <summary>Resolve the storage state path relative to the app base directory so it's
+    /// consistent regardless of the current working directory.</summary>
+    private string? ResolveStorageStatePath()
+    {
+        if (string.IsNullOrEmpty(_config.BraveCloudUiStorageStatePath)) return null;
+        return Path.IsPathRooted(_config.BraveCloudUiStorageStatePath)
+            ? _config.BraveCloudUiStorageStatePath
+            : Path.Combine(AppContext.BaseDirectory, _config.BraveCloudUiStorageStatePath);
     }
 
     private bool HasFreshStorageState()
     {
-        if (string.IsNullOrEmpty(_config.BraveCloudUiStorageStatePath)) return false;
-        if (!File.Exists(_config.BraveCloudUiStorageStatePath)) return false;
+        var path = ResolveStorageStatePath();
+        if (path is null || !File.Exists(path)) return false;
 
-        var age = DateTime.UtcNow - File.GetLastWriteTimeUtc(_config.BraveCloudUiStorageStatePath);
+        var age = DateTime.UtcNow - File.GetLastWriteTimeUtc(path);
         return age.TotalHours < _config.BraveCloudUiStorageStateMaxAgeHours;
     }
 }

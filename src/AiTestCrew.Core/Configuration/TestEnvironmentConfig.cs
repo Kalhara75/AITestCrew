@@ -58,10 +58,12 @@ public class TestEnvironmentConfig
     // BraveCloudUiStorageStatePath: path to save/load browser auth state (JSON).
     // On first run the agent performs a full SSO login and saves the state.
     // Subsequent runs within BraveCloudUiStorageStateMaxAgeHours reuse the saved state.
-    // NOTE: The test Azure AD account must have MFA disabled (or excluded via conditional access).
+    // When BraveCloudUiTotpSecret is set, the agent handles Azure AD MFA automatically.
+    // When empty and MFA is encountered: headless=false → manual entry; headless=true → fail-fast.
     public string BraveCloudUiUrl { get; set; } = "";
     public string? BraveCloudUiStorageStatePath { get; set; }
     public string BraveCloudUiUsername { get; set; } = "";  // AAD email
     public string BraveCloudUiPassword { get; set; } = "";  // AAD password
     public int BraveCloudUiStorageStateMaxAgeHours { get; set; } = 8;
+    public string? BraveCloudUiTotpSecret { get; set; }     // Base32 TOTP secret for Azure AD MFA
 }

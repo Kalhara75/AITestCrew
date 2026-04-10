@@ -173,7 +173,12 @@ if (cli.RecordMode)
          .AddFilter("AiTestCrew", LogLevel.Information));
     var recLogger = loggerFactory.CreateLogger("Recorder");
 
-    var recorded = await PlaywrightRecorder.RecordAsync(baseUrl, cli.CaseName, recordConfig, recLogger);
+    // For Blazor targets, pass the saved auth state so the recorder starts authenticated
+    var recordStorageState = targetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
+        ? recordConfig.BraveCloudUiStorageStatePath : null;
+    if (!string.IsNullOrEmpty(recordStorageState) && !Path.IsPathRooted(recordStorageState))
+        recordStorageState = Path.Combine(AppContext.BaseDirectory, recordStorageState);
+    var recorded = await PlaywrightRecorder.RecordAsync(baseUrl, cli.CaseName, recordConfig, recLogger, recordStorageState);
 
     if (recorded.Steps.Count == 0)
     {
@@ -254,6 +259,82 @@ if (cli.RecordMode)
     return;
 }
 
+// ── Auth-setup mode — perform SSO login (with optional manual 2FA) and save browser auth state ──
+if (cli.AuthSetupMode)
+{
+    var authConfig = new ConfigurationBuilder()
+        .SetBasePath(AppContext.BaseDirectory)
+        .AddJsonFile("appsettings.json", optional: true)
+        .Build()
+        .GetSection("TestEnvironment")
+        .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
+
+    var authTargetType = cli.RecordTarget ?? "UI_Web_Blazor";
+    var authBaseUrl = authTargetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
+        ? authConfig.BraveCloudUiUrl : authConfig.LegacyWebUiUrl;
+    // Resolve relative path against bin dir so the file lands where the agent looks for it
+    var authStatePath = authConfig.BraveCloudUiStorageStatePath;
+    if (!string.IsNullOrEmpty(authStatePath) && !Path.IsPathRooted(authStatePath))
+        authStatePath = Path.Combine(AppContext.BaseDirectory, authStatePath);
+
+    if (string.IsNullOrWhiteSpace(authBaseUrl))
+    {
+        AnsiConsole.MarkupLine("[red]BraveCloudUiUrl not configured in appsettings.json.[/]");
+        return;
+    }
+    if (string.IsNullOrWhiteSpace(authStatePath))
+    {
+        AnsiConsole.MarkupLine("[red]BraveCloudUiStorageStatePath not configured in appsettings.json.[/]");
+        return;
+    }
+
+    AnsiConsole.MarkupLine("[cyan]Auth setup[/] — opening browser for SSO login");
+    AnsiConsole.MarkupLine($"[grey]URL: {authBaseUrl}[/]");
+    AnsiConsole.MarkupLine("[grey]Complete the login (including 2FA if required), then the session will be saved automatically.[/]\n");
+
+    using var pw = await Microsoft.Playwright.Playwright.CreateAsync();
+    var authBrowser = await pw.Chromium.LaunchAsync(new Microsoft.Playwright.BrowserTypeLaunchOptions
+    {
+        Headless = false,
+        SlowMo = 50,
+        Args = ["--start-maximized"]
+    });
+
+    try
+    {
+        var authContext = await authBrowser.NewContextAsync(
+            new Microsoft.Playwright.BrowserNewContextOptions { ViewportSize = Microsoft.Playwright.ViewportSize.NoViewport });
+        var authPage = await authContext.NewPageAsync();
+
+        await authPage.GotoAsync(authBaseUrl,
+            new Microsoft.Playwright.PageGotoOptions { WaitUntil = Microsoft.Playwright.WaitUntilState.NetworkIdle });
+
+        AnsiConsole.MarkupLine("  Waiting for you to complete login (up to 3 minutes)...");
+
+        // Wait until the browser URL returns to the application (SSO redirect complete)
+        await authPage.WaitForURLAsync(
+            url => url.StartsWith(authBaseUrl, StringComparison.OrdinalIgnoreCase)
+                   && !url.Contains("login.microsoftonline.com", StringComparison.OrdinalIgnoreCase),
+            new Microsoft.Playwright.PageWaitForURLOptions { Timeout = 180_000 });
+
+        // Save auth state
+        var dir = Path.GetDirectoryName(authStatePath);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+        await authContext.StorageStateAsync(
+            new Microsoft.Playwright.BrowserContextStorageStateOptions { Path = authStatePath });
+
+        AnsiConsole.MarkupLine($"\n[green]Auth state saved[/] → {Markup.Escape(authStatePath)}");
+        AnsiConsole.MarkupLine($"[grey]Valid for {authConfig.BraveCloudUiStorageStateMaxAgeHours} hours. Recordings and test runs will use this session automatically.[/]");
+    }
+    finally
+    {
+        if (authBrowser.IsConnected) await authBrowser.CloseAsync();
+    }
+
+    return;
+}
+
 // ── Record-setup mode — capture reusable setup steps (e.g. login) for a test set ──
 if (cli.RecordSetupMode)
 {
@@ -293,7 +374,12 @@ if (cli.RecordSetupMode)
          .AddFilter("AiTestCrew", LogLevel.Information));
     var setupRecLogger = setupLoggerFactory.CreateLogger("Recorder");
 
-    var setupRecorded = await PlaywrightRecorder.RecordAsync(setupBaseUrl, "setup", setupConfig, setupRecLogger);
+    // For Blazor targets, pass the saved auth state so the recorder starts authenticated
+    var setupStorageState = setupTargetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
+        ? setupConfig.BraveCloudUiStorageStatePath : null;
+    if (!string.IsNullOrEmpty(setupStorageState) && !Path.IsPathRooted(setupStorageState))
+        setupStorageState = Path.Combine(AppContext.BaseDirectory, setupStorageState);
+    var setupRecorded = await PlaywrightRecorder.RecordAsync(setupBaseUrl, "setup", setupConfig, setupRecLogger, setupStorageState);
 
     if (setupRecorded.Steps.Count == 0)
     {
@@ -361,6 +447,15 @@ var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
 var envConfig = builder.Configuration
     .GetSection("TestEnvironment")
     .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
+
+// Resolve the storage state path relative to the binary dir so it's consistent
+// between CLI commands (--auth-setup, --record) and agent execution (--reuse).
+if (!string.IsNullOrEmpty(envConfig.BraveCloudUiStorageStatePath)
+    && !Path.IsPathRooted(envConfig.BraveCloudUiStorageStatePath))
+{
+    envConfig.BraveCloudUiStorageStatePath = Path.Combine(AppContext.BaseDirectory, envConfig.BraveCloudUiStorageStatePath);
+}
+
 builder.Services.AddSingleton(envConfig);
 
 // Semantic Kernel — provider chosen by LlmProvider config value
@@ -568,7 +663,7 @@ static CliArgs ParseArgs(string[] args)
     string? moduleId = null, testSetId = null, reuseId = null;
     string? createModuleName = null, createTestSetModuleId = null, createTestSetName = null;
     string? objectiveName = null, caseName = null, recordTarget = null;
-    bool listModules = false, recordMode = false, recordSetupMode = false;
+    bool listModules = false, recordMode = false, recordSetupMode = false, authSetupMode = false;
     var mode = RunMode.Normal;
 
     for (int i = 0; i < args.Length; i++)
@@ -622,6 +717,9 @@ static CliArgs ParseArgs(string[] args)
             case "--record-setup":
                 recordSetupMode = true;
                 break;
+            case "--auth-setup":
+                authSetupMode = true;
+                break;
             case "--case-name" when i + 1 < args.Length:
                 caseName = args[++i];
                 break;
@@ -654,6 +752,7 @@ static CliArgs ParseArgs(string[] args)
         CreateTestSetName = createTestSetName,
         RecordMode = recordMode,
         RecordSetupMode = recordSetupMode,
+        AuthSetupMode = authSetupMode,
         CaseName = caseName,
         RecordTarget = recordTarget
     };
@@ -675,6 +774,7 @@ class CliArgs
     public string? ObjectiveName { get; init; }
     public bool RecordMode { get; init; }
     public bool RecordSetupMode { get; init; }
+    public bool AuthSetupMode { get; init; }
     public string? CaseName { get; init; }
     public string? RecordTarget { get; init; }
 }

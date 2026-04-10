@@ -32,6 +32,9 @@ logs/
 ## Playwright failure screenshots
 screenshots/
 
+## Browser auth state (contains session cookies — never commit)
+*-auth-state.json
+
 ## Secrets — never commit these
 # appsettings.json holds live API keys and auth tokens — kept local only
 # Copy appsettings.example.json → appsettings.json and fill in your values
