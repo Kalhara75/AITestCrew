@@ -137,7 +137,9 @@ dotnet run --project src/AiTestCrew.Runner -- --record \
 - `--target` is `UI_Web_MVC` (uses `LegacyWebUiUrl`) or `UI_Web_Blazor` (uses `BraveCloudUiUrl`).
 - Module and test set are created automatically if they do not exist.
 - Module/test set names are slugified so they match the WebApi directory structure.
+- For Blazor targets, the recorder uses a 1920×1080 viewport (matching replay) and loads saved auth state if available.
 - The session ends when you click **Save & Stop** in the overlay, close the browser, or after 15 minutes.
+- After recording, the tool validates steps and warns about weak selectors, missing assertions, and SPA timing risks.
 
 See [Web UI Testing — Recording Mode](#option-2--recording-mode-recommended-for-reliability) for full details.
 
@@ -158,6 +160,21 @@ dotnet run --project src/AiTestCrew.Runner -- --record-setup \
 - Setup steps can also be viewed, edited, and cleared in the web dashboard under the test set detail page.
 - If a setup step fails during replay, the remaining setup steps and all test case steps are skipped for that test case.
 - Running `--record-setup` again for the same test set replaces the existing setup steps.
+
+### Auth Setup (Blazor SSO)
+
+Save browser authentication state for Blazor apps that use Azure AD SSO (with optional 2FA). Opens a visible browser — complete the login manually, and the session is saved automatically.
+
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --auth-setup
+```
+
+- Navigates to `BraveCloudUiUrl` which redirects to Azure AD login.
+- Complete the full login flow (including 2FA if required) in the visible browser.
+- Once redirected back to the app, the auth state (cookies + localStorage) is saved to `BraveCloudUiStorageStatePath`.
+- Subsequent recordings and test runs reuse this state, skipping the SSO flow entirely.
+- The saved state is valid for `BraveCloudUiStorageStateMaxAgeHours` (default 8). Re-run `--auth-setup` when it expires.
+- If `BraveCloudUiTotpSecret` is configured (base32 TOTP secret), the agent can automate 2FA during test runs — `--auth-setup` is only needed for initial or expired sessions.
 
 ---
 
@@ -591,6 +608,8 @@ Changes are saved via `PUT /api/modules/{moduleId}/testsets/{tsId}/objectives/{o
 | `assert-url-contains` | — | URL fragment | Assert the current URL contains a value |
 | `assert-title-contains` | — | title fragment | Assert the page title contains a value |
 | `wait` | CSS selector or — | ms (if no selector) | Wait for a selector or a fixed delay |
+| `wait-for-stable` | — | ms threshold (default 1000) | Wait until DOM stops changing for N ms (uses MutationObserver — ideal after SPA navigation) |
+| `click-icon` | — | SVG path prefix | Click an icon-only button by its SVG path fingerprint. Format: `svgPathPrefix\|N` where N is the 0-based occurrence index |
 
 ### Per-Step Execution Reporting
 
@@ -631,7 +650,8 @@ Add these settings to `appsettings.json` under `TestEnvironment`:
 "BraveCloudUiStorageStatePath":       "bravecloud-auth-state.json",
 "BraveCloudUiUsername":               "test-account@yourdomain.com",
 "BraveCloudUiPassword":               "your-aad-password",
-"BraveCloudUiStorageStateMaxAgeHours": 8
+"BraveCloudUiStorageStateMaxAgeHours": 8,
+"BraveCloudUiTotpSecret":             ""
 ```
 
 `PlaywrightScreenshotDir` is required for failure screenshots. If not set, screenshots are silently skipped. The WebApi serves this directory at the `/screenshots/` URL path.
@@ -640,9 +660,14 @@ Add these settings to `appsettings.json` under `TestEnvironment`:
 
 **Legacy MVC** — the agent navigates to `LegacyWebUiLoginPath`, fills the username and password from config, and submits the login form. The session is maintained for the duration of the test run. In recording mode, authentication is left to the user — navigate and log in manually within the browser window.
 
-**Brave Cloud UI (Azure SSO)** — the first run performs a full SSO login via the Azure AD login page and saves the resulting browser auth state to `BraveCloudUiStorageStatePath`. Subsequent runs within `BraveCloudUiStorageStateMaxAgeHours` (default: 8 hours) reuse the saved state and skip the SSO flow entirely.
+**Brave Cloud UI (Azure SSO + 2FA)** — the first run performs a full SSO login via the Azure AD login page and saves the resulting browser auth state to `BraveCloudUiStorageStatePath`. Subsequent runs within `BraveCloudUiStorageStateMaxAgeHours` (default: 8 hours) reuse the saved state and skip the SSO flow entirely.
 
-> **Important:** The Azure AD test account must have MFA disabled, or be excluded from MFA via a conditional access policy. Automated browser flows cannot handle interactive MFA prompts.
+**MFA / TOTP support** (three modes):
+1. **Fully automated** — set `BraveCloudUiTotpSecret` to the base32 TOTP shared secret. The agent computes and enters the 6-digit code automatically during SSO login.
+2. **Semi-automated** — leave `BraveCloudUiTotpSecret` empty and set `PlaywrightHeadless: false`. The agent fills email/password automatically, then pauses up to 120 seconds for you to enter the MFA code manually in the visible browser.
+3. **Manual auth setup** — run `--auth-setup` to open a visible browser, complete the full SSO + 2FA flow manually, and save the auth state. Recordings and test runs then reuse this saved state.
+
+To obtain the TOTP secret: sign in to https://mysignins.microsoft.com/security-info, add a new Authenticator app, and click "Can't scan image?" to reveal the base32 key. If the account already has an authenticator configured, an Azure AD admin can reset MFA to re-enrol and capture the secret.
 
 ### Browser installation
 

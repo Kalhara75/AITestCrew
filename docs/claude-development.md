@@ -216,6 +216,22 @@ dotnet run --project src/AiTestCrew.Runner -- --record-setup --module sdr --test
 
 Perform login in the browser, click **Save & Stop**. The steps are saved to the test set's `setupSteps` field. On replay, they run before each test case automatically. Setup steps can also be viewed and edited in the web dashboard.
 
+### Blazor SSO auth setup (with 2FA)
+
+For Blazor apps using Azure AD SSO with 2FA, save the auth state first:
+
+```
+dotnet run --project src/AiTestCrew.Runner -- --auth-setup
+```
+
+Complete the SSO + 2FA flow manually in the visible browser. The session is saved and reused for all subsequent recordings and test runs. Then record with `--target UI_Web_Blazor`:
+
+```
+dotnet run --project src/AiTestCrew.Runner -- --record --module security --testset user-search --case-name "Search users" --target UI_Web_Blazor
+```
+
+Consult `/blazor-cloud-reference` for MudBlazor DOM patterns and selector rules.
+
 ---
 
 ### Running a regression check on saved tests
@@ -256,6 +272,8 @@ Pick the test set ID, then:
 | `.claude/commands/add-validation.md` | Slash command: add a validation rule |
 | `.claude/commands/implement-feature.md` | Slash command: implement any feature |
 | `.claude/commands/review-agent.md` | Slash command: quality review of an agent |
+| `.claude/commands/bravo-web-reference.md` | Reference: Kendo UI DOM patterns and selector rules |
+| `.claude/commands/blazor-cloud-reference.md` | Reference: MudBlazor DOM patterns, SPA timing, and selector rules |
 | `src/AiTestCrew.WebApi/Program.cs` | WebApi DI wiring and endpoint registration |
 | `src/AiTestCrew.WebApi/Endpoints/` | REST API endpoint definitions |
 | `ui/src/App.tsx` | React Router route definitions |

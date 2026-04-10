@@ -109,11 +109,15 @@ BaseTestAgent  (LLM, AskLlmAsync/AskLlmForJsonAsync)
 
 **Per-step reporting** — `ExecuteUiTestCaseAsync` reports each Playwright step as an individual `TestStep` in the results. Each step is labelled `"Test Case Name [N/Total] action"` (or `"Test Case Name [setup N/M] action"` for setup steps) with its own pass/fail status and duration. If a step fails, a screenshot is captured (when configured), remaining steps are marked "Skipped — previous step failed", and execution of that test case stops. Screenshots are captured for all failure types (Playwright errors, assertion failures, unexpected exceptions) and the filename is stored in the step's `Detail` field.
 
-**Click execution** — `ExecuteUiStepAsync` uses a minimum 15 s timeout for `click` steps (regardless of the stored `timeoutMs`) because clicks frequently trigger form submissions and full-page navigations. If Playwright's actionability check stalls (e.g. a covering overlay), it auto-dismisses modal overlays via `TryDismissOverlaysAsync` (Escape key → common close-button selectors → JS DOM removal of `.modal-backdrop`, `.k-overlay`, `[role="dialog"]`, Kendo Windows), then retries with `Force = true`, and finally falls back to a JS `el.click()` via `EvalOnSelectorAsync`.
+**Click execution** — `ExecuteUiStepAsync` uses a minimum 15 s timeout for `click` steps (regardless of the stored `timeoutMs`) because clicks frequently trigger form submissions and full-page navigations. If Playwright's actionability check stalls (e.g. a covering overlay), it auto-dismisses modal overlays via `TryDismissOverlaysAsync` (Escape key → common close-button selectors → JS DOM removal of `.modal-backdrop`, `.k-overlay`, `.mud-overlay`, `[role="dialog"]`, Kendo Windows, MudBlazor dialogs/drawers), then retries with `Force = true`, and finally falls back to a JS `el.click()` via `EvalOnSelectorAsync`. After every click, `WaitForSpaSettleAsync` checks for MudBlazor loading indicators (`.mud-progress-circular`, `.mud-skeleton`, `.mud-table-loading`) before waiting for `NetworkIdle`.
+
+**click-icon** — For icon-only MudBlazor buttons (no text, no `aria-label`), CSS/XPath cannot query SVG `path[d]` attributes. The recorder captures the SVG icon's path prefix as a `click-icon` action with `Value = "svgPathPrefix|occurrenceIndex"`. During replay, `page.EvaluateAsync` uses JavaScript to iterate `querySelectorAll('svg path')`, match by `startsWith`, select the Nth occurrence, and click the parent `<button>`. Polls every 500 ms with a 15 s timeout to handle SPA navigation delays.
+
+**wait-for-stable** — A `MutationObserver` injected via `page.AddInitScriptAsync` tracks DOM change timestamps. The `wait-for-stable` action uses `page.WaitForFunctionAsync` to wait until `Date.now() - lastChangeTimestamp > threshold` (default 1000 ms). Useful between SPA navigation clicks and element interactions where `NetworkIdle` resolves too early.
 
 **Fill execution** — After `FillAsync`, the step dispatcher dispatches explicit `input` and `keyup` events on the target element. Many JS-based components (e.g. jQuery `keyup` menu filters, Kendo search inputs) rely on keyboard events that `FillAsync` does not fire. A 500 ms pause follows to let debounced handlers update the DOM. A separate `type` action is available for character-by-character typing via `PressSequentiallyAsync`.
 
-**Storage state** — `BraveCloudUiTestAgent` saves browser cookies/localStorage to `BraveCloudUiStorageStatePath` after a successful SSO login. Subsequent calls within `BraveCloudUiStorageStateMaxAgeHours` pass this file to `browser.NewContextAsync()` via `StorageStatePath`, skipping the full Azure AD redirect flow.
+**Storage state & TOTP** — `BraveCloudUiTestAgent` saves browser cookies/localStorage to `BraveCloudUiStorageStatePath` after a successful SSO login. Subsequent calls within `BraveCloudUiStorageStateMaxAgeHours` pass this file to `browser.NewContextAsync()` via `StorageStatePath`, skipping the full Azure AD redirect flow. The path is resolved to absolute at DI startup (both Runner and WebApi share the same resolved path). When `BraveCloudUiTotpSecret` is configured (base32), the agent computes TOTP codes via OtpNet and enters them automatically during SSO. When empty and MFA is encountered: `PlaywrightHeadless=false` → waits 120 s for manual entry; `PlaywrightHeadless=true` → fails with remediation instructions. The CLI `--auth-setup` command provides a standalone way to perform SSO + 2FA manually and save the auth state.
 
 **Test case persistence** — `TestObjective` has two step collections:
 - `ApiSteps` (`List<ApiTestDefinition>`) — populated by API agents
@@ -126,7 +130,7 @@ BaseTestAgent  (LLM, AskLlmAsync/AskLlmForJsonAsync)
 #### PlaywrightRecorder
 
 `PlaywrightRecorder.RecordAsync` provides a human-driven alternative to LLM generation. It:
-- Launches non-headless **maximized** Chromium (`--start-maximized`, `NoViewport`, `SlowMo = 50`)
+- Launches non-headless Chromium (`--start-maximized`, `SlowMo = 50`). MVC targets use `NoViewport` (maximized window); Blazor targets use 1920×1080 to match the replay viewport. Optionally loads a `StorageStatePath` for authenticated recording sessions.
 - Calls `page.ExposeFunctionAsync("aitcRecordStep", ...)` — JS→.NET bridge, survives page navigation
 - Calls `page.ExposeFunctionAsync("aitcStopRecording", ...)` — signals a `TaskCompletionSource`
 - Calls `page.AddInitScriptAsync(...)` — re-injects event listeners and overlay panel on every page load (deferred via `DOMContentLoaded` so `document.body` is ready)
@@ -137,11 +141,20 @@ BaseTestAgent  (LLM, AskLlmAsync/AskLlmForJsonAsync)
 - **`keydown` events** — captures Escape key presses (modal dismissal).
 
 **Selector computation** uses `bestSelector(el)` with an extended fallback chain:
-`#stableId → tag[name] → tag[type="submit"] → tag[title] → a[href*="path"] → tag[data-*] → tag[role] → tag.uniqueClass → text="ownText" → text="innerText" → tag`.
+`#stableId → tag[name] → tag[type="submit"] → tag[aria-label] → tag[title] → a[href*="rawHref"] → MudBlazor text → tag[data-*] → tag[role] → tag.uniqueClass → text="ownText" → text="innerText" → grid row context → SVG icon fingerprint → tag`.
 - IDs matching dynamic/stateful patterns (`_active`, `_pb_`, `_wnd_`, GUIDs) are skipped.
-- Link selectors use `href*=` (contains) to match both absolute URLs and relative paths with query strings.
-- `title` attributes are preferred for Kendo PanelBar child items (e.g. `li[title="NMI Search"]`).
-- Generic Kendo state classes (`k-state-*`, `k-first`, `k-item`, `k-link`) are excluded from class-based selectors.
+- `aria-label` is checked early (priority #4) — MudBlazor icon buttons like "Notifications", "Sort", "Column options" use this. Labels starting with "Toggle " are skipped (nav group headers use text instead).
+- Link selectors use the **raw `getAttribute('href')`** value (not resolved URL) because CSS `[href*=]` matches raw attributes. Blazor renders relative hrefs (e.g. `./Security/UserSearch`).
+- MudBlazor text detection checks `.mud-nav-link-text` and `.mud-button-label` child elements.
+- Grid row action buttons use Playwright chained selectors: `tr:has-text("rowId") >> td[data-label="Actions"] >> button >> nth=N`.
+- Icon-only buttons (no text, no label) use SVG path fingerprinting via `click-icon` action with occurrence index.
+- MudBlazor state classes (`mud-ripple`, `mud-expanded`, `mud-nav-link`, `mud-icon`, `mud-svg`) and Kendo state classes (`k-state-*`) are excluded from class-based selectors.
+
+**MudBlazor click shortcut** — Before the general walk-up logic, clicks on or inside `.mud-nav-link-text`, `.mud-button-label`, or `.mud-treeview-item-body` are captured immediately as `text="Label"` selectors, bypassing the ancestor traversal.
+
+**Post-recording validation** — After recording, `ValidateRecordedSteps` warns about: weak selectors (bare tag names), duplicate `click-icon` SVG prefixes, missing assertions, and consecutive clicks without waits (SPA timing risk).
+
+**SPA DOM stability** — A `MutationObserver` in the init script tracks the last DOM change timestamp via `window.__aitcLastDomChangeTs()`. This is used by the `wait-for-stable` replay action.
 
 The overlay panel (fixed, bottom-right, dark theme) provides:
 - **+ Assert current URL (path)** — records `assert-url-contains` with `location.pathname`
