@@ -31,6 +31,7 @@ public static class PlaywrightRecorder
         TestEnvironmentConfig config,
         ILogger logger,
         string? storageStatePath = null,
+        string? targetType = null,
         CancellationToken ct = default)
     {
         // Only trim trailing slash for bare domains (e.g. "https://example.com/")
@@ -56,12 +57,15 @@ public static class PlaywrightRecorder
 
         try
         {
-            // NoViewport lets the page use the actual maximized window size.
-            // If a storage state file exists, inject it so the browser starts authenticated
-            // (e.g. after SSO + 2FA — avoids re-recording login steps).
+            // Blazor: use 1920×1080 to match the replay viewport (BraveCloudUiTestAgent.BuildContextOptions).
+            // MVC: NoViewport lets the page use the actual maximized window size.
+            // If a storage state file exists, inject it so the browser starts authenticated.
+            var isBlazor = "UI_Web_Blazor".Equals(targetType, StringComparison.OrdinalIgnoreCase);
             var contextOptions = new BrowserNewContextOptions
             {
-                ViewportSize = ViewportSize.NoViewport
+                ViewportSize = isBlazor
+                    ? new ViewportSize { Width = 1920, Height = 1080 }
+                    : ViewportSize.NoViewport
             };
             if (!string.IsNullOrEmpty(storageStatePath) && File.Exists(storageStatePath))
             {
@@ -143,6 +147,9 @@ public static class PlaywrightRecorder
             else await browser.CloseAsync();
         }
 
+        // Post-recording validation — warn about potential replay issues
+        ValidateRecordedSteps(steps, logger);
+
         return new WebUiTestCase
         {
             Name        = caseName,
@@ -153,12 +160,70 @@ public static class PlaywrightRecorder
         };
     }
 
+    /// <summary>
+    /// Scans recorded steps for potential replay issues and logs warnings.
+    /// Advisory only — does not block saving.
+    /// </summary>
+    private static void ValidateRecordedSteps(List<WebUiStep> steps, ILogger logger)
+    {
+        if (steps.Count == 0) return;
+
+        // 1. Weak selectors — bare tag names match too many elements
+        var weakTags = new HashSet<string> { "button", "div", "span", "li", "img", "ul", "td", "tr", "a" };
+        for (int i = 0; i < steps.Count; i++)
+        {
+            var sel = steps[i].Selector;
+            if (sel is not null && weakTags.Contains(sel))
+                logger.LogWarning("[Recorder] Step {Idx}: weak selector '{Sel}' — may match multiple elements. " +
+                    "Consider editing the selector manually.", i + 1, sel);
+        }
+
+        // 2. Duplicate click-icon SVG prefixes (ambiguity risk)
+        var iconValues = steps
+            .Select((s, i) => (Step: s, Index: i + 1))
+            .Where(x => x.Step.Action == "click-icon" && x.Step.Value is not null)
+            .ToList();
+        var duplicatePrefixes = iconValues
+            .Select(x => x.Step.Value!.Split('|')[0])
+            .GroupBy(p => p)
+            .Where(g => g.Count() > 1);
+        foreach (var dup in duplicatePrefixes)
+            logger.LogWarning("[Recorder] Multiple click-icon steps use SVG prefix '{Prefix}' — " +
+                "verify occurrence indices are correct.", dup.Key[..Math.Min(30, dup.Key.Length)]);
+
+        // 3. No assertions recorded
+        if (!steps.Any(s => s.Action.StartsWith("assert-", StringComparison.OrdinalIgnoreCase)))
+            logger.LogWarning("[Recorder] No assertion steps recorded. Add assert-text, assert-visible, " +
+                "or assert-url-contains via the overlay panel for meaningful test validation.");
+
+        // 4. Consecutive clicks without waits (SPA timing risk)
+        for (int i = 1; i < steps.Count; i++)
+        {
+            var prev = steps[i - 1].Action;
+            var curr = steps[i].Action;
+            if ((prev is "click" or "click-icon") && (curr is "click" or "click-icon"))
+                logger.LogWarning("[Recorder] Steps {Prev} and {Curr}: consecutive clicks with no wait — " +
+                    "SPA navigation may not complete between them.", i, i + 1);
+        }
+    }
+
     // ── Recording JavaScript ───────────────────────────────────────────────────────────
 
     private static string BuildInitScript() => """
         (function () {
             if (window.__aitcRecorderActive) return;
             window.__aitcRecorderActive = true;
+
+            // ── SPA DOM stability tracker ────────────────────────────────────────
+            // MutationObserver tracks the last time the DOM changed. Used by
+            // replay's wait-for-stable action to wait until DOM is quiescent.
+            if (!window.__aitcLastDomChangeTs) {
+                var __lastDomTs = Date.now();
+                new MutationObserver(function() { __lastDomTs = Date.now(); })
+                    .observe(document.documentElement,
+                        { childList: true, subtree: true, attributes: true, characterData: true });
+                window.__aitcLastDomChangeTs = function() { return __lastDomTs; };
+            }
 
             // ── Element assertion pick mode state ────────────────────────────────
             var __pickMode = false;

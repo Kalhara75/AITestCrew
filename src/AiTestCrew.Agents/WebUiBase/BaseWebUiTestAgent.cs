@@ -381,6 +381,19 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
         await using var context = await browser.NewContextAsync(BuildContextOptions());
         var page = await context.NewPageAsync();
 
+        // Inject SPA DOM stability observer for wait-for-stable steps.
+        // Lightweight — only the MutationObserver, no recording UI.
+        await page.AddInitScriptAsync(@"
+            (function() {
+                if (window.__aitcLastDomChangeTs) return;
+                var __lastTs = Date.now();
+                new MutationObserver(function() { __lastTs = Date.now(); })
+                    .observe(document.documentElement,
+                        { childList: true, subtree: true, attributes: true, characterData: true });
+                window.__aitcLastDomChangeTs = function() { return __lastTs; };
+            })();
+        ");
+
         try
         {
             // ── Run setup steps first (e.g. login) if configured ──
@@ -624,10 +637,8 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                         }
                     }
                 }
-                // Allow navigation triggered by the click to settle
-                try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle,
-                    new PageWaitForLoadStateOptions { Timeout = 15_000 }); }
-                catch { /* non-fatal — page may not navigate */ }
+                // Allow navigation / SPA rendering triggered by the click to settle
+                await WaitForSpaSettleAsync(page);
                 break;
 
             case "click-icon":
@@ -668,11 +679,7 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                     throw new PlaywrightException(
                         $"Timeout {iconTimeout}ms: no button found with SVG icon path starting with: {svgPrefix[..Math.Min(30, svgPrefix.Length)]} (nth={iconNth})");
                 // JS btn.click() returns before Blazor processes the event.
-                // Wait briefly so Blazor can initiate any API calls, then wait for network idle.
-                await page.WaitForTimeoutAsync(1000);
-                try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle,
-                    new PageWaitForLoadStateOptions { Timeout = 30_000 }); }
-                catch { /* non-fatal — page may not navigate */ }
+                await WaitForSpaSettleAsync(page);
                 break;
 
             case "fill":
@@ -764,6 +771,24 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                         new PageWaitForLoadStateOptions { Timeout = timeout });
                 break;
 
+            case "wait-for-stable":
+                // Wait until the DOM has been stable (no mutations) for N ms.
+                // Uses the MutationObserver injected via AddInitScriptAsync.
+                var stableMs = int.TryParse(step.Value, out var sms) ? sms : 1000;
+                var stableTimeout = Math.Max(step.TimeoutMs, 15_000);
+                try
+                {
+                    await page.WaitForFunctionAsync(
+                        $"() => typeof window.__aitcLastDomChangeTs === 'function' && (Date.now() - window.__aitcLastDomChangeTs()) > {stableMs}",
+                        null,
+                        new PageWaitForFunctionOptions { Timeout = stableTimeout });
+                }
+                catch (TimeoutException)
+                {
+                    Logger.LogWarning("[{Agent}] wait-for-stable timed out after {Ms}ms (DOM still changing)", Name, stableTimeout);
+                }
+                break;
+
             default:
                 Logger.LogWarning("[{Agent}] Unknown step action '{Action}' — skipping", Name, step.Action);
                 break;
@@ -804,7 +829,10 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
             ".k-window .k-window-action",       // Kendo UI window close
             ".k-dialog .k-window-action",       // Kendo UI dialog close
             "[role='dialog'] button.close",
-            "[role='dialog'] button[aria-label='Close']"
+            "[role='dialog'] button[aria-label='Close']",
+            ".mud-dialog button[aria-label='Close']",  // MudBlazor dialog close
+            ".mud-dialog .mud-dialog-actions button",  // MudBlazor dialog action (Cancel)
+            ".mud-overlay"                              // MudBlazor backdrop (click to dismiss)
         };
 
         foreach (var sel in closeSelectors)
@@ -829,11 +857,16 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
             var removed = await page.EvaluateAsync<int>(@"() => {
                 let count = 0;
                 // Remove modal backdrops
-                document.querySelectorAll('.modal-backdrop, .k-overlay').forEach(el => { el.remove(); count++; });
-                // Close/hide modal dialogs
-                document.querySelectorAll('.modal.show, .modal.in, .k-window, [role=""dialog""]').forEach(el => {
+                document.querySelectorAll('.modal-backdrop, .k-overlay, .mud-overlay').forEach(el => { el.remove(); count++; });
+                // Close/hide modal dialogs (Bootstrap, Kendo, MudBlazor)
+                document.querySelectorAll('.modal.show, .modal.in, .k-window, .mud-dialog-container, [role=""dialog""]').forEach(el => {
                     el.style.display = 'none';
                     el.classList.remove('show', 'in');
+                    count++;
+                });
+                // Close MudBlazor overlay drawers
+                document.querySelectorAll('.mud-drawer--open.mud-drawer--overlay').forEach(el => {
+                    el.classList.remove('mud-drawer--open');
                     count++;
                 });
                 // Restore body scroll (modals often set overflow:hidden on body)
@@ -851,6 +884,37 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
         {
             Logger.LogDebug("[{Agent}] JS overlay removal failed: {Msg}", Name, ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Post-click wait for SPA applications. Checks for MudBlazor loading indicators
+    /// first, then waits for NetworkIdle. Handles the case where Blazor hasn't yet
+    /// started its API call when NetworkIdle is checked.
+    /// </summary>
+    private async Task WaitForSpaSettleAsync(IPage page)
+    {
+        // Brief delay to let Blazor process the click event and start API calls
+        await page.WaitForTimeoutAsync(300);
+
+        // Check for MudBlazor loading indicators — wait for them to disappear
+        try
+        {
+            var loading = page.Locator(".mud-progress-circular, .mud-skeleton, .mud-table-loading").First;
+            if (await loading.IsVisibleAsync(new LocatorIsVisibleOptions { Timeout = 500 }))
+            {
+                await Assertions.Expect(loading).ToBeHiddenAsync(
+                    new LocatorAssertionsToBeHiddenOptions { Timeout = 15_000 });
+            }
+        }
+        catch { /* no loading indicator present — continue */ }
+
+        // Wait for network idle
+        try
+        {
+            await page.WaitForLoadStateAsync(LoadState.NetworkIdle,
+                new PageWaitForLoadStateOptions { Timeout = 10_000 });
+        }
+        catch { /* non-fatal — page may not navigate */ }
     }
 
     // ─────────────────────────────────────────────────────

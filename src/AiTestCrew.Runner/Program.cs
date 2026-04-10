@@ -178,7 +178,7 @@ if (cli.RecordMode)
         ? recordConfig.BraveCloudUiStorageStatePath : null;
     if (!string.IsNullOrEmpty(recordStorageState) && !Path.IsPathRooted(recordStorageState))
         recordStorageState = Path.Combine(AppContext.BaseDirectory, recordStorageState);
-    var recorded = await PlaywrightRecorder.RecordAsync(baseUrl, cli.CaseName, recordConfig, recLogger, recordStorageState);
+    var recorded = await PlaywrightRecorder.RecordAsync(baseUrl, cli.CaseName, recordConfig, recLogger, recordStorageState, targetType);
 
     if (recorded.Steps.Count == 0)
     {
@@ -379,7 +379,7 @@ if (cli.RecordSetupMode)
         ? setupConfig.BraveCloudUiStorageStatePath : null;
     if (!string.IsNullOrEmpty(setupStorageState) && !Path.IsPathRooted(setupStorageState))
         setupStorageState = Path.Combine(AppContext.BaseDirectory, setupStorageState);
-    var setupRecorded = await PlaywrightRecorder.RecordAsync(setupBaseUrl, "setup", setupConfig, setupRecLogger, setupStorageState);
+    var setupRecorded = await PlaywrightRecorder.RecordAsync(setupBaseUrl, "setup", setupConfig, setupRecLogger, setupStorageState, setupTargetType);
 
     if (setupRecorded.Steps.Count == 0)
     {
