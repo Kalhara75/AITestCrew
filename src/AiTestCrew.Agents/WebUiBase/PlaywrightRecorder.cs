@@ -57,15 +57,12 @@ public static class PlaywrightRecorder
 
         try
         {
-            // Blazor: use 1920×1080 to match the replay viewport (BraveCloudUiTestAgent.BuildContextOptions).
-            // MVC: NoViewport lets the page use the actual maximized window size.
-            // If a storage state file exists, inject it so the browser starts authenticated.
-            var isBlazor = "UI_Web_Blazor".Equals(targetType, StringComparison.OrdinalIgnoreCase);
+            // NoViewport lets the page use the actual maximized window size.
+            // If a storage state file exists, inject it so the browser starts authenticated
+            // (e.g. after SSO + 2FA — avoids re-recording login steps).
             var contextOptions = new BrowserNewContextOptions
             {
-                ViewportSize = isBlazor
-                    ? new ViewportSize { Width = 1920, Height = 1080 }
-                    : ViewportSize.NoViewport
+                ViewportSize = ViewportSize.NoViewport
             };
             if (!string.IsNullOrEmpty(storageStatePath) && File.Exists(storageStatePath))
             {
@@ -168,42 +165,31 @@ public static class PlaywrightRecorder
     {
         if (steps.Count == 0) return;
 
-        // 1. Weak selectors — bare tag names match too many elements
         var weakTags = new HashSet<string> { "button", "div", "span", "li", "img", "ul", "td", "tr", "a" };
         for (int i = 0; i < steps.Count; i++)
         {
             var sel = steps[i].Selector;
             if (sel is not null && weakTags.Contains(sel))
-                logger.LogWarning("[Recorder] Step {Idx}: weak selector '{Sel}' — may match multiple elements. " +
-                    "Consider editing the selector manually.", i + 1, sel);
+                logger.LogWarning("[Recorder] Step {Idx}: weak selector '{Sel}' — may match multiple elements.", i + 1, sel);
         }
 
-        // 2. Duplicate click-icon SVG prefixes (ambiguity risk)
         var iconValues = steps
             .Select((s, i) => (Step: s, Index: i + 1))
             .Where(x => x.Step.Action == "click-icon" && x.Step.Value is not null)
             .ToList();
-        var duplicatePrefixes = iconValues
-            .Select(x => x.Step.Value!.Split('|')[0])
-            .GroupBy(p => p)
-            .Where(g => g.Count() > 1);
-        foreach (var dup in duplicatePrefixes)
-            logger.LogWarning("[Recorder] Multiple click-icon steps use SVG prefix '{Prefix}' — " +
-                "verify occurrence indices are correct.", dup.Key[..Math.Min(30, dup.Key.Length)]);
+        foreach (var dup in iconValues.Select(x => x.Step.Value!.Split('|')[0]).GroupBy(p => p).Where(g => g.Count() > 1))
+            logger.LogWarning("[Recorder] Multiple click-icon steps use SVG prefix '{Prefix}' — verify indices.",
+                dup.Key[..Math.Min(30, dup.Key.Length)]);
 
-        // 3. No assertions recorded
         if (!steps.Any(s => s.Action.StartsWith("assert-", StringComparison.OrdinalIgnoreCase)))
-            logger.LogWarning("[Recorder] No assertion steps recorded. Add assert-text, assert-visible, " +
-                "or assert-url-contains via the overlay panel for meaningful test validation.");
+            logger.LogWarning("[Recorder] No assertion steps recorded. Add assertions via the overlay panel.");
 
-        // 4. Consecutive clicks without waits (SPA timing risk)
         for (int i = 1; i < steps.Count; i++)
         {
             var prev = steps[i - 1].Action;
             var curr = steps[i].Action;
             if ((prev is "click" or "click-icon") && (curr is "click" or "click-icon"))
-                logger.LogWarning("[Recorder] Steps {Prev} and {Curr}: consecutive clicks with no wait — " +
-                    "SPA navigation may not complete between them.", i, i + 1);
+                logger.LogWarning("[Recorder] Steps {Prev} and {Curr}: consecutive clicks — SPA timing risk.", i, i + 1);
         }
     }
 
@@ -214,16 +200,9 @@ public static class PlaywrightRecorder
             if (window.__aitcRecorderActive) return;
             window.__aitcRecorderActive = true;
 
-            // ── SPA DOM stability tracker ────────────────────────────────────────
-            // MutationObserver tracks the last time the DOM changed. Used by
-            // replay's wait-for-stable action to wait until DOM is quiescent.
-            if (!window.__aitcLastDomChangeTs) {
-                var __lastDomTs = Date.now();
-                new MutationObserver(function() { __lastDomTs = Date.now(); })
-                    .observe(document.documentElement,
-                        { childList: true, subtree: true, attributes: true, characterData: true });
-                window.__aitcLastDomChangeTs = function() { return __lastDomTs; };
-            }
+            // NOTE: SPA DOM stability MutationObserver is NOT in the recording init script.
+            // It is injected separately during replay by BaseWebUiTestAgent (after page creation)
+            // to avoid crashing the init script when document.documentElement is not ready.
 
             // ── Element assertion pick mode state ────────────────────────────────
             var __pickMode = false;

@@ -381,15 +381,14 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
         await using var context = await browser.NewContextAsync(BuildContextOptions());
         var page = await context.NewPageAsync();
 
-        // Inject SPA DOM stability observer for wait-for-stable steps.
-        // Lightweight — only the MutationObserver, no recording UI.
+        // Inject lightweight SPA DOM stability observer for wait-for-stable steps.
+        // childList only — do NOT observe attributes (Blazor fires thousands of _bl_* changes).
         await page.AddInitScriptAsync(@"
             (function() {
                 if (window.__aitcLastDomChangeTs) return;
                 var __lastTs = Date.now();
                 new MutationObserver(function() { __lastTs = Date.now(); })
-                    .observe(document.documentElement,
-                        { childList: true, subtree: true, attributes: true, characterData: true });
+                    .observe(document.documentElement, { childList: true, subtree: true });
                 window.__aitcLastDomChangeTs = function() { return __lastTs; };
             })();
         ");
@@ -772,8 +771,6 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                 break;
 
             case "wait-for-stable":
-                // Wait until the DOM has been stable (no mutations) for N ms.
-                // Uses the MutationObserver injected via AddInitScriptAsync.
                 var stableMs = int.TryParse(step.Value, out var sms) ? sms : 1000;
                 var stableTimeout = Math.Max(step.TimeoutMs, 15_000);
                 try
@@ -785,7 +782,7 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                 }
                 catch (TimeoutException)
                 {
-                    Logger.LogWarning("[{Agent}] wait-for-stable timed out after {Ms}ms (DOM still changing)", Name, stableTimeout);
+                    Logger.LogWarning("[{Agent}] wait-for-stable timed out after {Ms}ms", Name, stableTimeout);
                 }
                 break;
 
@@ -831,8 +828,8 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
             "[role='dialog'] button.close",
             "[role='dialog'] button[aria-label='Close']",
             ".mud-dialog button[aria-label='Close']",  // MudBlazor dialog close
-            ".mud-dialog .mud-dialog-actions button",  // MudBlazor dialog action (Cancel)
-            ".mud-overlay"                              // MudBlazor backdrop (click to dismiss)
+            ".mud-dialog .mud-dialog-actions button",  // MudBlazor dialog action
+            ".mud-overlay"                              // MudBlazor backdrop
         };
 
         foreach (var sel in closeSelectors)
@@ -864,12 +861,10 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                     el.classList.remove('show', 'in');
                     count++;
                 });
-                // Close MudBlazor overlay drawers
                 document.querySelectorAll('.mud-drawer--open.mud-drawer--overlay').forEach(el => {
                     el.classList.remove('mud-drawer--open');
                     count++;
                 });
-                // Restore body scroll (modals often set overflow:hidden on body)
                 document.body.classList.remove('modal-open');
                 document.body.style.overflow = '';
                 return count;
@@ -888,33 +883,22 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
 
     /// <summary>
     /// Post-click wait for SPA applications. Checks for MudBlazor loading indicators
-    /// first, then waits for NetworkIdle. Handles the case where Blazor hasn't yet
-    /// started its API call when NetworkIdle is checked.
+    /// first, then waits for NetworkIdle.
     /// </summary>
     private async Task WaitForSpaSettleAsync(IPage page)
     {
-        // Brief delay to let Blazor process the click event and start API calls
         await page.WaitForTimeoutAsync(300);
-
-        // Check for MudBlazor loading indicators — wait for them to disappear
         try
         {
             var loading = page.Locator(".mud-progress-circular, .mud-skeleton, .mud-table-loading").First;
             if (await loading.IsVisibleAsync(new LocatorIsVisibleOptions { Timeout = 500 }))
-            {
                 await Assertions.Expect(loading).ToBeHiddenAsync(
                     new LocatorAssertionsToBeHiddenOptions { Timeout = 15_000 });
-            }
         }
-        catch { /* no loading indicator present — continue */ }
-
-        // Wait for network idle
-        try
-        {
-            await page.WaitForLoadStateAsync(LoadState.NetworkIdle,
-                new PageWaitForLoadStateOptions { Timeout = 10_000 });
-        }
-        catch { /* non-fatal — page may not navigate */ }
+        catch { /* no loading indicator — continue */ }
+        try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle,
+            new PageWaitForLoadStateOptions { Timeout = 10_000 }); }
+        catch { /* non-fatal */ }
     }
 
     // ─────────────────────────────────────────────────────
