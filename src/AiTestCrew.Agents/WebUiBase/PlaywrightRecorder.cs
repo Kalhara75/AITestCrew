@@ -31,6 +31,7 @@ public static class PlaywrightRecorder
         TestEnvironmentConfig config,
         ILogger logger,
         string? storageStatePath = null,
+        string? targetType = null,
         CancellationToken ct = default)
     {
         // Only trim trailing slash for bare domains (e.g. "https://example.com/")
@@ -143,6 +144,9 @@ public static class PlaywrightRecorder
             else await browser.CloseAsync();
         }
 
+        // Post-recording validation — warn about potential replay issues
+        ValidateRecordedSteps(steps, logger);
+
         return new WebUiTestCase
         {
             Name        = caseName,
@@ -153,12 +157,52 @@ public static class PlaywrightRecorder
         };
     }
 
+    /// <summary>
+    /// Scans recorded steps for potential replay issues and logs warnings.
+    /// Advisory only — does not block saving.
+    /// </summary>
+    private static void ValidateRecordedSteps(List<WebUiStep> steps, ILogger logger)
+    {
+        if (steps.Count == 0) return;
+
+        var weakTags = new HashSet<string> { "button", "div", "span", "li", "img", "ul", "td", "tr", "a" };
+        for (int i = 0; i < steps.Count; i++)
+        {
+            var sel = steps[i].Selector;
+            if (sel is not null && weakTags.Contains(sel))
+                logger.LogWarning("[Recorder] Step {Idx}: weak selector '{Sel}' — may match multiple elements.", i + 1, sel);
+        }
+
+        var iconValues = steps
+            .Select((s, i) => (Step: s, Index: i + 1))
+            .Where(x => x.Step.Action == "click-icon" && x.Step.Value is not null)
+            .ToList();
+        foreach (var dup in iconValues.Select(x => x.Step.Value!.Split('|')[0]).GroupBy(p => p).Where(g => g.Count() > 1))
+            logger.LogWarning("[Recorder] Multiple click-icon steps use SVG prefix '{Prefix}' — verify indices.",
+                dup.Key[..Math.Min(30, dup.Key.Length)]);
+
+        if (!steps.Any(s => s.Action.StartsWith("assert-", StringComparison.OrdinalIgnoreCase)))
+            logger.LogWarning("[Recorder] No assertion steps recorded. Add assertions via the overlay panel.");
+
+        for (int i = 1; i < steps.Count; i++)
+        {
+            var prev = steps[i - 1].Action;
+            var curr = steps[i].Action;
+            if ((prev is "click" or "click-icon") && (curr is "click" or "click-icon"))
+                logger.LogWarning("[Recorder] Steps {Prev} and {Curr}: consecutive clicks — SPA timing risk.", i, i + 1);
+        }
+    }
+
     // ── Recording JavaScript ───────────────────────────────────────────────────────────
 
     private static string BuildInitScript() => """
         (function () {
             if (window.__aitcRecorderActive) return;
             window.__aitcRecorderActive = true;
+
+            // NOTE: SPA DOM stability MutationObserver is NOT in the recording init script.
+            // It is injected separately during replay by BaseWebUiTestAgent (after page creation)
+            // to avoid crashing the init script when document.documentElement is not ready.
 
             // ── Element assertion pick mode state ────────────────────────────────
             var __pickMode = false;

@@ -46,6 +46,7 @@ public class WebUiStep
     ///   assert-url-contains    — assert current URL contains Value (Value required)
     ///   assert-title-contains  — assert page title contains Value (Value required)
     ///   wait              — wait for selector to appear (Selector required)
+    ///   wait-for-stable   — wait until DOM mutations stop for N ms (Value = ms threshold, default 1000)
     /// </summary>
     public string Action { get; set; } = "";
 
