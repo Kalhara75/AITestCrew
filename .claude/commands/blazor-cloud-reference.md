@@ -245,7 +245,7 @@ Blazor uses client-side routing — clicking a nav link does NOT trigger a full 
 
 | File | What it does |
 |---|---|
-| `src/AiTestCrew.Agents/WebUiBase/PlaywrightRecorder.cs` | Recording — `bestSelector()`, MudBlazor click shortcut, SVG icon fingerprint, MutationObserver |
+| `src/AiTestCrew.Agents/WebUiBase/PlaywrightRecorder.cs` | Recording — `bestSelector()`, MudBlazor click shortcut, SVG icon fingerprint, post-recording validation |
 | `src/AiTestCrew.Agents/WebUiBase/BaseWebUiTestAgent.cs` | Replay — `ExecuteUiStepAsync()`, `click-icon` handler, `wait-for-stable`, `TryDismissOverlaysAsync()` |
 | `src/AiTestCrew.Agents/BraveCloudUiAgent/BraveCloudUiTestAgent.cs` | Blazor agent — SSO + TOTP, StorageState, 1920×1080 viewport |
 
@@ -262,3 +262,5 @@ Blazor uses client-side routing — clicking a nav link does NOT trigger a full 
 7. **StorageState paths differ between Runner and WebApi** — always resolve relative paths to absolute at DI startup using the shared data directory.
 8. **1920×1080 viewport is essential** — MudBlazor side menus clip at the default 1280×720, causing selectors to time out on elements below the fold.
 9. **Trailing slash matters** — `https://host/ui/` and `https://host/ui` are different URLs for Blazor routing. Don't `TrimEnd('/')` on subpaths.
+10. **NEVER put MutationObserver in the recording init script** — Playwright's `AddInitScriptAsync` runs before `document.documentElement` exists. Calling `.observe(document.documentElement, ...)` throws and silently crashes the entire IIFE, killing the overlay and all event listeners. MutationObservers belong in the replay path only — inject via a separate `page.AddInitScriptAsync` call after `context.NewPageAsync()` in `BaseWebUiTestAgent`, where the page has a real document.
+11. **Recording viewport must be `NoViewport`** — a fixed viewport (e.g. 1920×1080) pushes the `position:fixed` overlay off-screen on monitors smaller than that resolution. Always use `ViewportSize.NoViewport` (maximized window) for recording. The 1920×1080 viewport is only for headless replay (`BraveCloudUiTestAgent.BuildContextOptions`).
