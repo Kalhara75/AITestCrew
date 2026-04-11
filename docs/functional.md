@@ -161,10 +161,11 @@ dotnet run --project src/AiTestCrew.Runner -- --record-setup \
 - If a setup step fails during replay, the remaining setup steps and all test case steps are skipped for that test case.
 - Running `--record-setup` again for the same test set replaces the existing setup steps.
 
-### Auth Setup (Blazor SSO)
+### Auth Setup
 
-Save browser authentication state for Blazor apps that use Azure AD SSO (with optional 2FA). Opens a visible browser — complete the login manually, and the session is saved automatically.
+Save browser authentication state so that subsequent test runs start pre-authenticated, skipping the login flow entirely. Opens a visible browser — complete the login manually, and the session is saved automatically.
 
+**Blazor SSO (default):**
 ```bash
 dotnet run --project src/AiTestCrew.Runner -- --auth-setup
 ```
@@ -172,9 +173,20 @@ dotnet run --project src/AiTestCrew.Runner -- --auth-setup
 - Navigates to `BraveCloudUiUrl` which redirects to Azure AD login.
 - Complete the full login flow (including 2FA if required) in the visible browser.
 - Once redirected back to the app, the auth state (cookies + localStorage) is saved to `BraveCloudUiStorageStatePath`.
-- Subsequent recordings and test runs reuse this state, skipping the SSO flow entirely.
 - The saved state is valid for `BraveCloudUiStorageStateMaxAgeHours` (default 8). Re-run `--auth-setup` when it expires.
 - If `BraveCloudUiTotpSecret` is configured (base32 TOTP secret), the agent can automate 2FA during test runs — `--auth-setup` is only needed for initial or expired sessions.
+
+**Legacy ASP.NET MVC:**
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_MVC
+```
+
+- Navigates to `LegacyWebUiUrl` + `LegacyWebUiLoginPath` and opens the login form.
+- Complete the login in the visible browser.
+- Once redirected away from the login page, the auth state is saved to `LegacyWebUiStorageStatePath`.
+- The saved state is valid for `LegacyWebUiStorageStateMaxAgeHours` (default 8).
+- The state is also generated **automatically** on the first headless test run — `--auth-setup` is only needed if you prefer a manual interactive login.
+- Under parallel execution, the first agent to run acquires a login lock, performs one headless login, and saves the state. All other concurrent agents reuse it.
 
 ---
 

@@ -53,6 +53,8 @@ public class TestEnvironmentConfig
     public string LegacyWebUiLoginPath { get; set; } = "/Account/Login";
     public string LegacyWebUiUsername { get; set; } = "";
     public string LegacyWebUiPassword { get; set; } = "";
+    public string? LegacyWebUiStorageStatePath { get; set; }
+    public int LegacyWebUiStorageStateMaxAgeHours { get; set; } = 8;
 
     // --- Brave Cloud UI (Blazor / Azure OpenID SSO) ---
     // BraveCloudUiStorageStatePath: path to save/load browser auth state (JSON).

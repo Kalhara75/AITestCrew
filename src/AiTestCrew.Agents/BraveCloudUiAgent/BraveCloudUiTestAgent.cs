@@ -82,6 +82,8 @@ public class BraveCloudUiTestAgent : BaseWebUiTestAgent
         await PerformSsoLoginAsync(page, context);
     }
 
+    protected override bool ShouldSkipSetupSteps() => HasFreshStorageState();
+
     /// <summary>Provide storage state to the browser context if a fresh file exists.</summary>
     protected override BrowserNewContextOptions BuildContextOptions()
     {

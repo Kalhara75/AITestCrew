@@ -271,25 +271,29 @@ if (cli.AuthSetupMode)
         .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
 
     var authTargetType = cli.RecordTarget ?? "UI_Web_Blazor";
-    var authBaseUrl = authTargetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
-        ? authConfig.BraveCloudUiUrl : authConfig.LegacyWebUiUrl;
+    var isLegacy = authTargetType.Equals("UI_Web_MVC", StringComparison.OrdinalIgnoreCase);
+    var authBaseUrl = isLegacy ? authConfig.LegacyWebUiUrl : authConfig.BraveCloudUiUrl;
     // Resolve relative path against bin dir so the file lands where the agent looks for it
-    var authStatePath = authConfig.BraveCloudUiStorageStatePath;
+    var authStatePath = isLegacy ? authConfig.LegacyWebUiStorageStatePath : authConfig.BraveCloudUiStorageStatePath;
+    var authMaxAgeHours = isLegacy ? authConfig.LegacyWebUiStorageStateMaxAgeHours : authConfig.BraveCloudUiStorageStateMaxAgeHours;
     if (!string.IsNullOrEmpty(authStatePath) && !Path.IsPathRooted(authStatePath))
         authStatePath = Path.Combine(AppContext.BaseDirectory, authStatePath);
 
+    var urlConfigKey = isLegacy ? "LegacyWebUiUrl" : "BraveCloudUiUrl";
+    var pathConfigKey = isLegacy ? "LegacyWebUiStorageStatePath" : "BraveCloudUiStorageStatePath";
     if (string.IsNullOrWhiteSpace(authBaseUrl))
     {
-        AnsiConsole.MarkupLine("[red]BraveCloudUiUrl not configured in appsettings.json.[/]");
+        AnsiConsole.MarkupLine($"[red]{urlConfigKey} not configured in appsettings.json.[/]");
         return;
     }
     if (string.IsNullOrWhiteSpace(authStatePath))
     {
-        AnsiConsole.MarkupLine("[red]BraveCloudUiStorageStatePath not configured in appsettings.json.[/]");
+        AnsiConsole.MarkupLine($"[red]{pathConfigKey} not configured in appsettings.json.[/]");
         return;
     }
 
-    AnsiConsole.MarkupLine("[cyan]Auth setup[/] — opening browser for SSO login");
+    var loginTarget = isLegacy ? "forms login" : "SSO login";
+    AnsiConsole.MarkupLine($"[cyan]Auth setup[/] — opening browser for {loginTarget}");
     AnsiConsole.MarkupLine($"[grey]URL: {authBaseUrl}[/]");
     AnsiConsole.MarkupLine("[grey]Complete the login (including 2FA if required), then the session will be saved automatically.[/]\n");
 
@@ -307,26 +311,67 @@ if (cli.AuthSetupMode)
             new Microsoft.Playwright.BrowserNewContextOptions { ViewportSize = Microsoft.Playwright.ViewportSize.NoViewport });
         var authPage = await authContext.NewPageAsync();
 
-        await authPage.GotoAsync(authBaseUrl,
+        var navigateUrl = isLegacy
+            ? $"{authBaseUrl.TrimEnd('/')}{authConfig.LegacyWebUiLoginPath}"
+            : authBaseUrl;
+        await authPage.GotoAsync(navigateUrl,
             new Microsoft.Playwright.PageGotoOptions { WaitUntil = Microsoft.Playwright.WaitUntilState.NetworkIdle });
 
         AnsiConsole.MarkupLine("  Waiting for you to complete login (up to 3 minutes)...");
+        AnsiConsole.MarkupLine("[grey]  Do NOT close the browser — it will close automatically once login is captured.[/]");
 
-        // Wait until the browser URL returns to the application (SSO redirect complete)
-        await authPage.WaitForURLAsync(
-            url => url.StartsWith(authBaseUrl, StringComparison.OrdinalIgnoreCase)
-                   && !url.Contains("login.microsoftonline.com", StringComparison.OrdinalIgnoreCase),
-            new Microsoft.Playwright.PageWaitForURLOptions { Timeout = 180_000 });
+        try
+        {
+            // Poll page.Url instead of using WaitForURLAsync — the Playwright lifecycle
+            // events (Load, DOMContentLoaded) can miss ASP.NET MVC redirect chains
+            // (POST → 302 → GET) especially in an interactive auth-setup session.
+            // Capture the URL we navigated to so we can detect when it changes
+            var initialUrl = authPage.Url;
+            var loginPath = authConfig.LegacyWebUiLoginPath.TrimStart('/');
 
-        // Save auth state
-        var dir = Path.GetDirectoryName(authStatePath);
-        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            Func<string, bool> isLoggedIn = isLegacy
+                ? (string.IsNullOrEmpty(loginPath)
+                    // LoginPath not configured — detect any URL change from the initial page
+                    ? url => !string.Equals(url, initialUrl, StringComparison.OrdinalIgnoreCase)
+                             && !url.Equals("about:blank", StringComparison.OrdinalIgnoreCase)
+                    // LoginPath configured — detect URL no longer contains it
+                    : url => !url.Contains(loginPath, StringComparison.OrdinalIgnoreCase))
+                : url => url.StartsWith(authBaseUrl, StringComparison.OrdinalIgnoreCase)
+                         && !url.Contains("login.microsoftonline.com", StringComparison.OrdinalIgnoreCase);
 
-        await authContext.StorageStateAsync(
-            new Microsoft.Playwright.BrowserContextStorageStateOptions { Path = authStatePath });
+            var deadline = DateTime.UtcNow.AddMinutes(3);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (isLoggedIn(authPage.Url))
+                    break;
+                await Task.Delay(500);
+            }
 
-        AnsiConsole.MarkupLine($"\n[green]Auth state saved[/] → {Markup.Escape(authStatePath)}");
-        AnsiConsole.MarkupLine($"[grey]Valid for {authConfig.BraveCloudUiStorageStateMaxAgeHours} hours. Recordings and test runs will use this session automatically.[/]");
+            if (!isLoggedIn(authPage.Url))
+            {
+                AnsiConsole.MarkupLine("\n[red]Timed out waiting for login to complete.[/]");
+            }
+            else
+            {
+                // Brief pause to let cookies settle after the redirect
+                await Task.Delay(1000);
+
+                // Save auth state
+                var dir = Path.GetDirectoryName(authStatePath);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+                await authContext.StorageStateAsync(
+                    new Microsoft.Playwright.BrowserContextStorageStateOptions { Path = authStatePath });
+
+                AnsiConsole.MarkupLine($"\n[green]Auth state saved[/] → {Markup.Escape(authStatePath)}");
+                AnsiConsole.MarkupLine($"[grey]Valid for {authMaxAgeHours} hours. Recordings and test runs will use this session automatically.[/]");
+            }
+        }
+        catch (Microsoft.Playwright.PlaywrightException ex) when (ex.Message.Contains("closed", StringComparison.OrdinalIgnoreCase))
+        {
+            AnsiConsole.MarkupLine("\n[red]Browser was closed before auth state could be saved.[/]");
+            AnsiConsole.MarkupLine("[yellow]Please run the command again and wait for the \"Auth state saved\" message before closing.[/]");
+        }
     }
     finally
     {
@@ -449,12 +494,17 @@ var envConfig = builder.Configuration
     .GetSection("TestEnvironment")
     .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
 
-// Resolve the storage state path relative to the binary dir so it's consistent
+// Resolve storage state paths relative to the binary dir so they're consistent
 // between CLI commands (--auth-setup, --record) and agent execution (--reuse).
 if (!string.IsNullOrEmpty(envConfig.BraveCloudUiStorageStatePath)
     && !Path.IsPathRooted(envConfig.BraveCloudUiStorageStatePath))
 {
     envConfig.BraveCloudUiStorageStatePath = Path.Combine(AppContext.BaseDirectory, envConfig.BraveCloudUiStorageStatePath);
+}
+if (!string.IsNullOrEmpty(envConfig.LegacyWebUiStorageStatePath)
+    && !Path.IsPathRooted(envConfig.LegacyWebUiStorageStatePath))
+{
+    envConfig.LegacyWebUiStorageStatePath = Path.Combine(AppContext.BaseDirectory, envConfig.LegacyWebUiStorageStatePath);
 }
 
 builder.Services.AddSingleton(envConfig);

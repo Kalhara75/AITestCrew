@@ -57,6 +57,14 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
     protected virtual BrowserNewContextOptions BuildContextOptions() => new();
 
     /// <summary>
+    /// When true, test-set-level setup steps (e.g. recorded login) are skipped because
+    /// the browser context already has auth state injected via <see cref="BuildContextOptions"/>.
+    /// Default: false. Subclasses with storage state support override to return true
+    /// when a fresh state file exists.
+    /// </summary>
+    protected virtual bool ShouldSkipSetupSteps() => false;
+
+    /// <summary>
     /// Returns credential hints to inject into the LLM prompt so the generated test cases
     /// use the configured username/password instead of inventing values like "admin".
     /// Returns null if credentials are not configured.
@@ -99,10 +107,20 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                 setupStartUrl = suStr;
             if (setupSteps is { Count: > 0 })
             {
-                steps.Add(TestStep.Pass("setup-steps",
-                    $"Will run {setupSteps.Count} setup step(s) before each test case"));
-                Logger.LogInformation("[{Agent}] Setup steps: {Count} steps, startUrl={Url}",
-                    Name, setupSteps.Count, setupStartUrl ?? "(none)");
+                if (ShouldSkipSetupSteps())
+                {
+                    steps.Add(TestStep.Pass("setup-steps",
+                        $"Skipping {setupSteps.Count} setup step(s) — auth state already injected"));
+                    Logger.LogInformation("[{Agent}] Skipping {Count} setup steps (storage state is fresh)",
+                        Name, setupSteps.Count);
+                }
+                else
+                {
+                    steps.Add(TestStep.Pass("setup-steps",
+                        $"Will run {setupSteps.Count} setup step(s) before each test case"));
+                    Logger.LogInformation("[{Agent}] Setup steps: {Count} steps, startUrl={Url}",
+                        Name, setupSteps.Count, setupStartUrl ?? "(none)");
+                }
             }
 
             // ── Validate base URL ──
@@ -396,7 +414,8 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
         try
         {
             // ── Run setup steps first (e.g. login) if configured ──
-            if (setupSteps is { Count: > 0 })
+            // Skipped when auth state is already injected via StorageState.
+            if (setupSteps is { Count: > 0 } && !ShouldSkipSetupSteps())
             {
                 if (!string.IsNullOrWhiteSpace(setupStartUrl))
                 {
