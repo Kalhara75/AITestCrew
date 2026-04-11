@@ -7,6 +7,7 @@ using AiTestCrew.Agents.LegacyWebUiAgent;
 using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
+using AiTestCrew.Core.Services;
 using AiTestCrew.Orchestrator;
 using AiTestCrew.WebApi;
 using AiTestCrew.WebApi.Endpoints;
@@ -100,6 +101,7 @@ builder.Services.AddSingleton(new ExecutionHistoryRepository(dataDir));
 builder.Services.AddSingleton(new ModuleRepository(dataDir));
 
 // ── Orchestrator ──
+builder.Services.AddSingleton(new AgentConcurrencyLimiter(envConfig.MaxParallelAgents));
 builder.Services.AddSingleton<TestOrchestrator>();
 
 // ── Run tracker (in-memory active runs) ──

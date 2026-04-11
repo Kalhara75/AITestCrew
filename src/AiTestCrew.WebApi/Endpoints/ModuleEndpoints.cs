@@ -3,6 +3,7 @@ using AiTestCrew.Agents.ApiAgent;
 using AiTestCrew.Agents.Base;
 using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Agents.Shared;
+using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Models;
 using AiTestCrew.Orchestrator;
 using AiTestCrew.WebApi.Services;
@@ -321,11 +322,12 @@ public static class ModuleEndpoints
             return Results.Ok(TestSetResponse(testSet, historyRepo));
         });
 
-        // POST /api/modules/{moduleId}/run — run all test sets in a module
+        // POST /api/modules/{moduleId}/run — run all test sets in a module (parallel)
         group.MapPost("/{moduleId}/run", async (string moduleId,
             ModuleRepository moduleRepo, TestSetRepository tsRepo,
             RunTracker runTracker, ModuleRunTracker moduleRunTracker,
-            TestOrchestrator orchestrator, ILogger<TestOrchestrator> logger) =>
+            TestOrchestrator orchestrator, TestEnvironmentConfig config,
+            ILogger<TestOrchestrator> logger) =>
         {
             var module = await moduleRepo.GetAsync(moduleId);
             if (module is null)
@@ -357,7 +359,9 @@ public static class ModuleEndpoints
             {
                 try
                 {
-                    foreach (var ts in runnableTestSets)
+                    // Run all test sets in parallel — the orchestrator's
+                    // AgentConcurrencyLimiter gates how many agents execute at once.
+                    var testSetTasks = runnableTestSets.Select(ts => Task.Run(async () =>
                     {
                         var childRunId = Guid.NewGuid().ToString("N")[..12];
                         moduleRunTracker.AdvanceToTestSet(moduleRunId, ts.Id, childRunId);
@@ -379,7 +383,9 @@ public static class ModuleEndpoints
                             runTracker.Fail(childRunId, ex.Message);
                             moduleRunTracker.CompleteTestSet(moduleRunId, ts.Id, false, ex.Message);
                         }
-                    }
+                    })).ToArray();
+
+                    await Task.WhenAll(testSetTasks);
                     moduleRunTracker.Complete(moduleRunId);
                 }
                 catch (Exception ex)

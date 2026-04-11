@@ -219,7 +219,7 @@ WebApi/
     RunEndpoints.cs                — POST /api/runs (trigger with optional objectiveId), GET /api/runs/{id}/status (poll)
   Services/
     RunTracker.cs                  — ConcurrentDictionary tracking active/completed individual runs
-    ModuleRunTracker.cs            — ConcurrentDictionary tracking module-level composite runs (sequential test set execution)
+    ModuleRunTracker.cs            — ConcurrentDictionary tracking module-level composite runs (parallel test set execution)
   appsettings.example.json         — Template config
 ```
 
@@ -249,7 +249,7 @@ WebApi/
 | `GET` | `/api/testsets/{id}` | Full test set detail (legacy) |
 | `GET` | `/api/testsets/{id}/runs` | Execution history (legacy) |
 | `GET` | `/api/testsets/{id}/runs/{runId}` | Full execution detail (legacy) |
-| `POST` | `/api/modules/{id}/run` | Trigger module-level run (all test sets, sequential, Reuse mode) |
+| `POST` | `/api/modules/{id}/run` | Trigger module-level run (all test sets, parallel, Reuse mode) |
 | `GET` | `/api/modules/{id}/run/status` | Poll module-level run progress (per-test-set status) |
 | `POST` | `/api/runs` | Trigger a test run (supports `moduleId` + `testSetId` + optional `objectiveId` for single-objective execution) |
 | `GET` | `/api/runs/{runId}/status` | Poll run progress |
@@ -337,6 +337,21 @@ public interface ITestAgent
 All agents implement this interface. `ExecuteAsync` returns a single `TestResult` per task (one objective), with `ObjectiveId` and `ObjectiveName` identifying which objective it corresponds to. The `Steps` list inside the result contains one `TestStep` per API call. For Web UI agents, each Playwright step within a test case produces its own `TestStep` (e.g. a 9-step test case yields 9 individual step results plus infrastructure steps for loading and browser launch). The orchestrator calls `CanHandleAsync` on each registered agent to route each task. Adding a new agent type requires only implementing this interface and registering it in DI — no changes to the orchestrator.
 
 ---
+
+## Parallel Execution & Concurrency
+
+Test execution is parallelized at two levels, controlled by a single `AgentConcurrencyLimiter` (a `SemaphoreSlim` wrapper registered as a DI singleton):
+
+1. **Within a test set** — the orchestrator runs objectives in parallel, each acquiring a slot from the limiter before dispatching to an agent.
+2. **Within a module "Run All"** — all test sets launch concurrently; the shared limiter gates how many agents execute at once across all test sets.
+
+`MaxParallelAgents` (default: 4, in `TestEnvironmentConfig`) controls the semaphore capacity. Setting it to 1 restores sequential behavior.
+
+**Thread-safety measures:**
+- `TestSetRepository` uses per-file `SemaphoreSlim` locks for read-modify-write operations (merge, update stats).
+- `ModuleRunTracker` uses `lock` on each `ModuleRunStatus` instance for mutation safety.
+- `ExecutionHistoryRepository` needs no locking — each run writes to a unique file.
+- Fail-fast 404 detection uses `Volatile.Read` / `Interlocked.Exchange` (best-effort in parallel mode).
 
 ## Execution Flow
 

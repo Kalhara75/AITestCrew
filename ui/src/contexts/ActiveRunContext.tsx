@@ -84,10 +84,11 @@ export function ActiveRunProvider({ children }: { children: React.ReactNode }) {
     if (polledModuleStatus &&
         (polledModuleStatus.completedCount !== moduleRun?.completedCount ||
          polledModuleStatus.status !== moduleRun?.status ||
-         polledModuleStatus.currentTestSetId !== moduleRun?.currentTestSetId)) {
+         JSON.stringify(polledModuleStatus.currentTestSetIds) !== JSON.stringify(moduleRun?.currentTestSetIds))) {
       setModuleRun(polledModuleStatus);
     }
-  }, [polledModuleStatus?.completedCount, polledModuleStatus?.status, polledModuleStatus?.currentTestSetId]);
+  }, [polledModuleStatus?.completedCount, polledModuleStatus?.status,
+      JSON.stringify(polledModuleStatus?.currentTestSetIds)]);
 
   useEffect(() => {
     if (moduleRun && moduleRun.status !== 'Running') {
@@ -147,6 +148,7 @@ export function ActiveRunProvider({ children }: { children: React.ReactNode }) {
         error: null,
         completedCount: 0,
         totalCount: res.totalTestSets,
+        currentTestSetIds: [],
         currentTestSetId: null,
         testSets: [],
       });

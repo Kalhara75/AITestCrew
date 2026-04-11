@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -9,6 +10,7 @@ using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
+using AiTestCrew.Core.Services;
 
 namespace AiTestCrew.Orchestrator;
 
@@ -27,6 +29,7 @@ public class TestOrchestrator
     private readonly TestSetRepository _testSetRepo;
     private readonly ExecutionHistoryRepository _historyRepo;
     private readonly ModuleRepository _moduleRepo;
+    private readonly AgentConcurrencyLimiter _concurrencyLimiter;
     private readonly ILogger<TestOrchestrator> _logger;
 
     public TestOrchestrator(
@@ -36,6 +39,7 @@ public class TestOrchestrator
         TestSetRepository testSetRepo,
         ExecutionHistoryRepository historyRepo,
         ModuleRepository moduleRepo,
+        AgentConcurrencyLimiter concurrencyLimiter,
         ILogger<TestOrchestrator> logger)
     {
         _agents = agents.ToList();
@@ -44,6 +48,7 @@ public class TestOrchestrator
         _testSetRepo = testSetRepo;
         _historyRepo = historyRepo;
         _moduleRepo = moduleRepo;
+        _concurrencyLimiter = concurrencyLimiter;
         _logger = logger;
     }
 
@@ -195,92 +200,107 @@ public class TestOrchestrator
             }
         }
 
-        // ── Execute each task (sequential) ──
+        // ── Execute tasks (parallel, throttled by MaxParallelAgents) ──
         // Each agent returns ONE TestResult per task with N steps inside.
-        var results = new List<TestResult>();
-        bool endpointUnreachable = false;
+        // The global AgentConcurrencyLimiter caps how many agents run at once.
+        var indexedResults = new ConcurrentBag<(int Index, TestResult Result)>();
+        int endpointUnreachable = 0; // 0 = false, 1 = true (for Interlocked)
 
-        foreach (var task in tasks)
+        var executionTasks = tasks.Select((task, index) => Task.Run(async () =>
         {
-            ct.ThrowIfCancellationRequested();
-
-            var agent = await FindAgentAsync(task);
-            if (agent is null)
-            {
-                _logger.LogWarning("No agent can handle task [{Id}] ({Target})",
-                    task.Id, task.Target);
-                results.Add(new TestResult
-                {
-                    ObjectiveId = task.Id,
-                    ObjectiveName = task.Description,
-                    AgentName = "None",
-                    Status = TestStatus.Skipped,
-                    Summary = $"No agent available for target type: {task.Target}"
-                });
-                continue;
-            }
-
-            // ── Fail-fast: if a previous API task found all endpoints 404, skip ──
-            if (endpointUnreachable && task.Target is TestTargetType.API_REST
-                                                    or TestTargetType.API_GraphQL)
-            {
-                _logger.LogWarning(
-                    "Skipping [{Id}] — base URL appears unreachable (all prior API calls returned 404)",
-                    task.Id);
-                results.Add(new TestResult
-                {
-                    ObjectiveId   = task.Id,
-                    ObjectiveName = task.Description,
-                    AgentName     = agent.Name,
-                    Status        = TestStatus.Skipped,
-                    Summary       = "Skipped: base URL appears unreachable — check ApiBaseUrl in appsettings.json"
-                });
-                continue;
-            }
-
-            _logger.LogInformation("Routing [{Id}] -> {Agent}", task.Id, agent.Name);
-
-            using var taskCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            taskCts.CancelAfter(task.Timeout);
-
+            await _concurrencyLimiter.WaitAsync(ct);
             try
             {
-                var result = await agent.ExecuteAsync(task, taskCts.Token);
-                results.Add(result);
+                ct.ThrowIfCancellationRequested();
 
-                _logger.LogInformation("[{Id}] Result: {Status} ({Passed}/{Total} steps passed)",
-                    task.Id, result.Status, result.PassedSteps, result.Steps.Count);
-
-                // Detect consistent 404
-                if (result.Status is TestStatus.Failed or TestStatus.Error
-                    && result.PassedSteps == 0
-                    && result.Steps.Count > 0)
+                var agent = await FindAgentAsync(task);
+                if (agent is null)
                 {
-                    var notFoundCount = result.Steps.Count(s =>
-                        s.Summary.Contains("got 404", StringComparison.OrdinalIgnoreCase) ||
-                        s.Detail?.Contains("404", StringComparison.OrdinalIgnoreCase) == true);
-
-                    if (notFoundCount >= (result.Steps.Count * 0.75))
+                    _logger.LogWarning("No agent can handle task [{Id}] ({Target})",
+                        task.Id, task.Target);
+                    indexedResults.Add((index, new TestResult
                     {
-                        endpointUnreachable = true;
-                        _logger.LogWarning(
-                            "All test steps returned 404 — subsequent API tasks will be skipped. " +
-                            "Verify ApiBaseUrl ({Url}) is correct.", _config.ApiBaseUrl);
+                        ObjectiveId = task.Id,
+                        ObjectiveName = task.Description,
+                        AgentName = "None",
+                        Status = TestStatus.Skipped,
+                        Summary = $"No agent available for target type: {task.Target}"
+                    }));
+                    return;
+                }
+
+                // ── Fail-fast: if another task found all endpoints 404, skip (best-effort) ──
+                if (Volatile.Read(ref endpointUnreachable) == 1
+                    && task.Target is TestTargetType.API_REST
+                                    or TestTargetType.API_GraphQL)
+                {
+                    _logger.LogWarning(
+                        "Skipping [{Id}] — base URL appears unreachable (all prior API calls returned 404)",
+                        task.Id);
+                    indexedResults.Add((index, new TestResult
+                    {
+                        ObjectiveId   = task.Id,
+                        ObjectiveName = task.Description,
+                        AgentName     = agent.Name,
+                        Status        = TestStatus.Skipped,
+                        Summary       = "Skipped: base URL appears unreachable — check ApiBaseUrl in appsettings.json"
+                    }));
+                    return;
+                }
+
+                _logger.LogInformation("Routing [{Id}] -> {Agent}", task.Id, agent.Name);
+
+                using var taskCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                taskCts.CancelAfter(task.Timeout);
+
+                try
+                {
+                    var result = await agent.ExecuteAsync(task, taskCts.Token);
+                    indexedResults.Add((index, result));
+
+                    _logger.LogInformation("[{Id}] Result: {Status} ({Passed}/{Total} steps passed)",
+                        task.Id, result.Status, result.PassedSteps, result.Steps.Count);
+
+                    // Detect consistent 404
+                    if (result.Status is TestStatus.Failed or TestStatus.Error
+                        && result.PassedSteps == 0
+                        && result.Steps.Count > 0)
+                    {
+                        var notFoundCount = result.Steps.Count(s =>
+                            s.Summary.Contains("got 404", StringComparison.OrdinalIgnoreCase) ||
+                            s.Detail?.Contains("404", StringComparison.OrdinalIgnoreCase) == true);
+
+                        if (notFoundCount >= (result.Steps.Count * 0.75))
+                        {
+                            Interlocked.Exchange(ref endpointUnreachable, 1);
+                            _logger.LogWarning(
+                                "All test steps returned 404 — subsequent API tasks will be skipped. " +
+                                "Verify ApiBaseUrl ({Url}) is correct.", _config.ApiBaseUrl);
+                        }
                     }
                 }
-            }
-            catch (OperationCanceledException) when (taskCts.IsCancellationRequested)
-            {
-                results.Add(new TestResult
+                catch (OperationCanceledException) when (taskCts.IsCancellationRequested)
                 {
-                    ObjectiveId   = task.Id,
-                    ObjectiveName = task.Description,
-                    AgentName     = agent.Name,
-                    Status        = TestStatus.Error,
-                    Summary       = $"Task timed out after {task.Timeout.TotalSeconds}s"
-                });
+                    indexedResults.Add((index, new TestResult
+                    {
+                        ObjectiveId   = task.Id,
+                        ObjectiveName = task.Description,
+                        AgentName     = agent.Name,
+                        Status        = TestStatus.Error,
+                        Summary       = $"Task timed out after {task.Timeout.TotalSeconds}s"
+                    }));
+                }
             }
-        }
+            finally
+            {
+                _concurrencyLimiter.Release();
+            }
+        })).ToArray();
+
+        await Task.WhenAll(executionTasks);
+
+        // Reassemble results in original order for deterministic output
+        var results = indexedResults.OrderBy(r => r.Index).Select(r => r.Result).ToList();
 
         // ── Persist test set ──
         if (mode is RunMode.Normal or RunMode.Rebaseline)

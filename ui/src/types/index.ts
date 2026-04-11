@@ -225,6 +225,7 @@ export interface ModuleRunStatus {
   error: string | null;
   completedCount: number;
   totalCount: number;
+  currentTestSetIds: string[];
   currentTestSetId: string | null;
   testSets: TestSetRunProgress[];
 }

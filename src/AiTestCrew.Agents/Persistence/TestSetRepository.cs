@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 
 namespace AiTestCrew.Agents.Persistence;
@@ -11,6 +12,10 @@ public class TestSetRepository
 {
     private readonly string _legacyDir;
     private readonly string _modulesDir;
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _fileLocks = new();
+
+    private SemaphoreSlim GetLock(string path) =>
+        _fileLocks.GetOrAdd(Path.GetFullPath(path), _ => new SemaphoreSlim(1, 1));
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -52,8 +57,14 @@ public class TestSetRepository
     public async Task SaveAsync(PersistedTestSet testSet)
     {
         var path = LegacyFilePath(testSet.Id);
-        var json = JsonSerializer.Serialize(testSet, JsonOpts);
-        await File.WriteAllTextAsync(path, json);
+        var fileLock = GetLock(path);
+        await fileLock.WaitAsync();
+        try
+        {
+            var json = JsonSerializer.Serialize(testSet, JsonOpts);
+            await File.WriteAllTextAsync(path, json);
+        }
+        finally { fileLock.Release(); }
     }
 
     /// <summary>Loads a test set from the legacy testsets/ directory. Returns null if not found.</summary>
@@ -114,11 +125,19 @@ public class TestSetRepository
     /// <summary>Increments RunCount and updates LastRunAt for an existing test set (legacy).</summary>
     public async Task UpdateRunStatsAsync(string id)
     {
-        var testSet = await LoadAsync(id);
-        if (testSet is null) return;
-        testSet.LastRunAt = DateTime.UtcNow;
-        testSet.RunCount++;
-        await SaveAsync(testSet);
+        var path = LegacyFilePath(id);
+        var fileLock = GetLock(path);
+        await fileLock.WaitAsync();
+        try
+        {
+            var testSet = await LoadAsync(id);
+            if (testSet is null) return;
+            testSet.LastRunAt = DateTime.UtcNow;
+            testSet.RunCount++;
+            var json = JsonSerializer.Serialize(testSet, JsonOpts);
+            await File.WriteAllTextAsync(path, json);
+        }
+        finally { fileLock.Release(); }
     }
 
     /// <summary>The absolute path for a given legacy test set ID.</summary>
@@ -137,9 +156,15 @@ public class TestSetRepository
     public async Task SaveAsync(PersistedTestSet testSet, string moduleId)
     {
         var path = ModuleFilePath(moduleId, testSet.Id);
-        System.IO.Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var json = JsonSerializer.Serialize(testSet, JsonOpts);
-        await File.WriteAllTextAsync(path, json);
+        var fileLock = GetLock(path);
+        await fileLock.WaitAsync();
+        try
+        {
+            System.IO.Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var json = JsonSerializer.Serialize(testSet, JsonOpts);
+            await File.WriteAllTextAsync(path, json);
+        }
+        finally { fileLock.Release(); }
     }
 
     /// <summary>Loads a test set from a module directory. Returns null if not found.</summary>
@@ -203,39 +228,60 @@ public class TestSetRepository
         List<TestObjective> newObjectives, string objective,
         string? objectiveName = null)
     {
-        var testSet = await LoadAsync(moduleId, testSetId)
-            ?? throw new InvalidOperationException(
-                $"Test set '{testSetId}' not found in module '{moduleId}'.");
-
-        // Add user objective if not already tracked
-        if (!testSet.Objectives.Contains(objective, StringComparer.OrdinalIgnoreCase))
-            testSet.Objectives.Add(objective);
-
-        // Store or update the short display name
-        if (!string.IsNullOrWhiteSpace(objectiveName))
-            testSet.ObjectiveNames[objective] = objectiveName;
-
-        // Append objectives, deduplicating by Id
-        var existingIds = testSet.TestObjectives.Select(o => o.Id).ToHashSet();
-        foreach (var obj in newObjectives)
+        var path = ModuleFilePath(moduleId, testSetId);
+        var fileLock = GetLock(path);
+        await fileLock.WaitAsync();
+        try
         {
-            if (!existingIds.Contains(obj.Id))
-                testSet.TestObjectives.Add(obj);
-        }
+            var testSet = await LoadAsync(moduleId, testSetId)
+                ?? throw new InvalidOperationException(
+                    $"Test set '{testSetId}' not found in module '{moduleId}'.");
 
-        testSet.LastRunAt = DateTime.UtcNow;
-        testSet.RunCount++;
-        await SaveAsync(testSet, moduleId);
+            // Add user objective if not already tracked
+            if (!testSet.Objectives.Contains(objective, StringComparer.OrdinalIgnoreCase))
+                testSet.Objectives.Add(objective);
+
+            // Store or update the short display name
+            if (!string.IsNullOrWhiteSpace(objectiveName))
+                testSet.ObjectiveNames[objective] = objectiveName;
+
+            // Append objectives, deduplicating by Id
+            var existingIds = testSet.TestObjectives.Select(o => o.Id).ToHashSet();
+            foreach (var obj in newObjectives)
+            {
+                if (!existingIds.Contains(obj.Id))
+                    testSet.TestObjectives.Add(obj);
+            }
+
+            testSet.LastRunAt = DateTime.UtcNow;
+            testSet.RunCount++;
+
+            // Write directly to avoid double-locking via SaveAsync
+            System.IO.Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var json = JsonSerializer.Serialize(testSet, JsonOpts);
+            await File.WriteAllTextAsync(path, json);
+        }
+        finally { fileLock.Release(); }
     }
 
     /// <summary>Increments RunCount and updates LastRunAt for a module-scoped test set.</summary>
     public async Task UpdateRunStatsAsync(string moduleId, string testSetId)
     {
-        var testSet = await LoadAsync(moduleId, testSetId);
-        if (testSet is null) return;
-        testSet.LastRunAt = DateTime.UtcNow;
-        testSet.RunCount++;
-        await SaveAsync(testSet, moduleId);
+        var path = ModuleFilePath(moduleId, testSetId);
+        var fileLock = GetLock(path);
+        await fileLock.WaitAsync();
+        try
+        {
+            var testSet = await LoadAsync(moduleId, testSetId);
+            if (testSet is null) return;
+            testSet.LastRunAt = DateTime.UtcNow;
+            testSet.RunCount++;
+
+            // Write directly to avoid double-locking via SaveAsync
+            var json = JsonSerializer.Serialize(testSet, JsonOpts);
+            await File.WriteAllTextAsync(path, json);
+        }
+        finally { fileLock.Release(); }
     }
 
     /// <summary>Deletes a test set file from a module directory.</summary>

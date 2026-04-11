@@ -14,6 +14,7 @@ using AiTestCrew.Agents.WebUiBase;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
+using AiTestCrew.Core.Services;
 using AiTestCrew.Orchestrator;
 using AiTestCrew.Runner;
 
@@ -521,6 +522,7 @@ builder.Services.AddSingleton(new ExecutionHistoryRepository(AppContext.BaseDire
 builder.Services.AddSingleton(new ModuleRepository(AppContext.BaseDirectory));
 
 // Orchestrator (receives IEnumerable<ITestAgent> and TestSetRepository from DI automatically)
+builder.Services.AddSingleton(new AgentConcurrencyLimiter(envConfig.MaxParallelAgents));
 builder.Services.AddSingleton<TestOrchestrator>();
 
 // ── Logging ──

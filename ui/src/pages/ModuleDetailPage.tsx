@@ -138,7 +138,7 @@ export function ModuleDetailPage() {
               key={ts.id}
               ts={ts}
               moduleId={moduleId!}
-              isRunning={isRunning && moduleRun?.currentTestSetId === ts.id}
+              isRunning={isRunning && (moduleRun?.currentTestSetIds?.includes(ts.id) ?? false)}
             />
           ))}
         </div>

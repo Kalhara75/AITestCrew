@@ -685,7 +685,7 @@ The following are scaffolded in the codebase but not yet active:
 
 | Capability | Status |
 |---|---|
-| Parallel objective execution | `MaxParallelAgents` setting exists; sequential only in Phase 1 |
+| Parallel objective execution | **Implemented** — `MaxParallelAgents` controls concurrency (default 4). Applies to both objectives within a test set and test sets within a module "Run All". |
 | Objective dependency ordering | `DependsOn` field on `TestTask` exists; not yet enforced |
 | UI testing — WinForms | Target type defined; no agent implemented |
 | Background job testing (Hangfire) | Target type defined; no agent implemented |

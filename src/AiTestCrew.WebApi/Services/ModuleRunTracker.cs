@@ -36,11 +36,14 @@ public class ModuleRunTracker
     {
         if (_runs.TryGetValue(moduleRunId, out var status))
         {
-            var ts = status.TestSets.FirstOrDefault(t => t.TestSetId == testSetId);
-            if (ts != null)
+            lock (status.SyncRoot)
             {
-                ts.Status = "Running";
-                ts.ChildRunId = childRunId;
+                var ts = status.TestSets.FirstOrDefault(t => t.TestSetId == testSetId);
+                if (ts != null)
+                {
+                    ts.Status = "Running";
+                    ts.ChildRunId = childRunId;
+                }
             }
         }
     }
@@ -49,11 +52,14 @@ public class ModuleRunTracker
     {
         if (_runs.TryGetValue(moduleRunId, out var status))
         {
-            var ts = status.TestSets.FirstOrDefault(t => t.TestSetId == testSetId);
-            if (ts != null)
+            lock (status.SyncRoot)
             {
-                ts.Status = success ? "Completed" : "Failed";
-                ts.Error = error;
+                var ts = status.TestSets.FirstOrDefault(t => t.TestSetId == testSetId);
+                if (ts != null)
+                {
+                    ts.Status = success ? "Completed" : "Failed";
+                    ts.Error = error;
+                }
             }
         }
     }
@@ -62,9 +68,12 @@ public class ModuleRunTracker
     {
         if (_runs.TryGetValue(moduleRunId, out var status))
         {
-            var hasFailures = status.TestSets.Any(t => t.Status == "Failed");
-            status.Status = hasFailures ? "CompletedWithFailures" : "Completed";
-            status.CompletedAt = DateTime.UtcNow;
+            lock (status.SyncRoot)
+            {
+                var hasFailures = status.TestSets.Any(t => t.Status == "Failed");
+                status.Status = hasFailures ? "CompletedWithFailures" : "Completed";
+                status.CompletedAt = DateTime.UtcNow;
+            }
         }
     }
 
@@ -72,9 +81,12 @@ public class ModuleRunTracker
     {
         if (_runs.TryGetValue(moduleRunId, out var status))
         {
-            status.Status = "Failed";
-            status.CompletedAt = DateTime.UtcNow;
-            status.Error = error;
+            lock (status.SyncRoot)
+            {
+                status.Status = "Failed";
+                status.CompletedAt = DateTime.UtcNow;
+                status.Error = error;
+            }
         }
     }
 
@@ -85,6 +97,8 @@ public class ModuleRunTracker
 
 public class ModuleRunStatus
 {
+    internal readonly object SyncRoot = new();
+
     public string ModuleRunId { get; set; } = "";
     public string ModuleId { get; set; } = "";
     public string ModuleName { get; set; } = "";
@@ -95,7 +109,8 @@ public class ModuleRunStatus
     public List<TestSetRunProgress> TestSets { get; set; } = new();
     public int CompletedCount => TestSets.Count(t => t.Status is "Completed" or "Failed");
     public int TotalCount => TestSets.Count;
-    public string? CurrentTestSetId => TestSets.FirstOrDefault(t => t.Status == "Running")?.TestSetId;
+    public List<string> CurrentTestSetIds => TestSets.Where(t => t.Status == "Running").Select(t => t.TestSetId).ToList();
+    public string? CurrentTestSetId => CurrentTestSetIds.FirstOrDefault();
 }
 
 public class TestSetRunProgress
