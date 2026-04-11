@@ -21,7 +21,7 @@ public static class TestSetEndpoints
                     ObjectiveCount = ts.TestObjectives.Count,
                     ts.CreatedAt,
                     ts.LastRunAt,
-                    ts.RunCount,
+                    RunCount = historyRepo.CountRuns(ts.Id),
                     LastRunStatus = AggregateStatus(objStatuses, currentIds)
                 };
             });
@@ -42,7 +42,7 @@ public static class TestSetEndpoints
                 testSet.ObjectiveNames,
                 testSet.CreatedAt,
                 testSet.LastRunAt,
-                testSet.RunCount,
+                RunCount = historyRepo.CountRuns(id),
                 LastRunStatus = AggregateStatus(objStatuses, currentIds),
                 ObjectiveStatuses = objStatuses
                     .Where(kvp => currentIds.Contains(kvp.Key))

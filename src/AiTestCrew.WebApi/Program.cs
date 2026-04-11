@@ -102,7 +102,7 @@ if (!string.IsNullOrEmpty(envConfig.LegacyWebUiStorageStatePath)
 }
 
 builder.Services.AddSingleton(new TestSetRepository(dataDir));
-builder.Services.AddSingleton(new ExecutionHistoryRepository(dataDir));
+builder.Services.AddSingleton(new ExecutionHistoryRepository(dataDir, envConfig.MaxExecutionRunsPerTestSet));
 builder.Services.AddSingleton(new ModuleRepository(dataDir));
 
 // ── Orchestrator ──

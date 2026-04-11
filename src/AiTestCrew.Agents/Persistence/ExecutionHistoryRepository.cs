@@ -9,6 +9,7 @@ namespace AiTestCrew.Agents.Persistence;
 public class ExecutionHistoryRepository
 {
     private readonly string _baseDir;
+    private readonly int _maxRunsPerTestSet;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -17,9 +18,10 @@ public class ExecutionHistoryRepository
         PropertyNameCaseInsensitive = true
     };
 
-    public ExecutionHistoryRepository(string baseDir)
+    public ExecutionHistoryRepository(string baseDir, int maxRunsPerTestSet = 0)
     {
         _baseDir = Path.Combine(baseDir, "executions");
+        _maxRunsPerTestSet = maxRunsPerTestSet;
         System.IO.Directory.CreateDirectory(_baseDir);
     }
 
@@ -31,6 +33,7 @@ public class ExecutionHistoryRepository
         var path = Path.Combine(dir, $"{run.RunId}.json");
         var json = JsonSerializer.Serialize(run, JsonOpts);
         await File.WriteAllTextAsync(path, json);
+        await PruneOldRunsAsync(run.TestSetId);
     }
 
     /// <summary>Loads a single execution run by test set ID and run ID.</summary>
@@ -100,6 +103,14 @@ public class ExecutionHistoryRepository
         return Task.CompletedTask;
     }
 
+    /// <summary>Deletes a single execution run file.</summary>
+    public Task DeleteRunAsync(string testSetId, string runId)
+    {
+        var path = Path.Combine(_baseDir, testSetId, $"{runId}.json");
+        if (File.Exists(path)) File.Delete(path);
+        return Task.CompletedTask;
+    }
+
     /// <summary>Removes all results for a specific objective from every run in the test set.
     /// Deletes runs that become empty; recomputes aggregate counts on remaining runs.</summary>
     public async Task RemoveObjectiveFromHistoryAsync(string testSetId, string objectiveId)
@@ -136,6 +147,25 @@ public class ExecutionHistoryRepository
         }
     }
 
+    /// <summary>Returns the number of execution run files for a test set (lightweight, no deserialization).</summary>
+    public int CountRuns(string testSetId)
+    {
+        var dir = Path.Combine(_baseDir, testSetId);
+        if (!System.IO.Directory.Exists(dir)) return 0;
+        return System.IO.Directory.EnumerateFiles(dir, "*.json").Count();
+    }
+
     /// <summary>Directory where execution history is stored.</summary>
     public string Directory => _baseDir;
+
+    private async Task PruneOldRunsAsync(string testSetId)
+    {
+        if (_maxRunsPerTestSet <= 0) return;
+
+        var runs = ListRuns(testSetId); // ordered by StartedAt descending
+        if (runs.Count <= _maxRunsPerTestSet) return;
+
+        foreach (var run in runs.Skip(_maxRunsPerTestSet))
+            await DeleteRunAsync(testSetId, run.RunId);
+    }
 }

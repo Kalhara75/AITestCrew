@@ -28,6 +28,7 @@ var cli = ParseArgs(args);
 if (cli.Mode == RunMode.List)
 {
     var repo = new TestSetRepository(AppContext.BaseDirectory);
+    var histRepo = new ExecutionHistoryRepository(AppContext.BaseDirectory);
     var sets = repo.ListAll();
 
     if (sets.Count == 0)
@@ -59,7 +60,7 @@ if (cli.Mode == RunMode.List)
             s.Tasks.Sum(t => t.TestCases.Count).ToString(),
             s.CreatedAt.ToString("yyyy-MM-dd HH:mm"),
             s.LastRunAt == default ? "-" : s.LastRunAt.ToString("yyyy-MM-dd HH:mm"),
-            s.RunCount.ToString()
+            histRepo.CountRuns(s.Id).ToString()
         );
     }
 
@@ -568,7 +569,7 @@ builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<BraveCloud
 
 // Test set persistence + execution history + modules
 builder.Services.AddSingleton(new TestSetRepository(AppContext.BaseDirectory));
-builder.Services.AddSingleton(new ExecutionHistoryRepository(AppContext.BaseDirectory));
+builder.Services.AddSingleton(new ExecutionHistoryRepository(AppContext.BaseDirectory, envConfig.MaxExecutionRunsPerTestSet));
 builder.Services.AddSingleton(new ModuleRepository(AppContext.BaseDirectory));
 
 // Orchestrator (receives IEnumerable<ITestAgent> and TestSetRepository from DI automatically)

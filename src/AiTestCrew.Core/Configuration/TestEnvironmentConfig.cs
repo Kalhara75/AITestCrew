@@ -42,6 +42,7 @@ public class TestEnvironmentConfig
     public int MaxParallelAgents { get; set; } = 4;
     public int DefaultTimeoutSeconds { get; set; } = 300;
     public bool VerboseLogging { get; set; } = true;
+    public int MaxExecutionRunsPerTestSet { get; set; } = 10;
 
     // --- Playwright browser settings ---
     public string PlaywrightBrowser { get; set; } = "chromium";  // chromium | firefox | webkit

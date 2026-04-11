@@ -593,7 +593,9 @@ Every test run (Normal, Reuse, Rebaseline) is persisted as a JSON file in `execu
 }
 ```
 
-The orchestrator saves execution history after every run (wrapped in try/catch so failures are non-fatal). `ExecutionHistoryRepository` provides `SaveAsync`, `GetRunAsync`, `ListRuns`, `GetLatestRun`, `GetLatestObjectiveStatuses`, and `DeleteRunsForTestSetAsync` (cascade-deletes all runs for a test set).
+The orchestrator saves execution history after every run (wrapped in try/catch so failures are non-fatal). `ExecutionHistoryRepository` provides `SaveAsync`, `GetRunAsync`, `ListRuns`, `GetLatestRun`, `GetLatestObjectiveStatuses`, `CountRuns`, `DeleteRunAsync`, and `DeleteRunsForTestSetAsync` (cascade-deletes all runs for a test set).
+
+**Automatic retention** — `SaveAsync` calls `PruneOldRunsAsync` after writing the new run file. If `MaxExecutionRunsPerTestSet` (from `TestEnvironmentConfig`, default 10) is positive, runs beyond the limit are deleted oldest-first. A value of `0` disables pruning. API endpoints and the CLI use `CountRuns` (lightweight file count, no deserialization) instead of the persisted `RunCount` field to reflect the actual number of runs on disk.
 
 **Per-objective status aggregation** — `GetLatestObjectiveStatuses(testSetId)` scans all runs for a test set in descending date order and picks the most recent `PersistedObjectiveResult` for each `ObjectiveId`. This allows individual test cases to be executed independently while the test set detail endpoint returns each objective's latest status regardless of which run produced it. The test set's `LastRunStatus` is computed as the worst-case aggregate: Error > Failed > Skipped > Passed.
 

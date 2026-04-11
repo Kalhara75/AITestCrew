@@ -226,6 +226,7 @@ All settings are in `src/AiTestCrew.Runner/appsettings.json` under the `TestEnvi
 | `AuthPassword` | Password for auto-login (used when `AuthToken` is empty) | `null` |
 | `DefaultTimeoutSeconds` | Per-objective execution timeout | `300` |
 | `VerboseLogging` | Show agent-level log lines in console | `true` |
+| `MaxExecutionRunsPerTestSet` | Max execution runs to keep per test set (`0` = unlimited) | `10` |
 
 ### Authentication
 
@@ -489,6 +490,18 @@ Every test run (regardless of mode) is automatically persisted to `executions/{t
 - Inspecting detailed step-by-step results from past executions
 
 History is saved in a try/catch wrapper — if persistence fails, the CLI output and test execution are unaffected.
+
+### Automatic Retention (Pruning)
+
+To prevent execution history from growing indefinitely, the system automatically prunes old runs after each new run is saved. Only the most recent N runs per test set are retained; older runs are deleted.
+
+| Setting | Description | Default |
+|---|---|---|
+| `MaxExecutionRunsPerTestSet` | Maximum execution runs to keep per test set. `0` = no limit (keep all). | `10` |
+
+The setting is configured in `appsettings.json` under `TestEnvironment`. Pruning happens transparently after every `SaveAsync` — the new run is always written to disk first, so even if pruning fails, no data is lost.
+
+The run count displayed on test set cards and the CLI `--list` output reflects the actual number of execution run files on disk, not a historical total.
 
 ---
 

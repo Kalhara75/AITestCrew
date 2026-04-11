@@ -126,7 +126,7 @@ public static class ModuleEndpoints
                     ObjectiveCount = ts.TestObjectives.Count,
                     ts.CreatedAt,
                     ts.LastRunAt,
-                    ts.RunCount,
+                    RunCount = historyRepo.CountRuns(ts.Id),
                     LastRunStatus = AggregateStatus(objStatuses, currentIds)
                 };
             });
@@ -533,7 +533,7 @@ public static class ModuleEndpoints
             testSet.Id, testSet.Name, testSet.ModuleId,
             testSet.Objectives, testSet.ObjectiveNames,
             Objective = testSet.Objective,
-            testSet.CreatedAt, testSet.LastRunAt, testSet.RunCount,
+            testSet.CreatedAt, testSet.LastRunAt, RunCount = historyRepo.CountRuns(testSet.Id),
             testSet.SetupStartUrl, testSet.SetupSteps,
             LastRunStatus = AggregateStatus(objStatuses, currentIds),
             ObjectiveStatuses = objStatuses
