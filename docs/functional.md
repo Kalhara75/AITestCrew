@@ -18,6 +18,30 @@ AITestCrew is an AI-powered test automation tool that uses a large language mode
 
 ---
 
+## Available Agents
+
+AITestCrew routes each test task to a specialised agent based on the task's `TestTargetType`. The orchestrator calls `CanHandleAsync` on each registered agent and dispatches to the first match.
+
+| Agent | Target Type(s) | What it does |
+|---|---|---|
+| **API Agent** (`ApiTestAgent`) | `API_REST`, `API_GraphQL` | LLM-generated REST/GraphQL test cases — endpoint discovery, HTTP execution, hybrid rule-based + LLM response validation |
+| **Brave Cloud UI Agent** (`BraveCloudUiTestAgent`) | `UI_Web_Blazor` | Playwright-based Blazor web UI testing with Azure AD SSO + TOTP/MFA authentication |
+| **Legacy Web UI Agent** (`LegacyWebUiTestAgent`) | `UI_Web_MVC` | Playwright-based legacy ASP.NET MVC web UI testing with forms authentication and StorageState caching |
+
+All agents extend `BaseTestAgent`, which provides shared LLM communication (`AskLlmAsync`, `AskLlmForJsonAsync`). The two UI agents share an additional base class (`BaseWebUiTestAgent`) for Playwright browser lifecycle, step execution, and recording infrastructure.
+
+```
+BaseTestAgent                          ← LLM helpers
+  ├── ApiTestAgent                     ← REST / GraphQL
+  └── BaseWebUiTestAgent               ← Playwright shared infra (abstract)
+        ├── BraveCloudUiTestAgent      ← Blazor (UI_Web_Blazor)
+        └── LegacyWebUiTestAgent       ← Legacy MVC (UI_Web_MVC)
+```
+
+The following target types are defined but do not yet have agent implementations: `UI_WinForms`, `Background_Hangfire`, `MessageBus`, `Database`.
+
+---
+
 ## Modules and Test Sets
 
 Tests are organised in a four-level hierarchy: **Module > Test Set > Test Objective (Test Case) > Steps**.
