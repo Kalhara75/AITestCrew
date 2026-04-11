@@ -79,11 +79,18 @@ export function EditWebUiTestCaseDialog({
     }
   };
 
+  const isLastStep = objective.webUiSteps.length <= 1;
+
   const handleDelete = async () => {
     setDeleting(true);
     setError(null);
     try {
-      await deleteObjective(moduleId, testSetId, objective.id);
+      if (isLastStep) {
+        await deleteObjective(moduleId, testSetId, objective.id);
+      } else {
+        const updatedSteps = objective.webUiSteps.filter((_, i) => i !== stepIndex);
+        await updateObjective(moduleId, testSetId, objective.id, { ...objective, webUiSteps: updatedSteps });
+      }
       onDeleted?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Delete failed');
@@ -199,14 +206,16 @@ export function EditWebUiTestCaseDialog({
           <div>
             {onDeleted && !confirmDelete && (
               <button onClick={() => setConfirmDelete(true)} style={deleteBtnStyle}>
-                Delete Test Case
+                Delete Step
               </button>
             )}
             {confirmDelete && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 13, color: '#dc2626' }}>Are you sure?</span>
+                <span style={{ fontSize: 13, color: '#dc2626' }}>
+                  {isLastStep ? 'Last step — entire test case will be deleted.' : 'Delete this step?'}
+                </span>
                 <button onClick={handleDelete} disabled={deleting} style={deleteBtnStyle}>
-                  {deleting ? 'Deleting…' : 'Yes, Delete'}
+                  {deleting ? 'Deleting...' : 'Yes, delete'}
                 </button>
                 <button onClick={() => setConfirmDelete(false)} style={cancelBtnStyle}>Cancel</button>
               </div>

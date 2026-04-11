@@ -132,7 +132,7 @@ export function TestSetDetailPage() {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexDirection: 'column' }}>
-            <TriggerRunButton testSetId={testSet.id} objective={testSet.objective} moduleId={moduleId} />
+            <TriggerRunButton testSetId={testSet.id} objective={testSet.objective} moduleId={moduleId} apiStackKey={testSet.apiStackKey} apiModule={testSet.apiModule} />
             {isModuleScoped && (
               <button onClick={() => setShowDeleteConfirm(true)} style={deleteBtnStyle}>
                 Delete Test Set
@@ -165,6 +165,8 @@ export function TestSetDetailPage() {
             objectiveStatuses={testSet.objectiveStatuses}
             testSetId={testSet.id}
             moduleId={moduleId}
+            apiStackKey={testSet.apiStackKey}
+            apiModule={testSet.apiModule}
             selectedId={selectedObjectiveId}
             onSelect={(objId) => setSelectedObjectiveId(objId === selectedObjectiveId ? null : objId)}
             onMove={isModuleScoped ? (obj) => setMoveObjective(obj) : undefined}
@@ -275,6 +277,8 @@ function ObjectiveListTable({
   objectiveStatuses,
   testSetId,
   moduleId,
+  apiStackKey,
+  apiModule,
   selectedId,
   onSelect,
   onMove,
@@ -285,6 +289,8 @@ function ObjectiveListTable({
   objectiveStatuses?: Record<string, ObjectiveStatus>;
   testSetId: string;
   moduleId?: string;
+  apiStackKey?: string | null;
+  apiModule?: string | null;
   selectedId: string | null;
   onSelect: (id: string) => void;
   onMove?: (parentObjective: string) => void;
@@ -344,6 +350,8 @@ function ObjectiveListTable({
                     testSetId={testSetId}
                     objectiveId={obj.id}
                     moduleId={moduleId}
+                    apiStackKey={apiStackKey}
+                    apiModule={apiModule}
                   />
                 </td>
                 {onMove && (

@@ -64,7 +64,9 @@ public class TestOrchestrator
         string? moduleId = null,
         string? targetTestSetId = null,
         string? objectiveName = null,
-        string? objectiveId = null)
+        string? objectiveId = null,
+        string? apiStackKey = null,
+        string? apiModule = null)
     {
         var sw = Stopwatch.StartNew();
         var startedAt = DateTime.UtcNow;
@@ -150,6 +152,12 @@ public class TestOrchestrator
                     parameters["SetupStartUrl"] = saved.SetupStartUrl;
                 }
 
+                // Inject API stack+module: CLI flags override persisted values
+                var effectiveStack = apiStackKey ?? saved.ApiStackKey;
+                var effectiveModule = apiModule ?? saved.ApiModule;
+                if (effectiveStack is not null) parameters["ApiStackKey"] = effectiveStack;
+                if (effectiveModule is not null) parameters["ApiModule"] = effectiveModule;
+
                 return new TestTask
                 {
                     Id = obj.Id,
@@ -192,6 +200,14 @@ public class TestOrchestrator
         {
             // ── Normal / Rebaseline: decompose via LLM ──
             tasks = await DecomposeObjectiveAsync(objective, ct);
+
+            // Inject API stack+module into each task so the agent targets the right stack
+            foreach (var t in tasks)
+            {
+                if (apiStackKey is not null) t.Parameters["ApiStackKey"] = apiStackKey;
+                if (apiModule is not null) t.Parameters["ApiModule"] = apiModule;
+            }
+
             _logger.LogInformation("Decomposed into {Count} tasks:", tasks.Count);
             foreach (var t in tasks)
             {
@@ -275,7 +291,7 @@ public class TestOrchestrator
                             Interlocked.Exchange(ref endpointUnreachable, 1);
                             _logger.LogWarning(
                                 "All test steps returned 404 — subsequent API tasks will be skipped. " +
-                                "Verify ApiBaseUrl ({Url}) is correct.", _config.ApiBaseUrl);
+                                "Verify ApiStacks configuration is correct.");
                         }
                     }
                 }
@@ -306,9 +322,9 @@ public class TestOrchestrator
         if (mode is RunMode.Normal or RunMode.Rebaseline)
         {
             if (isModuleScoped)
-                await SaveTestSetToModuleAsync(objective, results, moduleId!, targetTestSetId!, mode, objectiveName);
+                await SaveTestSetToModuleAsync(objective, results, moduleId!, targetTestSetId!, mode, objectiveName, apiStackKey, apiModule);
             else
-                await SaveTestSetAsync(objective, results, objectiveName);
+                await SaveTestSetAsync(objective, results, objectiveName, apiStackKey, apiModule);
         }
 
         // ── Update run statistics (Reuse mode) ──
@@ -367,7 +383,8 @@ public class TestOrchestrator
     /// <summary>Save test set to legacy flat directory.</summary>
     private async Task SaveTestSetAsync(
         string objective, List<TestResult> results,
-        string? objectiveName = null)
+        string? objectiveName = null,
+        string? apiStackKey = null, string? apiModule = null)
     {
         var testObjective = BuildObjectiveFromResults(objective, results, objectiveName);
         if (testObjective is null)
@@ -387,7 +404,9 @@ public class TestOrchestrator
             CreatedAt = DateTime.UtcNow,
             LastRunAt = DateTime.UtcNow,
             RunCount = 1,
-            TestObjectives = [testObjective]
+            TestObjectives = [testObjective],
+            ApiStackKey = apiStackKey,
+            ApiModule = apiModule
         };
 
         if (!string.IsNullOrWhiteSpace(objectiveName))
@@ -401,7 +420,8 @@ public class TestOrchestrator
     private async Task SaveTestSetToModuleAsync(
         string objective, List<TestResult> results,
         string moduleId, string testSetId, RunMode mode,
-        string? objectiveName = null)
+        string? objectiveName = null,
+        string? apiStackKey = null, string? apiModule = null)
     {
         var testObjective = BuildObjectiveFromResults(objective, results, objectiveName);
         if (testObjective is null)
@@ -438,7 +458,9 @@ public class TestOrchestrator
                 CreatedAt = existing?.CreatedAt ?? DateTime.UtcNow,
                 LastRunAt = DateTime.UtcNow,
                 RunCount = (existing?.RunCount ?? 0) + 1,
-                TestObjectives = [..objectivesFromOthers, testObjective]
+                TestObjectives = [..objectivesFromOthers, testObjective],
+                ApiStackKey = apiStackKey ?? existing?.ApiStackKey,
+                ApiModule = apiModule ?? existing?.ApiModule
             };
             await _testSetRepo.SaveAsync(testSet, moduleId);
             _logger.LogInformation("Test set rebaselined (objective: {Obj}): {Module}/{Id}",
@@ -447,7 +469,7 @@ public class TestOrchestrator
         else
         {
             // Normal: merge into existing test set
-            await _testSetRepo.MergeObjectivesAsync(moduleId, testSetId, [testObjective], objective, objectiveName);
+            await _testSetRepo.MergeObjectivesAsync(moduleId, testSetId, [testObjective], objective, objectiveName, apiStackKey, apiModule);
             _logger.LogInformation("Test objective merged into: {Module}/{Id}", moduleId, testSetId);
         }
     }

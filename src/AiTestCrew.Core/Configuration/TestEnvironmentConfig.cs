@@ -21,9 +21,12 @@ public class TestEnvironmentConfig
     // an OpenAI-compatible endpoint pointing to Anthropic's API.
     // Or use the Anthropic SK connector (community package).
 
-    // --- Target application ---
-    public string BaseUrl { get; set; } = "https://localhost:5001";
-    public string ApiBaseUrl { get; set; } = "https://localhost:5001/api";
+    // --- API stacks ---
+    // Each stack defines a base URL, security module (auth endpoint), and a set of
+    // API modules (path prefixes). Auth credentials below are shared across all stacks.
+    public Dictionary<string, ApiStackConfig> ApiStacks { get; set; } = new();
+    public string? DefaultApiStack { get; set; }
+    public string? DefaultApiModule { get; set; }
     public string? OpenApiSpecUrl { get; set; }
 
     // --- Authentication ---

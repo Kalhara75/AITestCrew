@@ -77,7 +77,9 @@ Test cases can be reviewed and modified after generation via two methods:
 
 **Direct edit** — Click any test objective in the test set detail page, then click a specific step to open an editor. All fields are editable: name, method, endpoint, headers, query params, body, expected status, and body assertions. The edit dialog accepts a `stepIndex` to target a specific step within the objective.
 
-**API endpoint:** `PUT /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId}` (with step index in the request body).
+**Delete individual steps** — Each step row in the test case table has an inline delete icon (trash). Click it, confirm with Yes/No, and only that step is removed from the objective. The "Delete Step" button in the edit dialog works the same way. If you delete the last remaining step in an objective, the entire objective is removed. This uses the existing PUT endpoint — the step is removed from the array client-side and the modified objective is saved.
+
+**API endpoint:** `PUT /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId}` (full objective body in request).
 
 **AI edit (natural language patch)** — Click the **AI Edit Test Cases** button above the test case table. Describe the change in plain English (e.g., *"remove the /api/v1 prefix from all endpoints"* or *"change expectedStatus to 200 for the happy path test"*). The system uses the LLM to generate a preview of changes, which you can review field-by-field before applying. Scope can be set to all objectives or a specific objective.
 
@@ -234,15 +236,16 @@ All settings are in `src/AiTestCrew.Runner/appsettings.json` under the `TestEnvi
 | `LlmProvider` | `"Anthropic"` or `"OpenAI"` | `"OpenAI"` |
 | `LlmApiKey` | API key for the LLM provider | *(required)* |
 | `LlmModel` | Model identifier | `"gpt-4o"` |
-| `BaseUrl` | Root URL of the target application | `"https://localhost:5001"` |
-| `ApiBaseUrl` | Base URL prepended to all API endpoint paths | `"https://localhost:5001/api"` |
-
-> **Important — writing objectives with the right path**: Endpoint paths in test cases are generated relative to `ApiBaseUrl`. If your `ApiBaseUrl` is `.../sdrapi/api/v1`, write objectives using paths that start after that prefix:
-> - Correct: `"Test GET /NMIDiscoveryManagement/NMIDiscoveries"`
-> - Incorrect: `"Test GET /api/v1/NMIDiscoveryManagement/NMIDiscoveries"` ← duplicates the version prefix
->
-> Avoid pasting full URLs into objectives — they will include the base path the LLM will also prepend.
+| `ApiStacks` | Dictionary of named API stacks (see [Multi-Stack API Configuration](#multi-stack-api-configuration)) | `{}` *(required)* |
+| `DefaultApiStack` | Default stack key when not specified per-run | `null` |
+| `DefaultApiModule` | Default module key when not specified per-run | `null` |
 | `OpenApiSpecUrl` | Optional URL to an OpenAPI/Swagger JSON spec | `null` |
+
+> **Important — writing objectives with the right path**: Endpoint paths in test cases are generated relative to the resolved stack+module base URL. If the module's `PathPrefix` is `sdrapi/api/v1`, write objectives using paths that start after that prefix:
+> - Correct: `"Test GET /NMIDiscoveryManagement/NMIDiscoveries"`
+> - Incorrect: `"Test GET /sdrapi/api/v1/NMIDiscoveryManagement/NMIDiscoveries"` — duplicates the prefix
+>
+> Avoid pasting full URLs into objectives.
 | `AuthToken` | Static token injected into every request (skip auto-login) | `null` |
 | `AuthScheme` | `"Bearer"`, `"Basic"`, or `"None"` | `"Bearer"` |
 | `AuthHeaderName` | Header name for auth | `"Authorization"` |
@@ -252,11 +255,53 @@ All settings are in `src/AiTestCrew.Runner/appsettings.json` under the `TestEnvi
 | `VerboseLogging` | Show agent-level log lines in console | `true` |
 | `MaxExecutionRunsPerTestSet` | Max execution runs to keep per test set (`0` = unlimited) | `10` |
 
+### Multi-Stack API Configuration
+
+The `ApiStacks` section defines one or more named API stacks. Each stack has a base URL, a security module (for auth), and a dictionary of API modules with path prefixes.
+
+```json
+"ApiStacks": {
+  "bravecloud": {
+    "BaseUrl": "https://sumo-dev.braveenergy.com.au",
+    "SecurityModule": "security",
+    "LoginPath": "/AccessManagement/Login",
+    "Modules": {
+      "sdr":      { "Name": "SDR (BraveCloud)",  "PathPrefix": "sdrbc/api/v1" },
+      "security": { "Name": "Security (BraveCloud)", "PathPrefix": "sec/api/v1" },
+      "mds":      { "Name": "MDS (BraveCloud)",  "PathPrefix": "mdsbc/api/v1" }
+    }
+  },
+  "legacy": {
+    "BaseUrl": "https://api-sumodev.braveenergy.com.au",
+    "SecurityModule": "security",
+    "LoginPath": "/AccessManagement/Login",
+    "Modules": {
+      "sdr":      { "Name": "SDR (Legacy)",      "PathPrefix": "sdrapi/api/v1" },
+      "security": { "Name": "Security (Legacy)",  "PathPrefix": "secapi/api/v1" },
+      "eb2b":     { "Name": "EB2B (Legacy)",      "PathPrefix": "eb2bapi/api/v1" }
+    }
+  }
+}
+```
+
+When running tests, specify which stack and module to target:
+- **CLI**: `--stack bravecloud --api-module sdr`
+- **Web UI**: Select from the API Stack and API Module dropdowns in the Run Objective dialog
+- **Persisted**: The `apiStackKey` and `apiModule` are saved on each test set and used automatically in reuse mode
+
+The resolved base URL is `{stack.BaseUrl}/{module.PathPrefix}` (e.g. `https://sumo-dev.braveenergy.com.au/sdrbc/api/v1`).
+
+Auth tokens are obtained per-stack from the security module's login endpoint: `{stack.BaseUrl}/{securityModule.PathPrefix}{LoginPath}`. Auth credentials (`AuthUsername`, `AuthPassword`, `AuthScheme`, `AuthHeaderName`) are shared across all stacks.
+
+Users can add new stacks and modules by editing `appsettings.json` — no code changes required.
+
+The `GET /api/config/api-stacks` endpoint exposes the configured stacks and modules to the React UI for populating dropdown selectors.
+
 ### Authentication
 
 Authentication is injected automatically from config. The LLM is instructed not to add auth headers itself, so tests focus on functional behaviour rather than auth scenarios.
 
-- **Auto-login (recommended)**: Set `AuthUsername` and `AuthPassword`, leave `AuthToken` empty. The system calls `POST {ApiBaseUrl}/AccessManagement/Login` to acquire a JWT automatically. The token is cached and refreshed only when it expires (decoded from the JWT `exp` claim with a 60-second safety margin).
+- **Auto-login (recommended)**: Set `AuthUsername` and `AuthPassword`, leave `AuthToken` empty. The system calls the stack's security module login endpoint to acquire a JWT automatically. Each stack gets its own cached token provider. Tokens are refreshed only when they expire (decoded from the JWT `exp` claim with a 60-second safety margin).
 - **Static Bearer token**: Set `AuthToken` to a JWT, `AuthScheme` to `"Bearer"`, `AuthHeaderName` to `"Authorization"`. When `AuthToken` is set, auto-login is disabled.
 - **API key header**: Set `AuthScheme` to `"None"`, `AuthHeaderName` to `"X-Api-Key"`, `AuthToken` to the key value.
 - **No auth**: Leave all auth fields empty — the LLM will generate auth failure tests (401/403) as part of the test suite.
@@ -352,7 +397,7 @@ If rule checks fail, the LLM validation is skipped to save tokens.
 
 ## Fail-Fast Behaviour
 
-If more than 75% of test steps in the first API objective return HTTP 404 with zero passing steps, all subsequent API objectives are automatically skipped. This prevents burning LLM tokens when the configured `ApiBaseUrl` is wrong.
+If more than 75% of test steps in the first API objective return HTTP 404 with zero passing steps, all subsequent API objectives are automatically skipped. This prevents burning LLM tokens when the configured API stack/module is wrong.
 
 ---
 
@@ -427,12 +472,13 @@ Shows a single run's results:
 ### Triggering Runs from the UI
 
 From a module detail page, click **Run Objective** to:
-1. Select a target test set
-2. Enter a test objective (use paths relative to `ApiBaseUrl`, e.g. `/NMIDiscoveryManagement/NMIDiscoveries`)
-3. Optionally enter a **Short Name** for the objective (e.g. `"NMI Discovery GET"`) — displayed in place of the full text throughout the UI
-4. The UI sends a POST to `/api/runs` with `moduleId`, `testSetId`, and optional `objectiveName`
-5. Shows a spinner while polling every 3 seconds
-6. Automatically navigates to the results page when the run completes
+1. Select the **API Stack** and **API Module** from dropdown selectors (populated from `GET /api/config/api-stacks`)
+2. Select a target test set
+3. Enter a test objective (use paths relative to the module's base URL, e.g. `/NMIDiscoveryManagement/NMIDiscoveries`)
+4. Optionally enter a **Short Name** for the objective (e.g. `"NMI Discovery GET"`) — displayed in place of the full text throughout the UI
+5. The UI sends a POST to `/api/runs` with `moduleId`, `testSetId`, `apiStackKey`, `apiModule`, and optional `objectiveName`
+6. Shows a spinner while polling every 3 seconds
+7. Automatically navigates to the results page when the run completes
 
 From a test set detail page:
 - **Re-run Tests** — re-executes all test cases in the set (Reuse mode). Each objective's status updates independently.

@@ -226,7 +226,8 @@ public class TestSetRepository
     public async Task MergeObjectivesAsync(
         string moduleId, string testSetId,
         List<TestObjective> newObjectives, string objective,
-        string? objectiveName = null)
+        string? objectiveName = null,
+        string? apiStackKey = null, string? apiModule = null)
     {
         var path = ModuleFilePath(moduleId, testSetId);
         var fileLock = GetLock(path);
@@ -252,6 +253,10 @@ public class TestSetRepository
                 if (!existingIds.Contains(obj.Id))
                     testSet.TestObjectives.Add(obj);
             }
+
+            // Persist API target (new value overrides existing if provided)
+            if (apiStackKey is not null) testSet.ApiStackKey = apiStackKey;
+            if (apiModule is not null) testSet.ApiModule = apiModule;
 
             testSet.LastRunAt = DateTime.UtcNow;
             testSet.RunCount++;

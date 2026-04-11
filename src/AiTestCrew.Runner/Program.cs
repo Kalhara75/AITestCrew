@@ -528,28 +528,19 @@ else // OpenAI (default)
 var kernel = kernelBuilder.Build();
 builder.Services.AddSingleton(kernel);
 
-// HttpClient factory + token provider + ApiTestAgent
+// HttpClient factory + API target resolver + ApiTestAgent
 builder.Services.AddHttpClient();
-builder.Services.AddSingleton<ITokenProvider>(sp =>
-{
-    var cfg = sp.GetRequiredService<TestEnvironmentConfig>();
-    if (!string.IsNullOrWhiteSpace(cfg.AuthUsername)
-        && !string.IsNullOrWhiteSpace(cfg.AuthPassword)
-        && string.IsNullOrWhiteSpace(cfg.AuthToken))
-    {
-        return new LoginTokenProvider(
-            sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
-            cfg,
-            sp.GetRequiredService<ILogger<LoginTokenProvider>>());
-    }
-    return new StaticTokenProvider(cfg.AuthToken);
-});
+builder.Services.AddSingleton<IApiTargetResolver>(sp => new ApiTargetResolver(
+    sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
+    sp.GetRequiredService<ILoggerFactory>()
+));
 builder.Services.AddSingleton<ApiTestAgent>(sp => new ApiTestAgent(
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<ApiTestAgent>>(),
     sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
     sp.GetRequiredService<TestEnvironmentConfig>(),
-    sp.GetRequiredService<ITokenProvider>()
+    sp.GetRequiredService<IApiTargetResolver>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<ApiTestAgent>());
 
@@ -647,7 +638,8 @@ await AnsiConsole.Status()
 
         suiteResult = await orchestrator.RunAsync(objective, cli.Mode, cli.ReuseId,
             moduleId: cli.ModuleId, targetTestSetId: cli.TestSetId,
-            objectiveName: cli.ObjectiveName);
+            objectiveName: cli.ObjectiveName,
+            apiStackKey: cli.ApiStackKey, apiModule: cli.ApiModule);
     });
 
 // ── Results table ──
@@ -716,6 +708,7 @@ static CliArgs ParseArgs(string[] args)
     string? moduleId = null, testSetId = null, reuseId = null;
     string? createModuleName = null, createTestSetModuleId = null, createTestSetName = null;
     string? objectiveName = null, caseName = null, recordTarget = null;
+    string? apiStackKey = null, apiModuleKey = null;
     bool listModules = false, recordMode = false, recordSetupMode = false, authSetupMode = false;
     var mode = RunMode.Normal;
 
@@ -783,6 +776,16 @@ static CliArgs ParseArgs(string[] args)
                 break;
             case "--target":
                 throw new ArgumentException("--target requires UI_Web_MVC or UI_Web_Blazor.");
+            case "--stack" when i + 1 < args.Length:
+                apiStackKey = args[++i];
+                break;
+            case "--stack":
+                throw new ArgumentException("--stack requires a <stackKey> argument (e.g. bravecloud, legacy).");
+            case "--api-module" when i + 1 < args.Length:
+                apiModuleKey = args[++i];
+                break;
+            case "--api-module":
+                throw new ArgumentException("--api-module requires a <moduleKey> argument (e.g. sdr, security).");
             default:
                 remaining.Add(args[i]);
                 break;
@@ -807,7 +810,9 @@ static CliArgs ParseArgs(string[] args)
         RecordSetupMode = recordSetupMode,
         AuthSetupMode = authSetupMode,
         CaseName = caseName,
-        RecordTarget = recordTarget
+        RecordTarget = recordTarget,
+        ApiStackKey = apiStackKey,
+        ApiModule = apiModuleKey
     };
 }
 
@@ -830,4 +835,6 @@ class CliArgs
     public bool AuthSetupMode { get; init; }
     public string? CaseName { get; init; }
     public string? RecordTarget { get; init; }
+    public string? ApiStackKey { get; init; }
+    public string? ApiModule { get; init; }
 }

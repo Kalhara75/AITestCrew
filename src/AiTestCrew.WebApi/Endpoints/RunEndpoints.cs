@@ -58,7 +58,9 @@ public static class RunEndpoints
                         moduleId: request.ModuleId,
                         targetTestSetId: request.TestSetId,
                         objectiveName: request.ObjectiveName,
-                        objectiveId: request.ObjectiveId);
+                        objectiveId: request.ObjectiveId,
+                        apiStackKey: request.ApiStackKey,
+                        apiModule: request.ApiModule);
                     var testSetId = mode == RunMode.Reuse
                         ? request.TestSetId!
                         : !string.IsNullOrWhiteSpace(request.TestSetId)
@@ -106,4 +108,4 @@ public static class RunEndpoints
     }
 }
 
-public record RunRequest(string? Objective, string? ObjectiveName, string Mode, string? TestSetId, string? ModuleId, string? ObjectiveId);
+public record RunRequest(string? Objective, string? ObjectiveName, string Mode, string? TestSetId, string? ModuleId, string? ObjectiveId, string? ApiStackKey = null, string? ApiModule = null);

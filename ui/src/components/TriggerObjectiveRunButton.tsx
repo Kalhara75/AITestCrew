@@ -6,10 +6,12 @@ interface Props {
   testSetId: string;
   objectiveId: string;
   moduleId?: string;
+  apiStackKey?: string | null;
+  apiModule?: string | null;
   disabled?: boolean;
 }
 
-export function TriggerObjectiveRunButton({ testSetId, objectiveId, moduleId, disabled }: Props) {
+export function TriggerObjectiveRunButton({ testSetId, objectiveId, moduleId, apiStackKey, apiModule, disabled }: Props) {
   const { individualRun, setIndividualRun } = useActiveRun();
   const [error, setError] = useState<string | null>(null);
 
@@ -28,6 +30,8 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, moduleId, di
         testSetId,
         moduleId,
         objectiveId,
+        apiStackKey: apiStackKey ?? undefined,
+        apiModule: apiModule ?? undefined,
       });
       setIndividualRun({ runId: res.runId, testSetId, moduleId, objectiveId });
     } catch (err) {

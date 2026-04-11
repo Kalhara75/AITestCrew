@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { updateObjective, deleteObjective } from '../api/modules';
 import { EditTestCaseDialog } from './EditTestCaseDialog';
 import type { TestObjective } from '../types';
 
@@ -22,6 +23,8 @@ export function TestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdat
     objective: TestObjective;
     stepIndex: number;
   } | null>(null);
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
+  const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
 
   const allCases = objectives
     .filter(o => o.apiSteps.length > 0)
@@ -31,9 +34,30 @@ export function TestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdat
       objectiveName: o.name,
       stepIndex: idx,
       objective: o,
+      key: `${o.id}-${idx}`,
     })));
 
   const editable = !!moduleId && !!testSetId;
+
+  const handleInlineDelete = async (tc: typeof allCases[number]) => {
+    if (!moduleId || !testSetId) return;
+    const key = tc.key;
+    setDeletingKey(key);
+    try {
+      if (tc.objective.apiSteps.length <= 1) {
+        await deleteObjective(moduleId, testSetId, tc.objective.id);
+      } else {
+        const updatedSteps = tc.objective.apiSteps.filter((_, i) => i !== tc.stepIndex);
+        await updateObjective(moduleId, testSetId, tc.objective.id, { ...tc.objective, apiSteps: updatedSteps });
+      }
+      setConfirmDeleteKey(null);
+      onTestCaseUpdated?.();
+    } catch {
+      // Error handling — just reset state
+      setDeletingKey(null);
+      setConfirmDeleteKey(null);
+    }
+  };
 
   return (
     <div style={{ overflowX: 'auto' }}>
@@ -44,12 +68,12 @@ export function TestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdat
             <th style={thStyle}>Endpoint</th>
             <th style={thStyle}>Test Name</th>
             <th style={thStyle}>Expected</th>
-            {editable && <th style={{ ...thStyle, width: 40 }}></th>}
+            {editable && <th style={{ ...thStyle, width: 70 }}></th>}
           </tr>
         </thead>
         <tbody>
-          {allCases.map((tc, i) => (
-            <tr key={`${tc.objectiveId}-${tc.stepIndex}`} style={{ borderBottom: '1px solid #f1f5f9', cursor: editable ? 'pointer' : undefined }}
+          {allCases.map((tc) => (
+            <tr key={tc.key} style={{ borderBottom: '1px solid #f1f5f9', cursor: editable ? 'pointer' : undefined }}
               onMouseEnter={e => (e.currentTarget.style.background = '#f8fafc')}
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
               onClick={editable ? () => setEditing({ objective: tc.objective, stepIndex: tc.stepIndex }) : undefined}
@@ -81,10 +105,33 @@ export function TestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdat
                 </span>
               </td>
               {editable && (
-                <td style={tdStyle}>
-                  <span style={{ fontSize: 12, color: '#94a3b8' }} title="Edit test case">
-                    &#9998;
-                  </span>
+                <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
+                  <span style={{ fontSize: 12, color: '#94a3b8', marginRight: 8 }} title="Edit">&#9998;</span>
+                  {confirmDeleteKey === tc.key ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }} onClick={e => e.stopPropagation()}>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleInlineDelete(tc); }}
+                        disabled={deletingKey === tc.key}
+                        style={inlineDeleteConfirmStyle}
+                      >
+                        {deletingKey === tc.key ? '...' : 'Yes'}
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setConfirmDeleteKey(null); }}
+                        style={inlineCancelStyle}
+                      >
+                        No
+                      </button>
+                    </span>
+                  ) : (
+                    <span
+                      onClick={(e) => { e.stopPropagation(); setConfirmDeleteKey(tc.key); }}
+                      style={{ fontSize: 13, color: '#dc2626', cursor: 'pointer', opacity: 0.6 }}
+                      title="Delete step"
+                    >
+                      &#128465;
+                    </span>
+                  )}
                 </td>
               )}
             </tr>
@@ -110,3 +157,11 @@ export function TestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdat
 
 const thStyle: React.CSSProperties = { padding: '10px 14px', color: '#64748b', fontWeight: 600, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5 };
 const tdStyle: React.CSSProperties = { padding: '10px 14px', color: '#1e293b' };
+const inlineDeleteConfirmStyle: React.CSSProperties = {
+  background: '#dc2626', color: '#fff', border: 'none', borderRadius: 3,
+  padding: '1px 6px', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+};
+const inlineCancelStyle: React.CSSProperties = {
+  background: '#f1f5f9', color: '#475569', border: 'none', borderRadius: 3,
+  padding: '1px 6px', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+};

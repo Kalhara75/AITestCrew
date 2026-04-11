@@ -42,28 +42,19 @@ else
 var kernel = kernelBuilder.Build();
 builder.Services.AddSingleton(kernel);
 
-// ── HttpClient + Token Provider + API Agent ──
+// ── HttpClient + API target resolver + API Agent ──
 builder.Services.AddHttpClient();
-builder.Services.AddSingleton<ITokenProvider>(sp =>
-{
-    var cfg = sp.GetRequiredService<TestEnvironmentConfig>();
-    if (!string.IsNullOrWhiteSpace(cfg.AuthUsername)
-        && !string.IsNullOrWhiteSpace(cfg.AuthPassword)
-        && string.IsNullOrWhiteSpace(cfg.AuthToken))
-    {
-        return new LoginTokenProvider(
-            sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
-            cfg,
-            sp.GetRequiredService<ILogger<LoginTokenProvider>>());
-    }
-    return new StaticTokenProvider(cfg.AuthToken);
-});
+builder.Services.AddSingleton<IApiTargetResolver>(sp => new ApiTargetResolver(
+    sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
+    sp.GetRequiredService<ILoggerFactory>()
+));
 builder.Services.AddSingleton<ApiTestAgent>(sp => new ApiTestAgent(
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<ApiTestAgent>>(),
     sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
     sp.GetRequiredService<TestEnvironmentConfig>(),
-    sp.GetRequiredService<ITokenProvider>()
+    sp.GetRequiredService<IApiTargetResolver>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<ApiTestAgent>());
 
@@ -160,6 +151,27 @@ app.MapGroup("/api/runs").MapRunEndpoints();
 
 // ── Health check ──
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok", timestamp = DateTime.UtcNow }));
+
+// ── API stack discovery — exposes configured stacks/modules to the UI ──
+app.MapGet("/api/config/api-stacks", (TestEnvironmentConfig cfg) =>
+{
+    var stacks = cfg.ApiStacks.ToDictionary(
+        kvp => kvp.Key,
+        kvp => new
+        {
+            baseUrl = kvp.Value.BaseUrl,
+            modules = kvp.Value.Modules.ToDictionary(
+                m => m.Key,
+                m => new { m.Value.Name, m.Value.PathPrefix })
+        });
+
+    return Results.Ok(new
+    {
+        stacks,
+        defaultStack = cfg.DefaultApiStack,
+        defaultModule = cfg.DefaultApiModule
+    });
+});
 
 app.Urls.Add("http://localhost:5050");
 app.Run();

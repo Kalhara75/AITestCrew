@@ -12,6 +12,8 @@ export interface TestSetListItem {
   id: string;
   name: string;
   moduleId: string;
+  apiStackKey?: string | null;
+  apiModule?: string | null;
   objective: string;
   objectives: string[];
   objectiveNames?: Record<string, string>;
@@ -69,6 +71,8 @@ export interface TestSetDetail {
   id: string;
   name: string;
   moduleId: string;
+  apiStackKey?: string | null;
+  apiModule?: string | null;
   objective: string;
   objectives: string[];
   objectiveNames?: Record<string, string>;
@@ -197,6 +201,24 @@ export interface TriggerRunRequest {
   testSetId?: string;
   moduleId?: string;
   objectiveId?: string;
+  apiStackKey?: string;
+  apiModule?: string;
+}
+
+export interface ApiModuleInfo {
+  name: string;
+  pathPrefix: string;
+}
+
+export interface ApiStackInfo {
+  baseUrl: string;
+  modules: Record<string, ApiModuleInfo>;
+}
+
+export interface ApiStacksResponse {
+  stacks: Record<string, ApiStackInfo>;
+  defaultStack: string | null;
+  defaultModule: string | null;
 }
 
 export interface TriggerRunResponse {

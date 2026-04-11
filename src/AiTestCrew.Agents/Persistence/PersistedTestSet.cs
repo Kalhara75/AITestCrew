@@ -21,6 +21,12 @@ public class PersistedTestSet
     /// <summary>The module this test set belongs to (empty for legacy test sets).</summary>
     public string ModuleId { get; set; } = "";
 
+    /// <summary>API stack key this test set targets (e.g. "bravecloud", "legacy"). Null = legacy flat config.</summary>
+    public string? ApiStackKey { get; set; }
+
+    /// <summary>API module key this test set targets (e.g. "sdr", "security"). Null = legacy flat config.</summary>
+    public string? ApiModule { get; set; }
+
     /// <summary>All user objectives that have contributed test objectives to this test set.</summary>
     public List<string> Objectives { get; set; } = [];
 

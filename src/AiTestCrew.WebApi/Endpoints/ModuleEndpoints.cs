@@ -373,7 +373,9 @@ public static class ModuleEndpoints
                                 "", RunMode.Reuse, ts.Id,
                                 externalRunId: childRunId,
                                 moduleId: moduleId,
-                                targetTestSetId: ts.Id);
+                                targetTestSetId: ts.Id,
+                                apiStackKey: ts.ApiStackKey,
+                                apiModule: ts.ApiModule);
                             runTracker.Complete(childRunId, ts.Id);
                             moduleRunTracker.CompleteTestSet(moduleRunId, ts.Id, true, null);
                         }

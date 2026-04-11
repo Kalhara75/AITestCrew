@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { triggerRun } from '../api/runs';
+import { fetchApiStacks } from '../api/config';
 import { useActiveRun } from '../contexts/ActiveRunContext';
-import type { TestSetListItem } from '../types';
+import type { TestSetListItem, ApiStacksResponse } from '../types';
 
 interface Props {
   open: boolean;
@@ -18,12 +19,48 @@ export function RunObjectiveDialog({ open, moduleId, testSets, onClose }: Props)
   const [objectiveName, setObjectiveName] = useState('');
   const [selectedTestSetId, setSelectedTestSetId] = useState(testSets[0]?.id ?? '');
   const [error, setError] = useState<string | null>(null);
-  // Track whether this dialog instance started the run
   const [startedRunId, setStartedRunId] = useState<string | null>(null);
+
+  // API stack/module selection
+  const [stacksConfig, setStacksConfig] = useState<ApiStacksResponse | null>(null);
+  const [selectedStack, setSelectedStack] = useState('');
+  const [selectedApiModule, setSelectedApiModule] = useState('');
+
+  // Load available stacks on mount
+  useEffect(() => {
+    if (!open) return;
+    fetchApiStacks()
+      .then(data => {
+        setStacksConfig(data);
+        const stackKeys = Object.keys(data.stacks);
+        if (stackKeys.length > 0) {
+          const defaultStack = data.defaultStack && data.stacks[data.defaultStack]
+            ? data.defaultStack : stackKeys[0];
+          setSelectedStack(defaultStack);
+          const modules = Object.keys(data.stacks[defaultStack].modules);
+          if (modules.length > 0) {
+            const defaultMod = data.defaultModule && data.stacks[defaultStack].modules[data.defaultModule]
+              ? data.defaultModule : modules[0];
+            setSelectedApiModule(defaultMod);
+          }
+        }
+      })
+      .catch(() => { /* non-fatal — stacks just won't be shown */ });
+  }, [open]);
+
+  // Update available modules when stack changes
+  useEffect(() => {
+    if (!stacksConfig || !selectedStack) return;
+    const stack = stacksConfig.stacks[selectedStack];
+    if (!stack) return;
+    const modules = Object.keys(stack.modules);
+    if (modules.length > 0 && !stack.modules[selectedApiModule]) {
+      setSelectedApiModule(modules[0]);
+    }
+  }, [selectedStack]);
 
   const isActive = !!startedRunId && individualRun?.runId === startedRunId;
 
-  // Navigate on completion for runs started by this dialog
   useEffect(() => {
     if (!isActive || !individualRunStatus) return;
     if (individualRunStatus.status === 'Completed' && individualRunStatus.testSetId) {
@@ -39,6 +76,11 @@ export function RunObjectiveDialog({ open, moduleId, testSets, onClose }: Props)
 
   if (!open) return null;
 
+  const stackKeys = stacksConfig ? Object.keys(stacksConfig.stacks) : [];
+  const availableModules = stacksConfig && selectedStack && stacksConfig.stacks[selectedStack]
+    ? Object.entries(stacksConfig.stacks[selectedStack].modules)
+    : [];
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!objective.trim() || !selectedTestSetId) return;
@@ -50,6 +92,8 @@ export function RunObjectiveDialog({ open, moduleId, testSets, onClose }: Props)
         objectiveName: objectiveName.trim() || undefined,
         moduleId,
         testSetId: selectedTestSetId,
+        apiStackKey: selectedStack || undefined,
+        apiModule: selectedApiModule || undefined,
       });
       setStartedRunId(res.runId);
       setIndividualRun({ runId: res.runId, testSetId: selectedTestSetId, moduleId });
@@ -84,6 +128,35 @@ export function RunObjectiveDialog({ open, moduleId, testSets, onClose }: Props)
           </div>
         ) : (
           <form onSubmit={handleSubmit}>
+            {stackKeys.length > 0 && (
+              <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={labelStyle}>API Stack</label>
+                  <select
+                    style={{ ...inputStyle, cursor: 'pointer' }}
+                    value={selectedStack}
+                    onChange={e => setSelectedStack(e.target.value)}
+                  >
+                    {stackKeys.map(key => (
+                      <option key={key} value={key}>{key}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={labelStyle}>API Module</label>
+                  <select
+                    style={{ ...inputStyle, cursor: 'pointer' }}
+                    value={selectedApiModule}
+                    onChange={e => setSelectedApiModule(e.target.value)}
+                  >
+                    {availableModules.map(([key, mod]) => (
+                      <option key={key} value={key}>{mod.name || key}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+
             <label style={labelStyle}>Target Test Set</label>
             <select
               style={{ ...inputStyle, cursor: 'pointer' }}
@@ -100,7 +173,7 @@ export function RunObjectiveDialog({ open, moduleId, testSets, onClose }: Props)
               style={{ ...inputStyle, minHeight: 80, resize: 'vertical' }}
               value={objective}
               onChange={e => setObjective(e.target.value)}
-              placeholder="e.g. Test the GET /api/ReferenceDataManagement/ControlledLoadDecodes endpoint"
+              placeholder="e.g. Test the GET /ReferenceDataManagement/ControlledLoadDecodes endpoint"
               autoFocus
             />
 

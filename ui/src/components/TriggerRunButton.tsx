@@ -7,9 +7,11 @@ interface Props {
   testSetId: string;
   objective: string;
   moduleId?: string;
+  apiStackKey?: string | null;
+  apiModule?: string | null;
 }
 
-export function TriggerRunButton({ testSetId, objective, moduleId }: Props) {
+export function TriggerRunButton({ testSetId, objective, moduleId, apiStackKey, apiModule }: Props) {
   const navigate = useNavigate();
   const { individualRun, individualRunStatus, setIndividualRun } = useActiveRun();
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +43,8 @@ export function TriggerRunButton({ testSetId, objective, moduleId }: Props) {
         testSetId: testSetId,
         objective: mode !== 'Reuse' ? objective : undefined,
         moduleId,
+        apiStackKey: apiStackKey ?? undefined,
+        apiModule: apiModule ?? undefined,
       });
       setIndividualRun({ runId: res.runId, testSetId, moduleId });
     } catch (err) {

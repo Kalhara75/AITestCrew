@@ -23,7 +23,10 @@ Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → C
 |---|---|
 | `src/AiTestCrew.Runner/Program.cs` | CLI arg parsing, DI wiring, console output |
 | `src/AiTestCrew.Orchestrator/TestOrchestrator.cs` | RunAsync with Normal/Reuse/Rebaseline/List modes, module-aware |
-| `src/AiTestCrew.Agents/ApiAgent/ApiTestAgent.cs` | REST API test generation and execution |
+| `src/AiTestCrew.Agents/ApiAgent/ApiTestAgent.cs` | REST API test generation and execution (multi-stack aware via `IApiTargetResolver`) |
+| `src/AiTestCrew.Agents/Auth/ApiTargetResolver.cs` | Resolves API base URLs and per-stack token providers from `ApiStacks` config |
+| `src/AiTestCrew.Core/Configuration/ApiStackConfig.cs` | Config models for API stacks and modules (`ApiStackConfig`, `ApiModuleConfig`) |
+| `src/AiTestCrew.Core/Interfaces/IApiTargetResolver.cs` | Interface for multi-stack URL and auth resolution |
 | `src/AiTestCrew.Agents/Base/BaseTestAgent.cs` | `AskLlmAsync`, `AskLlmForJsonAsync`, `SummariseResultsAsync` |
 | `src/AiTestCrew.Agents/Persistence/PersistedModule.cs` | Module model (id, name, description, timestamps) |
 | `src/AiTestCrew.Agents/Persistence/ModuleRepository.cs` | CRUD for modules in `modules/{id}/module.json` |
@@ -43,7 +46,7 @@ Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → C
 | `src/AiTestCrew.Agents/WebUiBase/PlaywrightRecorder.cs` | Recording — selector builder, MudBlazor/Kendo detection, overlay UI, post-recording validation |
 | `src/AiTestCrew.Agents/WebUiBase/BaseWebUiTestAgent.cs` | Replay — step execution, click-icon, wait-for-stable, SPA settle, overlay dismissal |
 | `src/AiTestCrew.Agents/BraveCloudUiAgent/BraveCloudUiTestAgent.cs` | Blazor agent — Azure SSO + TOTP, StorageState, 1920×1080 viewport |
-| `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` | Bound from `appsettings.json → TestEnvironment` |
+| `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` | Bound from `appsettings.json → TestEnvironment` — `ApiStacks`, auth, execution, Playwright, UI settings |
 | `src/AiTestCrew.Core/Services/AgentConcurrencyLimiter.cs` | Global semaphore for parallel execution, bounded by `MaxParallelAgents` |
 
 ## Test organisation
@@ -60,7 +63,7 @@ executions/{testSetId}/{runId}.json      ← Execution history with per-objectiv
 
 ### Key persistence models
 - `TestObjective` — one per user objective, contains `ApiSteps: List<ApiTestDefinition>` and `WebUiSteps: List<WebUiTestDefinition>`
-- `PersistedTestSet` — contains `List<TestObjective> TestObjectives` (v2 schema)
+- `PersistedTestSet` — contains `List<TestObjective> TestObjectives` (v2 schema), optional `ApiStackKey` + `ApiModule` for multi-stack targeting
 - `PersistedExecutionRun` — contains `List<PersistedObjectiveResult> ObjectiveResults`
 - `PersistedTaskEntry` — **deprecated** (v1 schema, kept only for migration deserialization)
 
@@ -69,6 +72,8 @@ executions/{testSetId}/{runId}.json      ← Execution history with per-objectiv
 ```bash
 dotnet run --project src/AiTestCrew.Runner -- "objective"                                    # Normal (legacy flat)
 dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset ctrl-loads "objective"   # Normal (module-scoped, merges)
+dotnet run --project src/AiTestCrew.Runner -- --stack bravecloud --api-module sdr --module sdr --testset nmi "objective"  # Multi-stack: target BraveCloud SDR
+dotnet run --project src/AiTestCrew.Runner -- --stack legacy --api-module sdr --module sdr --testset nmi "objective"      # Multi-stack: target Legacy SDR
 dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset ctrl-loads --obj-name "Short Name" "objective"  # With short display name
 dotnet run --project src/AiTestCrew.Runner -- --list                                         # List saved test sets
 dotnet run --project src/AiTestCrew.Runner -- --list-modules                                 # List modules
@@ -94,7 +99,9 @@ All agents extend `BaseTestAgent` and implement `ITestAgent`:
 ## Conventions
 
 - All LLM calls via `AskLlmAsync` / `AskLlmForJsonAsync` — never call `IChatCompletionService` directly from an agent
-- Auth is injected from `TestEnvironmentConfig` via `InjectAuth()`, never from LLM-generated headers
+- Auth is injected via `IApiTargetResolver` → per-stack `ITokenProvider`, never from LLM-generated headers
+- API base URLs are resolved via `IApiTargetResolver.ResolveApiBaseUrl(stackKey, moduleKey)` — never hardcode URLs in agents
+- API stacks and modules are configured in `TestEnvironmentConfig.ApiStacks` — no legacy flat `BaseUrl`/`ApiBaseUrl`
 - Use `TestStep.Pass/Fail/Err` factories, never construct `TestStep` directly
 - JSON serialisation: `PropertyNamingPolicy = CamelCase`, `PropertyNameCaseInsensitive = true`
 - New config settings go in `TestEnvironmentConfig` + `appsettings.example.json` (not `appsettings.json`)

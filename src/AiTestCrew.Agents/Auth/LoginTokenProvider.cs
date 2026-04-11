@@ -1,7 +1,6 @@
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
-using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
 
 namespace AiTestCrew.Agents.Auth;
@@ -24,13 +23,15 @@ public class LoginTokenProvider : ITokenProvider
 
     public LoginTokenProvider(
         HttpClient httpClient,
-        TestEnvironmentConfig config,
+        string loginUrl,
+        string username,
+        string password,
         ILogger<LoginTokenProvider> logger)
     {
         _http = httpClient;
-        _loginUrl = $"{config.ApiBaseUrl!.TrimEnd('/')}/AccessManagement/Login";
-        _username = config.AuthUsername!;
-        _password = config.AuthPassword!;
+        _loginUrl = loginUrl;
+        _username = username;
+        _password = password;
         _logger = logger;
     }
 

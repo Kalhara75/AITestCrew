@@ -45,11 +45,20 @@ export function EditTestCaseDialog({
     }
   };
 
+  const isLastStep = objective.apiSteps.length <= 1;
+
   const handleDelete = async () => {
     setDeleting(true);
     setError(null);
     try {
-      await deleteObjective(moduleId, testSetId, objective.id);
+      if (isLastStep) {
+        // Last step — delete the entire objective
+        await deleteObjective(moduleId, testSetId, objective.id);
+      } else {
+        // Remove just this step and save the objective
+        const updatedSteps = objective.apiSteps.filter((_, i) => i !== stepIndex);
+        await updateObjective(moduleId, testSetId, objective.id, { ...objective, apiSteps: updatedSteps });
+      }
       onDeleted?.();
       onClose();
     } catch (err) {
@@ -139,12 +148,14 @@ export function EditTestCaseDialog({
           <div>
             {onDeleted && !confirmDelete && (
               <button onClick={() => setConfirmDelete(true)} style={deleteBtnStyle} disabled={deleting}>
-                Delete
+                Delete Step
               </button>
             )}
             {onDeleted && confirmDelete && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 13, color: '#dc2626' }}>Are you sure?</span>
+                <span style={{ fontSize: 13, color: '#dc2626' }}>
+                  {isLastStep ? 'Last step — entire test case will be deleted.' : 'Delete this step?'}
+                </span>
                 <button onClick={handleDelete} disabled={deleting} style={deleteBtnStyle}>
                   {deleting ? 'Deleting...' : 'Yes, delete'}
                 </button>
