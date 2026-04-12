@@ -5,6 +5,7 @@ using AiTestCrew.Agents.Auth;
 using AiTestCrew.Agents.BraveCloudUiAgent;
 using AiTestCrew.Agents.LegacyWebUiAgent;
 using AiTestCrew.Agents.Persistence;
+using AiTestCrew.Agents.WinFormsUiAgent;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Services;
@@ -72,8 +73,15 @@ builder.Services.AddSingleton<BraveCloudUiTestAgent>(sp => new BraveCloudUiTestA
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<BraveCloudUiTestAgent>());
 
+builder.Services.AddSingleton<WinFormsUiTestAgent>(sp => new WinFormsUiTestAgent(
+    sp.GetRequiredService<Kernel>(),
+    sp.GetRequiredService<ILogger<WinFormsUiTestAgent>>(),
+    sp.GetRequiredService<TestEnvironmentConfig>()
+));
+builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<WinFormsUiTestAgent>());
+
 // ── Persistence — share the same data directory as the Runner ──
-var runnerBinDir = Path.GetFullPath(Path.Combine(runnerDir, "bin", "Debug", "net8.0"));
+var runnerBinDir = Path.GetFullPath(Path.Combine(runnerDir, "bin", "Debug", "net8.0-windows"));
 var dataDir = Directory.Exists(Path.Combine(runnerBinDir, "testsets"))
               || Directory.Exists(Path.Combine(runnerBinDir, "modules"))
     ? runnerBinDir

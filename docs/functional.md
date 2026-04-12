@@ -27,6 +27,7 @@ AITestCrew routes each test task to a specialised agent based on the task's `Tes
 | **API Agent** (`ApiTestAgent`) | `API_REST`, `API_GraphQL` | LLM-generated REST/GraphQL test cases — endpoint discovery, HTTP execution, hybrid rule-based + LLM response validation |
 | **Brave Cloud UI Agent** (`BraveCloudUiTestAgent`) | `UI_Web_Blazor` | Playwright-based Blazor web UI testing with Azure AD SSO + TOTP/MFA authentication |
 | **Legacy Web UI Agent** (`LegacyWebUiTestAgent`) | `UI_Web_MVC` | Playwright-based legacy ASP.NET MVC web UI testing with forms authentication and StorageState caching |
+| **WinForms Desktop UI Agent** (`WinFormsUiTestAgent`) | `UI_Desktop_WinForms` | FlaUI-based Windows Forms desktop application testing — LLM-driven exploration via UI Automation tree, recording via Windows hooks, deterministic replay |
 
 All agents extend `BaseTestAgent`, which provides shared LLM communication (`AskLlmAsync`, `AskLlmForJsonAsync`). The two UI agents share an additional base class (`BaseWebUiTestAgent`) for Playwright browser lifecycle, step execution, and recording infrastructure.
 
@@ -38,7 +39,7 @@ BaseTestAgent                          ← LLM helpers
         └── LegacyWebUiTestAgent       ← Legacy MVC (UI_Web_MVC)
 ```
 
-The following target types are defined but do not yet have agent implementations: `UI_WinForms`, `Background_Hangfire`, `MessageBus`, `Database`.
+The following target types are defined but do not yet have agent implementations: `Background_Hangfire`, `MessageBus`, `Database`.
 
 ---
 
@@ -788,7 +789,7 @@ The following are scaffolded in the codebase but not yet active:
 |---|---|
 | Parallel objective execution | **Implemented** — `MaxParallelAgents` controls concurrency (default 4). Applies to both objectives within a test set and test sets within a module "Run All". |
 | Objective dependency ordering | `DependsOn` field on `TestTask` exists; not yet enforced |
-| UI testing — WinForms | Target type defined; no agent implemented |
+| UI testing — WinForms | **Implemented** — `WinFormsUiTestAgent` uses FlaUI (UI Automation) for both LLM-driven generation and recorded replay. Desktop recorder captures via Windows hooks. |
 | Background job testing (Hangfire) | Target type defined; no agent implemented |
 | Message bus testing | Target type defined; no agent implemented |
 | Database validation | Target type defined; no agent implemented |

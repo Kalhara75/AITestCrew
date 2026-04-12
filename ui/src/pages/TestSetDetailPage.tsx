@@ -5,6 +5,7 @@ import { fetchTestSet, fetchRuns } from '../api/testSets';
 import { fetchModuleTestSet, fetchModuleRuns, fetchModule, deleteTestSet, deleteObjective } from '../api/modules';
 import { TestCaseTable } from '../components/TestCaseTable';
 import { WebUiTestCaseTable } from '../components/WebUiTestCaseTable';
+import { DesktopUiTestCaseTable } from '../components/DesktopUiTestCaseTable';
 import { RunHistoryTable } from '../components/RunHistoryTable';
 import { TriggerRunButton } from '../components/TriggerRunButton';
 import { StatusBadge } from '../components/StatusBadge';
@@ -220,6 +221,14 @@ export function TestSetDetailPage() {
               onTestCaseUpdated={handleTestCaseUpdated}
             />
           )}
+          {selectedObjective.desktopUiSteps?.length > 0 && (
+            <DesktopUiTestCaseTable
+              objectives={[selectedObjective]}
+              moduleId={moduleId}
+              testSetId={id}
+              onTestCaseUpdated={handleTestCaseUpdated}
+            />
+          )}
 
           {/* Run history for this objective */}
           <div style={{ marginTop: 24 }}>
@@ -336,7 +345,7 @@ function ObjectiveListTable({
                 </td>
                 <td style={tdStyle}>
                   <span style={typeBadgeStyle(obj.targetType)}>
-                    {obj.apiSteps.length > 0 ? 'API' : 'UI'}
+                    {obj.apiSteps.length > 0 ? 'API' : obj.desktopUiSteps?.length > 0 ? 'Desktop UI' : 'Web UI'}
                   </span>
                 </td>
                 <td style={tdStyle}>

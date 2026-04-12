@@ -46,7 +46,11 @@ Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → C
 | `src/AiTestCrew.Agents/WebUiBase/PlaywrightRecorder.cs` | Recording — selector builder, MudBlazor/Kendo detection, overlay UI, post-recording validation |
 | `src/AiTestCrew.Agents/WebUiBase/BaseWebUiTestAgent.cs` | Replay — step execution, click-icon, wait-for-stable, SPA settle, overlay dismissal |
 | `src/AiTestCrew.Agents/BraveCloudUiAgent/BraveCloudUiTestAgent.cs` | Blazor agent — Azure SSO + TOTP, StorageState, 1920×1080 viewport |
-| `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` | Bound from `appsettings.json → TestEnvironment` — `ApiStacks`, auth, execution, Playwright, UI settings |
+| `src/AiTestCrew.Agents/DesktopUiBase/BaseDesktopUiTestAgent.cs` | FlaUI desktop agent base — app launch, two-phase LLM generation, step execution |
+| `src/AiTestCrew.Agents/DesktopUiBase/DesktopRecorder.cs` | Desktop recording via Windows hooks + UI Automation element resolution |
+| `src/AiTestCrew.Agents/DesktopUiBase/DesktopStepExecutor.cs` | Desktop step dispatcher — click, fill, select, assert-*, menu-navigate, window actions |
+| `src/AiTestCrew.Agents/WinFormsUiAgent/WinFormsUiTestAgent.cs` | WinForms agent — `UI_Desktop_WinForms` target type |
+| `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` | Bound from `appsettings.json → TestEnvironment` — `ApiStacks`, auth, execution, Playwright, desktop UI settings |
 | `src/AiTestCrew.Core/Services/AgentConcurrencyLimiter.cs` | Global semaphore for parallel execution, bounded by `MaxParallelAgents` |
 
 ## Test organisation
@@ -85,6 +89,7 @@ dotnet run --project src/AiTestCrew.Runner -- --record-setup --module sdr --test
 dotnet run --project src/AiTestCrew.Runner -- --auth-setup                                   # Save Blazor SSO + 2FA auth state
 dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_MVC               # Save Legacy MVC forms auth state
 dotnet run --project src/AiTestCrew.Runner -- --record --module sec --testset users --case-name "Search" --target UI_Web_Blazor  # Record Blazor test
+dotnet run --project src/AiTestCrew.Runner -- --record --module desktop --testset calc --case-name "Basic Add" --target UI_Desktop_WinForms  # Record WinForms test
 ```
 
 ## Agent pattern

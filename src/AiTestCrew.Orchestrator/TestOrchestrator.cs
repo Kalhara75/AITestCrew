@@ -137,7 +137,10 @@ public class TestOrchestrator
                     ? t : TestTargetType.API_REST;
 
                 var parameters = new Dictionary<string, object>();
-                if (obj.WebUiSteps.Count > 0)
+                if (obj.DesktopUiSteps.Count > 0)
+                    parameters["PreloadedTestCases"] = obj.DesktopUiSteps
+                        .Select(s => s.ToTestCase(s.Description)).ToList();
+                else if (obj.WebUiSteps.Count > 0)
                     parameters["PreloadedTestCases"] = obj.WebUiSteps
                         .Select(s => s.ToTestCase(s.Description)).ToList();
                 else
@@ -483,6 +486,7 @@ public class TestOrchestrator
     {
         var apiSteps = new List<ApiTestDefinition>();
         var webUiSteps = new List<WebUiTestDefinition>();
+        var desktopUiSteps = new List<DesktopUiTestDefinition>();
         var agentName = "";
         var targetType = "API_REST";
 
@@ -504,10 +508,16 @@ public class TestOrchestrator
                     foreach (var tc in uiCases)
                         webUiSteps.Add(WebUiTestDefinition.FromTestCase(tc));
                 }
+                else if (v is List<DesktopUiTestCase> desktopCases)
+                {
+                    targetType = "UI_Desktop_WinForms";
+                    foreach (var tc in desktopCases)
+                        desktopUiSteps.Add(DesktopUiTestDefinition.FromTestCase(tc));
+                }
             }
         }
 
-        if (apiSteps.Count == 0 && webUiSteps.Count == 0)
+        if (apiSteps.Count == 0 && webUiSteps.Count == 0 && desktopUiSteps.Count == 0)
             return null;
 
         var displayName = !string.IsNullOrWhiteSpace(objectiveName)
@@ -524,7 +534,8 @@ public class TestOrchestrator
             AgentName = agentName,
             TargetType = targetType,
             ApiSteps = apiSteps,
-            WebUiSteps = webUiSteps
+            WebUiSteps = webUiSteps,
+            DesktopUiSteps = desktopUiSteps
         };
     }
 

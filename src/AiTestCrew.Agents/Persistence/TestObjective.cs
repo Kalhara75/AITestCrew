@@ -41,8 +41,14 @@ public class TestObjective
     /// </summary>
     public List<WebUiTestDefinition> WebUiSteps { get; set; } = [];
 
+    /// <summary>
+    /// Desktop UI test step definitions — each is a self-contained UI test case with FlaUI steps.
+    /// Populated for UI_Desktop_* targets.
+    /// </summary>
+    public List<DesktopUiTestDefinition> DesktopUiSteps { get; set; } = [];
+
     /// <summary>Total number of test steps in this objective.</summary>
-    public int StepCount => ApiSteps.Count + WebUiSteps.Count;
+    public int StepCount => ApiSteps.Count + WebUiSteps.Count + DesktopUiSteps.Count;
 
     // ── Backward compatibility for old v2 JSON with singular fields ──
 

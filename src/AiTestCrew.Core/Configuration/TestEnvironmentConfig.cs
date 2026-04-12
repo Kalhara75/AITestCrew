@@ -72,4 +72,14 @@ public class TestEnvironmentConfig
     public string BraveCloudUiPassword { get; set; } = "";  // AAD password
     public int BraveCloudUiStorageStateMaxAgeHours { get; set; } = 8;
     public string? BraveCloudUiTotpSecret { get; set; }     // Base32 TOTP secret for Azure AD MFA
+
+    // --- WinForms Desktop UI ---
+    // WinFormsAppPath: full path to the .exe to launch for desktop UI testing.
+    // WinFormsAppArgs: optional command-line arguments to pass to the app.
+    // WinFormsCloseAppBetweenTests: when true, the app is relaunched for each test case (clean state).
+    public string WinFormsAppPath { get; set; } = "";
+    public string? WinFormsAppArgs { get; set; }
+    public int WinFormsAppLaunchTimeoutSeconds { get; set; } = 30;
+    public string? WinFormsScreenshotDir { get; set; }
+    public bool WinFormsCloseAppBetweenTests { get; set; } = true;
 }

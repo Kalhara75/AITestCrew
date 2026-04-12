@@ -79,6 +79,14 @@ Agents/
     LegacyWebUiTestAgent.cs       — ASP.NET MVC web UI agent (forms auth, UI_Web_MVC)
   BraveCloudUiAgent/
     BraveCloudUiTestAgent.cs      — Blazor web UI agent (Azure SSO + storage state, UI_Web_Blazor)
+  DesktopUiBase/
+    BaseDesktopUiTestAgent.cs     — Base class for FlaUI desktop agents (app lifecycle, two-phase LLM generation, step execution)
+    DesktopAutomationTools.cs     — Semantic Kernel plugin for LLM exploration (snapshot, click, fill, list_windows)
+    DesktopElementResolver.cs     — Cascading element lookup: AutomationId → Name → ClassName+ControlType → TreePath
+    DesktopStepExecutor.cs        — Action dispatcher for desktop UI steps (click, fill, select, assert-*, menu-navigate, etc.)
+    DesktopRecorder.cs            — Records desktop test cases via Windows hooks (mouse + keyboard) + UI Automation
+  WinFormsUiAgent/
+    WinFormsUiTestAgent.cs        — Windows Forms desktop agent (FlaUI, UI_Desktop_WinForms)
   Persistence/
     PersistedModule.cs            — Module manifest model (id, name, description, timestamps)
     PersistedTestSet.cs           — JSON envelope model for saved test sets (contains List<TestObjective> TestObjectives, v2 schema)
@@ -100,9 +108,11 @@ Two Playwright-powered agents extend `BaseWebUiTestAgent`:
 
 ```
 BaseTestAgent  (LLM, AskLlmAsync/AskLlmForJsonAsync)
-    └── BaseWebUiTestAgent  (Playwright: browser lifecycle, two-phase generation, step execution)
-            ├── LegacyWebUiTestAgent   (UI_Web_MVC,    forms auth)
-            └── BraveCloudUiTestAgent  (UI_Web_Blazor, Azure SSO + storage state)
+    ├── BaseWebUiTestAgent  (Playwright: browser lifecycle, two-phase generation, step execution)
+    │       ├── LegacyWebUiTestAgent   (UI_Web_MVC,    forms auth)
+    │       └── BraveCloudUiTestAgent  (UI_Web_Blazor, Azure SSO + storage state)
+    └── BaseDesktopUiTestAgent  (FlaUI: app lifecycle, two-phase generation, step execution)
+            └── WinFormsUiTestAgent    (UI_Desktop_WinForms)
 ```
 
 **Browser lifecycle** — A new `IPlaywright` + `IBrowser` instance is created at the start of each `ExecuteAsync` call and disposed in a `finally` block. Agents are registered as singletons but hold no browser state between calls.
@@ -127,11 +137,28 @@ BaseTestAgent  (LLM, AskLlmAsync/AskLlmForJsonAsync)
 
 **Storage state & TOTP** — `BraveCloudUiTestAgent` saves browser cookies/localStorage to `BraveCloudUiStorageStatePath` after a successful SSO login. Subsequent calls within `BraveCloudUiStorageStateMaxAgeHours` pass this file to `browser.NewContextAsync()` via `StorageStatePath`, skipping the full Azure AD redirect flow. The path is resolved to absolute at DI startup (both Runner and WebApi share the same resolved path). When `BraveCloudUiTotpSecret` is configured (base32), the agent computes TOTP codes via OtpNet and enters them automatically during SSO. When empty and MFA is encountered: `PlaywrightHeadless=false` → waits 120 s for manual entry; `PlaywrightHeadless=true` → fails with remediation instructions. The CLI `--auth-setup` command provides a standalone way to perform SSO + 2FA manually and save the auth state.
 
-**Test case persistence** — `TestObjective` has two step collections:
+**Test case persistence** — `TestObjective` has three step collections:
 - `ApiSteps` (`List<ApiTestDefinition>`) — populated by API agents
-- `WebUiSteps` (`List<WebUiTestDefinition>`) — populated by UI agents and the recorder
+- `WebUiSteps` (`List<WebUiTestDefinition>`) — populated by web UI agents and the Playwright recorder
+- `DesktopUiSteps` (`List<DesktopUiTestDefinition>`) — populated by desktop UI agents and the desktop recorder
 
 `TargetType` (string, default `"API_REST"`) is also stored so the orchestrator can reconstruct tasks with the correct `TestTargetType` on reuse.
+
+#### Desktop UI Agent
+
+`WinFormsUiTestAgent` extends `BaseDesktopUiTestAgent`, which uses FlaUI (UI Automation 3) to automate Windows Forms applications.
+
+**App lifecycle** — The target application is launched via `FlaUI.Core.Application.Launch()` at the start of `ExecuteAsync` and closed in a `finally` block. Between test cases, the app is optionally relaunched for clean state (`WinFormsCloseAppBetweenTests`, default true).
+
+**Two-phase LLM generation** — Identical pattern to web UI agents:
+1. **Phase 1 — Exploration**: `DesktopAutomationTools` SK plugin provides `snapshot()` (returns the UI Automation element tree), `click()`, `fill()`, `screenshot()`, and `list_windows()`.
+2. **Phase 2 — JSON generation**: Observed element identifiers are injected as authoritative ground truth.
+
+**Element resolution** — `DesktopElementResolver` uses a cascading fallback chain: AutomationId (most stable) → Name → ClassName+ControlType → TreePath (least stable). Each lookup retries with polling until the step's `TimeoutMs` expires.
+
+**Step model** — `DesktopUiStep` uses composite selectors (AutomationId, Name, ClassName, ControlType, TreePath) instead of a single CSS selector string. Desktop-specific actions include `menu-navigate` (MenuBar traversal via MenuPath), `wait-for-window`/`switch-window`/`close-window` (window title matching), and `assert-enabled`/`assert-disabled`.
+
+**Desktop recording** — `DesktopRecorder` uses low-level Windows hooks (`WH_MOUSE_LL`, `WH_KEYBOARD_LL`) via P/Invoke to capture user interactions. Clicks are resolved to UI Automation elements via `automation.FromPoint()`. Keystrokes are coalesced into `fill` steps. The recorder excludes its own process from event capture. A console-based control panel supports adding assertions (press T/V/E to pick elements) and stopping the recording (press S).
 
 > **Note:** `PersistedTaskEntry` is **deprecated** (v1 schema only). It is retained solely for deserializing legacy test set files during migration. New code should use `TestObjective` exclusively.
 

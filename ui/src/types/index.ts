@@ -50,6 +50,25 @@ export interface WebUiTestDefinition {
   takeScreenshotOnFailure: boolean;
 }
 
+export interface DesktopUiStep {
+  action: string;
+  automationId: string | null;
+  name: string | null;
+  className: string | null;
+  controlType: string | null;
+  treePath: string | null;
+  value: string | null;
+  menuPath: string | null;
+  windowTitle: string | null;
+  timeoutMs: number;
+}
+
+export interface DesktopUiTestDefinition {
+  description: string;
+  steps: DesktopUiStep[];
+  takeScreenshotOnFailure: boolean;
+}
+
 export interface TestObjective {
   id: string;
   name: string;
@@ -58,6 +77,7 @@ export interface TestObjective {
   targetType: string;
   apiSteps: ApiTestDefinition[];
   webUiSteps: WebUiTestDefinition[];
+  desktopUiSteps: DesktopUiTestDefinition[];
   stepCount: number;
 }
 

@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build:*)",
+      "Bash(dotnet new:*)",
+      "Bash(dotnet sln:*)",
+      "Bash(npm create:*)",
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vite:*)",
+      "Bash(npm run:*)",
+      "Bash(python3:*)",
+      "Bash(find:*)",
+      "Bash(xargs grep:*)",
+      "Bash(grep -E \"\\\\.cs$|\\\\.json$\")",
+      "Bash(grep -E \"\\\\.\\(cs|json\\)$\")",
+      "Bash(curl -s http://localhost:5050/api/modules/standing-data-replication-sdr/testsets/bes4-sdr-api-tests)",
+      "Bash(grep:*)",
+      "Bash(dotnet restore:*)"
+    ]
+  }
+}

@@ -8,9 +8,12 @@ using Spectre.Console;
 using AiTestCrew.Agents.ApiAgent;
 using AiTestCrew.Agents.Auth;
 using AiTestCrew.Agents.BraveCloudUiAgent;
+using AiTestCrew.Agents.DesktopUiBase;
 using AiTestCrew.Agents.LegacyWebUiAgent;
 using AiTestCrew.Agents.Persistence;
+using AiTestCrew.Agents.Shared;
 using AiTestCrew.Agents.WebUiBase;
+using AiTestCrew.Agents.WinFormsUiAgent;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
@@ -155,6 +158,105 @@ if (cli.RecordMode)
         .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
 
     var targetType = cli.RecordTarget ?? "UI_Web_MVC";
+    var isDesktop = targetType.Equals("UI_Desktop_WinForms", StringComparison.OrdinalIgnoreCase);
+
+    using var loggerFactory = LoggerFactory.Create(b =>
+        b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss "; })
+         .AddFilter("AiTestCrew", LogLevel.Information));
+    var recLogger = loggerFactory.CreateLogger("Recorder");
+
+    // Resolve slugified IDs so the saved file matches what the WebApi/UI expects
+    var moduleId  = SlugHelper.ToSlug(cli.ModuleId);
+    var testSetId = SlugHelper.ToSlug(cli.TestSetId);
+
+    // Ensure the module directory and manifest exist (idempotent)
+    var modRepo = new ModuleRepository(AppContext.BaseDirectory);
+    if (!modRepo.Exists(moduleId))
+        await modRepo.CreateAsync(cli.ModuleId);
+
+    // Save into the test set
+    var tsRepo = new TestSetRepository(AppContext.BaseDirectory);
+    var testSet = await tsRepo.LoadAsync(moduleId, testSetId)
+                  ?? await tsRepo.CreateEmptyAsync(moduleId, cli.TestSetId);
+
+    var objectiveId = $"recorded-{SlugHelper.ToSlug(cli.CaseName)}";
+
+    if (isDesktop)
+    {
+        // ── Desktop recording path ──
+        if (string.IsNullOrWhiteSpace(recordConfig.WinFormsAppPath))
+        {
+            AnsiConsole.MarkupLine("[red]Application path not configured. Set 'WinFormsAppPath' in appsettings.json.[/]");
+            return;
+        }
+
+        AnsiConsole.MarkupLine($"[cyan]Recording[/] → {cli.ModuleId}/{cli.TestSetId}  case: [bold]{cli.CaseName}[/]");
+        AnsiConsole.MarkupLine($"[grey]Target: {targetType}  App: {recordConfig.WinFormsAppPath}[/]\n");
+
+        var desktopRecorded = await DesktopRecorder.RecordAsync(
+            recordConfig.WinFormsAppPath, recordConfig.WinFormsAppArgs,
+            cli.CaseName, recordConfig, recLogger);
+
+        if (desktopRecorded.Steps.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]No steps were captured. Test case not saved.[/]");
+            return;
+        }
+
+        var desktopStep = DesktopUiTestDefinition.FromTestCase(desktopRecorded);
+        var existingIdx = testSet.TestObjectives.FindIndex(o => o.Id == objectiveId);
+
+        if (existingIdx >= 0)
+        {
+            testSet.TestObjectives[existingIdx].DesktopUiSteps.Add(desktopStep);
+        }
+        else
+        {
+            var testObj = new AiTestCrew.Agents.Persistence.TestObjective
+            {
+                Id              = objectiveId,
+                Name            = cli.CaseName,
+                ParentObjective = cli.CaseName,
+                AgentName       = "WinForms Desktop UI Agent",
+                TargetType      = targetType,
+                DesktopUiSteps  = [desktopStep]
+            };
+            testSet.TestObjectives.Add(testObj);
+        }
+
+        if (!testSet.Objectives.Contains(cli.CaseName, StringComparer.OrdinalIgnoreCase))
+            testSet.Objectives.Add(cli.CaseName);
+
+        await tsRepo.SaveAsync(testSet, moduleId);
+
+        // Print captured steps
+        var stepTable = new Table()
+            .Border(TableBorder.Rounded)
+            .AddColumn("[bold]#[/]")
+            .AddColumn("[bold]Action[/]")
+            .AddColumn("[bold]AutomationId[/]")
+            .AddColumn("[bold]Name[/]")
+            .AddColumn("[bold]Value[/]");
+
+        for (int i = 0; i < desktopRecorded.Steps.Count; i++)
+        {
+            var s = desktopRecorded.Steps[i];
+            var displayValue = s.Value is null ? "-" : (s.Value.Length > 40 ? s.Value[..40] + "..." : s.Value);
+            stepTable.AddRow(
+                (i + 1).ToString(),
+                Markup.Escape(s.Action),
+                Markup.Escape(s.AutomationId ?? "-"),
+                Markup.Escape(s.Name ?? "-"),
+                Markup.Escape(displayValue)
+            );
+        }
+        AnsiConsole.Write(stepTable);
+        AnsiConsole.MarkupLine($"\n[green]Saved[/] {desktopRecorded.Steps.Count} steps -> {Markup.Escape(moduleId)}/{Markup.Escape(testSetId)}");
+        AnsiConsole.MarkupLine($"[grey]Replay: dotnet run -- --reuse {Markup.Escape(testSetId)}[/]");
+        return;
+    }
+
+    // ── Web recording path (existing) ──
     var baseUrl = targetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
         ? recordConfig.BraveCloudUiUrl
         : recordConfig.LegacyWebUiUrl;
@@ -170,11 +272,6 @@ if (cli.RecordMode)
     AnsiConsole.MarkupLine($"[cyan]Recording[/] → {cli.ModuleId}/{cli.TestSetId}  case: [bold]{cli.CaseName}[/]");
     AnsiConsole.MarkupLine($"[grey]Target: {targetType}  Base URL: {baseUrl}[/]\n");
 
-    using var loggerFactory = LoggerFactory.Create(b =>
-        b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss "; })
-         .AddFilter("AiTestCrew", LogLevel.Information));
-    var recLogger = loggerFactory.CreateLogger("Recorder");
-
     // For Blazor targets, pass the saved auth state so the recorder starts authenticated
     var recordStorageState = targetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
         ? recordConfig.BraveCloudUiStorageStatePath : null;
@@ -188,37 +285,19 @@ if (cli.RecordMode)
         return;
     }
 
-    // Resolve slugified IDs so the saved file matches what the WebApi/UI expects
-    var moduleId  = SlugHelper.ToSlug(cli.ModuleId);
-    var testSetId = SlugHelper.ToSlug(cli.TestSetId);
-
-    // Ensure the module directory and manifest exist (idempotent)
-    var modRepo = new ModuleRepository(AppContext.BaseDirectory);
-    if (!modRepo.Exists(moduleId))
-        await modRepo.CreateAsync(cli.ModuleId); // creates manifest with display name
-
-    // Save into the test set
-    var tsRepo = new TestSetRepository(AppContext.BaseDirectory);
-    var testSet = await tsRepo.LoadAsync(moduleId, testSetId)
-                  ?? await tsRepo.CreateEmptyAsync(moduleId, cli.TestSetId);
-
-    // Add recorded test case as a new test objective
-    var objectiveId = $"recorded-{SlugHelper.ToSlug(cli.CaseName)}";
     var agentName = targetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
                     ? "Brave Cloud UI Agent" : "Legacy Web UI Agent";
 
     // Check if an objective with this ID already exists — update it, otherwise add
-    var existingIdx = testSet.TestObjectives.FindIndex(o => o.Id == objectiveId);
-    var uiStep = AiTestCrew.Agents.Shared.WebUiTestDefinition.FromTestCase(recorded);
+    var webExistingIdx = testSet.TestObjectives.FindIndex(o => o.Id == objectiveId);
+    var uiStep = WebUiTestDefinition.FromTestCase(recorded);
 
-    if (existingIdx >= 0)
+    if (webExistingIdx >= 0)
     {
-        // Add this recording as a new step to the existing objective
-        testSet.TestObjectives[existingIdx].WebUiSteps.Add(uiStep);
+        testSet.TestObjectives[webExistingIdx].WebUiSteps.Add(uiStep);
     }
     else
     {
-        // Create a new objective with this recording as its first step
         var testObj = new AiTestCrew.Agents.Persistence.TestObjective
         {
             Id              = objectiveId,
@@ -237,7 +316,7 @@ if (cli.RecordMode)
     await tsRepo.SaveAsync(testSet, moduleId);
 
     // Print captured steps
-    var stepTable = new Table()
+    var stepTable2 = new Table()
         .Border(TableBorder.Rounded)
         .AddColumn("[bold]#[/]")
         .AddColumn("[bold]Action[/]")
@@ -247,16 +326,16 @@ if (cli.RecordMode)
     for (int i = 0; i < recorded.Steps.Count; i++)
     {
         var s = recorded.Steps[i];
-        var displayValue = s.Value is null ? "-" : (s.Value.Length > 40 ? s.Value[..40] + "…" : s.Value);
-        stepTable.AddRow(
+        var displayValue = s.Value is null ? "-" : (s.Value.Length > 40 ? s.Value[..40] + "..." : s.Value);
+        stepTable2.AddRow(
             (i + 1).ToString(),
             Markup.Escape(s.Action),
             Markup.Escape(s.Selector ?? "-"),
             Markup.Escape(displayValue)
         );
     }
-    AnsiConsole.Write(stepTable);
-    AnsiConsole.MarkupLine($"\n[green]Saved[/] {recorded.Steps.Count} steps → {Markup.Escape(moduleId)}/{Markup.Escape(testSetId)}");
+    AnsiConsole.Write(stepTable2);
+    AnsiConsole.MarkupLine($"\n[green]Saved[/] {recorded.Steps.Count} steps -> {Markup.Escape(moduleId)}/{Markup.Escape(testSetId)}");
     AnsiConsole.MarkupLine($"[grey]Replay: dotnet run -- --reuse {Markup.Escape(testSetId)}[/]");
     return;
 }
@@ -557,6 +636,13 @@ builder.Services.AddSingleton<BraveCloudUiTestAgent>(sp => new BraveCloudUiTestA
     sp.GetRequiredService<TestEnvironmentConfig>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<BraveCloudUiTestAgent>());
+
+builder.Services.AddSingleton<WinFormsUiTestAgent>(sp => new WinFormsUiTestAgent(
+    sp.GetRequiredService<Kernel>(),
+    sp.GetRequiredService<ILogger<WinFormsUiTestAgent>>(),
+    sp.GetRequiredService<TestEnvironmentConfig>()
+));
+builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<WinFormsUiTestAgent>());
 
 // Test set persistence + execution history + modules
 builder.Services.AddSingleton(new TestSetRepository(AppContext.BaseDirectory));
