@@ -129,6 +129,7 @@ All agents extend `BaseTestAgent` and implement `ITestAgent`:
 | `/review-agent <AgentName>` | Review an agent for quality and pattern compliance |
 | `/bravo-web-reference` | Bravo Web DOM patterns, Kendo UI selectors, and recorder/replay rules |
 | `/blazor-cloud-reference` | Brave Cloud DOM patterns, MudBlazor selectors, SPA timing, and recorder/replay rules |
+| `/desktop-winui-reference` | Desktop UI Automation patterns, FlaUI selectors, Windows hooks, recording/replay architecture |
 
 ## Documentation
 
