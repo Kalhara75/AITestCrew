@@ -142,7 +142,7 @@ public static class DesktopStepExecutor
         }
         catch { windowCountBefore = -1; }
 
-        element.Click();
+        ClickElement(element, logger);
         Wait.UntilInputIsProcessed(TimeSpan.FromMilliseconds(200));
 
         // If the click changed the window count (dialog closed / new window opened),
@@ -176,6 +176,47 @@ public static class DesktopStepExecutor
         var element = ResolveElement(window, step, automation, logger);
         element.RightClick();
         Wait.UntilInputIsProcessed(TimeSpan.FromMilliseconds(200));
+    }
+
+    /// <summary>
+    /// Click an element using multiple strategies — handles ToolStrip buttons, ribbon items,
+    /// and other WinForms controls that don't respond to a simple coordinate Click.
+    /// </summary>
+    private static void ClickElement(AutomationElement element, ILogger logger)
+    {
+        // 1. InvokePattern — most reliable for buttons, toolbar items, menu items.
+        //    Triggers the control's default action without needing coordinates.
+        try
+        {
+            if (element.Patterns.Invoke.IsSupported)
+            {
+                element.Patterns.Invoke.Pattern.Invoke();
+                logger.LogDebug("Clicked via InvokePattern");
+                return;
+            }
+        }
+        catch { /* fall through */ }
+
+        // 2. Standard Click — works for most interactive elements
+        try
+        {
+            element.Click();
+            return;
+        }
+        catch { /* fall through */ }
+
+        // 3. Mouse.Click at the element's clickable point — last resort
+        try
+        {
+            var point = element.GetClickablePoint();
+            Mouse.Click(point);
+            logger.LogDebug("Clicked via Mouse.Click at ({X},{Y})", point.X, point.Y);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning("All click strategies failed: {Msg}", ex.Message);
+            throw;
+        }
     }
 
     // ─────────────────────────────────────────────────────
@@ -277,21 +318,77 @@ public static class DesktopStepExecutor
         Window window, DesktopUiStep step, UIA3Automation automation, ILogger logger,
         string label, Stopwatch sw)
     {
-        var element = FindElementAcrossWindows(window, step, automation, logger);
-        if (element is null)
+        var expected = step.Value ?? "";
+        var timeout = Math.Max(step.TimeoutMs, 15_000); // at least 15s for assertions
+        var actual = "";
+
+        // Poll until the expected text appears or timeout expires.
+        // Uses quick single-attempt searches (not the full-retry FindElementAcrossWindows)
+        // so we can re-read the text every 500ms as it changes (e.g. "in progress" → "completed").
+        while (sw.ElapsedMilliseconds < timeout)
+        {
+            // Quick search — try all scopes once without retrying
+            var element = QuickFindElement(window, step, automation);
+            if (element is not null)
+            {
+                actual = GetElementText(element);
+                if (actual.Contains(expected, StringComparison.OrdinalIgnoreCase))
+                    return TestStep.Pass(label,
+                        $"assert-text passed: '{actual}' contains '{expected}' ({sw.ElapsedMilliseconds}ms)");
+            }
+
+            Thread.Sleep(500);
+        }
+
+        if (string.IsNullOrEmpty(actual))
             return TestStep.Fail(label, "Element not found for assert-text",
                 $"assert-text failed: element not found ({sw.ElapsedMilliseconds}ms)");
-
-        var actual = GetElementText(element);
-        var expected = step.Value ?? "";
-
-        if (actual.Contains(expected, StringComparison.OrdinalIgnoreCase))
-            return TestStep.Pass(label,
-                $"assert-text passed: '{actual}' contains '{expected}' ({sw.ElapsedMilliseconds}ms)");
 
         return TestStep.Fail(label,
             $"Expected text containing '{expected}' but got '{actual}'",
             $"assert-text failed after {sw.ElapsedMilliseconds}ms");
+    }
+
+    /// <summary>
+    /// Single-attempt element search across all scopes — no retry/polling.
+    /// Used inside assertion polling loops where the caller handles retries.
+    /// </summary>
+    private static AutomationElement? QuickFindElement(
+        Window window, DesktopUiStep step, UIA3Automation automation)
+    {
+        // 1. Primary window
+        var element = TryFindInScope(window, step, automation);
+        if (element is not null) return element;
+
+        // 2. All other app windows
+        try
+        {
+            var allWindows = Application.Attach(window.Properties.ProcessId.Value)
+                .GetAllTopLevelWindows(automation);
+            foreach (var w in allWindows)
+            {
+                try
+                {
+                    if (w.Properties.NativeWindowHandle.ValueOrDefault ==
+                        window.Properties.NativeWindowHandle.ValueOrDefault)
+                        continue;
+                }
+                catch { continue; }
+                element = TryFindInScope(w, step, automation);
+                if (element is not null) return element;
+            }
+        }
+        catch { }
+
+        // 3. Desktop root
+        try
+        {
+            element = TryFindInScope(automation.GetDesktop(), step, automation);
+            if (element is not null) return element;
+        }
+        catch { }
+
+        return null;
     }
 
     private static TestStep ExecuteAssertVisible(
@@ -585,7 +682,19 @@ public static class DesktopStepExecutor
         {
             var condition = new FlaUI.Core.Conditions.AndCondition(
                 cf.ByClassName(step.ClassName), cf.ByControlType(ct));
-            var el = scope.FindFirstDescendant(condition);
+            var allMatches = scope.FindAllDescendants(condition);
+            // Only use ClassName+ControlType if it uniquely identifies the element.
+            // Multiple matches (e.g. several Edit fields) → fall through to TreePath.
+            if (allMatches.Length == 1)
+                return allMatches[0];
+            if (allMatches.Length > 1 && string.IsNullOrEmpty(step.TreePath))
+                return allMatches[0]; // No TreePath — best effort
+        }
+
+        // TreePath — positional path, distinguishes sibling controls of same type
+        if (!string.IsNullOrEmpty(step.TreePath))
+        {
+            var el = DesktopElementResolver.ResolveTreePath(scope, step.TreePath);
             if (el is not null) return el;
         }
 

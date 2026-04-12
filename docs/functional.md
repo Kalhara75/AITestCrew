@@ -29,14 +29,16 @@ AITestCrew routes each test task to a specialised agent based on the task's `Tes
 | **Legacy Web UI Agent** (`LegacyWebUiTestAgent`) | `UI_Web_MVC` | Playwright-based legacy ASP.NET MVC web UI testing with forms authentication and StorageState caching |
 | **WinForms Desktop UI Agent** (`WinFormsUiTestAgent`) | `UI_Desktop_WinForms` | FlaUI-based Windows Forms desktop application testing — LLM-driven exploration via UI Automation tree, recording via Windows hooks, deterministic replay |
 
-All agents extend `BaseTestAgent`, which provides shared LLM communication (`AskLlmAsync`, `AskLlmForJsonAsync`). The two UI agents share an additional base class (`BaseWebUiTestAgent`) for Playwright browser lifecycle, step execution, and recording infrastructure.
+All agents extend `BaseTestAgent`, which provides shared LLM communication (`AskLlmAsync`, `AskLlmForJsonAsync`). Web UI agents share `BaseWebUiTestAgent` (Playwright), desktop UI agents share `BaseDesktopUiTestAgent` (FlaUI).
 
 ```
 BaseTestAgent                          ← LLM helpers
   ├── ApiTestAgent                     ← REST / GraphQL
-  └── BaseWebUiTestAgent               ← Playwright shared infra (abstract)
-        ├── BraveCloudUiTestAgent      ← Blazor (UI_Web_Blazor)
-        └── LegacyWebUiTestAgent       ← Legacy MVC (UI_Web_MVC)
+  ├── BaseWebUiTestAgent               ← Playwright shared infra (abstract)
+  │     ├── BraveCloudUiTestAgent      ← Blazor (UI_Web_Blazor)
+  │     └── LegacyWebUiTestAgent       ← Legacy MVC (UI_Web_MVC)
+  └── BaseDesktopUiTestAgent           ← FlaUI shared infra (abstract)
+        └── WinFormsUiTestAgent        ← Windows Forms (UI_Desktop_WinForms)
 ```
 
 The following target types are defined but do not yet have agent implementations: `Background_Hangfire`, `MessageBus`, `Database`.
@@ -169,6 +171,27 @@ dotnet run --project src/AiTestCrew.Runner -- --record \
 - After recording, the tool validates steps and warns about weak selectors, missing assertions, and SPA timing risks.
 
 See [Web UI Testing — Recording Mode](#option-2--recording-mode-recommended-for-reliability) for full details.
+
+### Record (Desktop UI — WinForms)
+
+Record a Windows Forms desktop test case by interacting with the real application. The CLI launches the target exe and captures clicks, typing, and clipboard paste via Windows hooks.
+
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --record \
+  --module <moduleId> \
+  --testset <testSetId> \
+  --case-name "NMI Search" \
+  --target UI_Desktop_WinForms
+```
+
+- `--target UI_Desktop_WinForms` uses `WinFormsAppPath` from config.
+- The app launches with its working directory set to the exe's folder (so sibling DLLs load correctly).
+- Console keys add assertions: **T** (text), **V** (visible), **E** (enabled), **S** (save & stop).
+- Ctrl+V paste is captured with the actual clipboard content, not just the "V" keystroke.
+- Title bar clicks, taskbar clicks, and system UI elements are automatically filtered out.
+- Post-recording validation warns about TreePath-only selectors, consecutive clicks, and missing assertions.
+
+See [Desktop UI Testing](#desktop-ui-testing-winforms) for full details.
 
 ### Record Setup Steps (Web UI only)
 
@@ -778,6 +801,111 @@ Playwright requires browser binaries to be installed once. Run this after first 
 ```bash
 pwsh -Command playwright install chromium
 ```
+
+---
+
+## Desktop UI Testing (WinForms)
+
+The `WinFormsUiTestAgent` tests Windows Forms desktop applications using FlaUI (UI Automation 3). It supports both LLM-driven test generation and human-driven recording, matching the web UI testing experience.
+
+### Two ways to create desktop tests
+
+**Option 1 — LLM Generation**: Provide a natural language objective and the agent explores the application via the UI Automation tree, then generates test cases automatically.
+
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --module desktop --testset calc --target UI_Desktop_WinForms "Verify the main form loads and displays the title bar"
+```
+
+**Option 2 — Recording Mode (recommended for complex apps like Bravo)**: The recorder launches the application, captures your interactions via Windows hooks, and saves them as deterministic test steps.
+
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --record --module sdr --testset cats-search --case-name "NMI Search" --target UI_Desktop_WinForms
+```
+
+### Recording process
+
+1. The target application launches (using `WinFormsAppPath` from config, with working directory set to the exe's folder so sibling DLLs are found)
+2. You interact with the application normally — clicks, typing, and paste (Ctrl+V) are captured automatically
+3. Use **console keys** to add assertions:
+   - **T** — Assert Text: click the target element to capture its text content
+   - **V** — Assert Visible: click the target element to verify it's visible
+   - **E** — Assert Enabled: click the target element to verify it's enabled
+   - **S** — Save & Stop: end recording and save all captured steps
+4. The recorder shows a summary table of captured steps and saves them to the test set
+
+### What the recorder captures
+
+- **Mouse clicks** — Captured via `WH_MOUSE_LL` Windows hook, resolved to UI Automation elements via `automation.FromPoint()`. The recorder automatically filters out:
+  - Window chrome (title bar, scroll bars, resize grips)
+  - System UI elements (taskbar buttons, notification area, shell tray)
+- **Keyboard input** — Captured via `WH_KEYBOARD_LL` hook. Consecutive keystrokes are coalesced into `fill` steps. Special keys (Enter, Tab, Escape) are recorded as `press` steps
+- **Clipboard paste (Ctrl+V)** — Detected as a modifier key combination. The recorder reads the actual clipboard content and records it as the fill value, rather than just "V"
+- **Element selectors** — A composite selector is built for each element with cascading priority:
+  1. `AutomationId` — most stable (maps to `Control.Name` in WinForms code)
+  2. `Name` — visible text/label of the control
+  3. `ClassName` + `ControlType` — used only when unambiguous (single match). If multiple elements share the same class and type (e.g. several text boxes on a form), falls through to TreePath
+  4. `TreePath` — positional indexed path from window root (e.g. `Edit[3]`), distinguishes sibling controls of the same type
+
+### Desktop step actions
+
+| Action | What it does |
+|---|---|
+| `click` | Click an element — tries InvokePattern first (reliable for ToolStrip/ribbon buttons), then coordinate click, then Mouse.Click fallback |
+| `double-click` | Double-click an element |
+| `right-click` | Right-click an element |
+| `fill` | Type text into an input — uses ValuePattern, falls back to keyboard focus + type |
+| `select` | Pick an item from a ComboBox by text |
+| `check` / `uncheck` | Toggle a CheckBox via TogglePattern |
+| `press` | Send a keyboard key (Enter, Tab, Escape, etc.) |
+| `hover` | Move mouse to element's clickable point |
+| `assert-text` | Assert element's text contains expected value — **polls every 500ms** until text matches or timeout expires (handles async operations like search completion) |
+| `assert-visible` / `assert-hidden` | Assert element visibility (IsOffscreen property) |
+| `assert-enabled` / `assert-disabled` | Assert element enabled state |
+| `wait-for-window` | Wait for a window with matching title to appear |
+| `switch-window` | Set focus to a window matching title |
+| `close-window` | Close a window matching title |
+| `menu-navigate` | Walk a MenuBar chain (e.g. "File > Save As") |
+| `wait` | Wait for element to appear or fixed delay |
+
+### Element resolution during replay
+
+During replay, the step executor searches for elements across progressively wider scopes:
+
+1. **Primary window** — fastest path for most elements
+2. **All top-level app windows** — catches MDI child forms
+3. **Desktop root** — last resort, catches deeply nested MDI children and floating toolbars
+
+For assertions, a **quick non-retrying search** is used in a polling loop (every 500ms) so the text can be re-read as it changes (e.g. "Search is in progress" transitioning to "Search completed").
+
+When a click triggers a window transition (dialog closes, new form opens), the executor automatically detects the window count change and waits 1.5s for the app to settle.
+
+### Text extraction for assertions
+
+When recording an `assert-text` step, the recorder extracts text from the clicked element by searching:
+1. ValuePattern on the element (text boxes, editable controls)
+2. Name property (labels, buttons, tree items)
+3. Immediate child elements (handles containers like Pane/Group)
+4. All descendant Text and Edit controls (deeply nested layouts)
+
+The same thorough extraction runs during replay, so assertions work even when the text is inside a child element of the clicked container.
+
+### Configuration
+
+| Setting | Default | Description |
+|---|---|---|
+| `WinFormsAppPath` | `""` | Full path to the .exe under test |
+| `WinFormsAppArgs` | `null` | Optional command-line arguments |
+| `WinFormsAppLaunchTimeoutSeconds` | `30` | How long to wait for the main window to appear |
+| `WinFormsScreenshotDir` | `null` | Directory for failure screenshots (falls back to `PlaywrightScreenshotDir`) |
+| `WinFormsCloseAppBetweenTests` | `true` | Relaunch app for clean state between test cases |
+
+### Editing recorded steps
+
+Desktop test steps can be edited in the React web portal just like web UI steps. The edit dialog shows:
+- Action dropdown with all 19 desktop actions
+- Five cascading selector fields (AutomationId, Name, ClassName, ControlType, TreePath)
+- Context-specific fields: Value, MenuPath (for menu-navigate), WindowTitle (for window actions)
+- Add, remove, reorder steps; save and delete operations
 
 ---
 

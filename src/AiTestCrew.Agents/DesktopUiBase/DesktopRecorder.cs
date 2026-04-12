@@ -63,6 +63,12 @@ public static class DesktopRecorder
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
+    [DllImport("user32.dll")]
+    private static extern short GetKeyState(int nVirtKey);
+
+    private const int VK_CONTROL = 0x11;
+    private const int VK_SHIFT = 0x10;
+
     // Message pump — required for low-level hooks to fire
     private const int PM_REMOVE = 0x0001;
 
@@ -281,9 +287,56 @@ public static class DesktopRecorder
                         {
                             var hookStruct = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
                             var vk = hookStruct.vkCode;
+                            var ctrlHeld = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 
-                            // Check for special keys
-                            if (vk == 0x0D) // Enter
+                            // ── Ctrl+key combinations ──
+                            if (ctrlHeld)
+                            {
+                                if (vk == 0x56) // Ctrl+V — Paste
+                                {
+                                    FlushKeyBuffer();
+                                    // Read clipboard content and record as a fill step
+                                    // with the actual pasted value, not just "V"
+                                    try
+                                    {
+                                        string? clipText = null;
+                                        // Clipboard must be accessed from an STA thread
+                                        var clipThread = new Thread(() =>
+                                        {
+                                            try { clipText = System.Windows.Forms.Clipboard.GetText(); }
+                                            catch { }
+                                        });
+                                        clipThread.SetApartmentState(ApartmentState.STA);
+                                        clipThread.Start();
+                                        clipThread.Join(1000);
+
+                                        if (!string.IsNullOrEmpty(clipText) && currentFocusSelector is not null)
+                                        {
+                                            var fillStep = new DesktopUiStep
+                                            {
+                                                Action = "fill",
+                                                AutomationId = currentFocusSelector.AutomationId,
+                                                Name = currentFocusSelector.Name,
+                                                ClassName = currentFocusSelector.ClassName,
+                                                ControlType = currentFocusSelector.ControlType,
+                                                TreePath = currentFocusSelector.TreePath,
+                                                Value = clipText.Trim()
+                                            };
+                                            steps.Add(fillStep);
+                                            logger.LogDebug("[DesktopRecorder] Captured paste: {Id} = {Val}",
+                                                fillStep.AutomationId ?? fillStep.Name, clipText.Trim());
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        logger.LogDebug("[DesktopRecorder] Clipboard read failed: {Msg}", ex.Message);
+                                    }
+                                }
+                                // Ctrl+A, Ctrl+C, Ctrl+X — ignore (select/copy/cut don't produce text)
+                                // Don't add these characters to keyBuffer
+                            }
+                            // ── Special keys ──
+                            else if (vk == 0x0D) // Enter
                             {
                                 FlushKeyBuffer();
                                 steps.Add(new DesktopUiStep { Action = "press", Value = "Enter" });
@@ -309,9 +362,6 @@ public static class DesktopRecorder
                             else if (vk >= 0x20 && vk <= 0x7E)
                             {
                                 // Printable characters — add to buffer
-                                // Note: this is a simplification; proper key-to-char conversion
-                                // would need ToUnicode/MapVirtualKey. For recording we capture
-                                // the resulting element value at flush time instead.
                                 keyBuffer.Append((char)vk);
                             }
                         }

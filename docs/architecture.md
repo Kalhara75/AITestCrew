@@ -148,17 +148,35 @@ BaseTestAgent  (LLM, AskLlmAsync/AskLlmForJsonAsync)
 
 `WinFormsUiTestAgent` extends `BaseDesktopUiTestAgent`, which uses FlaUI (UI Automation 3) to automate Windows Forms applications.
 
-**App lifecycle** — The target application is launched via `FlaUI.Core.Application.Launch()` at the start of `ExecuteAsync` and closed in a `finally` block. Between test cases, the app is optionally relaunched for clean state (`WinFormsCloseAppBetweenTests`, default true).
+**App lifecycle** — The target application is launched via `Application.Launch(ProcessStartInfo)` with `WorkingDirectory` set to the exe's own directory (so sibling DLLs load correctly). The app is closed in a `finally` block. Between test cases, the app is optionally relaunched for clean state (`WinFormsCloseAppBetweenTests`, default true). After clicks that change the window count (dialog close, new form open), the executor auto-waits 1.5s for the app to settle.
 
 **Two-phase LLM generation** — Identical pattern to web UI agents:
-1. **Phase 1 — Exploration**: `DesktopAutomationTools` SK plugin provides `snapshot()` (returns the UI Automation element tree), `click()`, `fill()`, `screenshot()`, and `list_windows()`.
+1. **Phase 1 — Exploration**: `DesktopAutomationTools` SK plugin provides `snapshot()` (returns the UI Automation element tree with interactive elements), `click()`, `fill()`, `screenshot()`, and `list_windows()`.
 2. **Phase 2 — JSON generation**: Observed element identifiers are injected as authoritative ground truth.
 
-**Element resolution** — `DesktopElementResolver` uses a cascading fallback chain: AutomationId (most stable) → Name → ClassName+ControlType → TreePath (least stable). Each lookup retries with polling until the step's `TimeoutMs` expires.
+**Element resolution** — `DesktopElementResolver` uses a cascading fallback chain:
+1. `AutomationId` (most stable — pure numeric IDs like window handles are auto-skipped)
+2. `Name` property
+3. `ClassName` + `ControlType` — only used when the match is **unambiguous** (single element). If multiple elements share the same class/type (e.g. several Edit text boxes on a form), falls through to TreePath
+4. `TreePath` — positional indexed path from window root (e.g. `Pane[0]/Edit[3]`), critical for distinguishing sibling controls
+
+During replay, elements are searched across progressively wider scopes: primary window → all top-level app windows → desktop root. This handles MDI applications (like Bravo) where controls may live inside child MDI forms. Assertions use a `QuickFindElement` (single-attempt, no retry) in a polling loop so text can be re-read every 500ms as it changes.
+
+**Click execution** — Uses three strategies in order: (1) `InvokePattern` — most reliable for ToolStrip/ribbon buttons and toolbar items, (2) `element.Click()` — standard coordinate click, (3) `Mouse.Click(clickablePoint)` — raw mouse click fallback.
+
+**Assertion polling** — `assert-text` polls every 500ms until the expected text appears or timeout expires (minimum 15s). This handles async operations where displayed text transitions through intermediate states (e.g. "Search is in progress" → "Search completed"). Text is extracted by searching the element itself, its children, and all descendant Text/Edit controls.
 
 **Step model** — `DesktopUiStep` uses composite selectors (AutomationId, Name, ClassName, ControlType, TreePath) instead of a single CSS selector string. Desktop-specific actions include `menu-navigate` (MenuBar traversal via MenuPath), `wait-for-window`/`switch-window`/`close-window` (window title matching), and `assert-enabled`/`assert-disabled`.
 
-**Desktop recording** — `DesktopRecorder` uses low-level Windows hooks (`WH_MOUSE_LL`, `WH_KEYBOARD_LL`) via P/Invoke to capture user interactions. Clicks are resolved to UI Automation elements via `automation.FromPoint()`. Keystrokes are coalesced into `fill` steps. The recorder excludes its own process from event capture. A console-based control panel supports adding assertions (press T/V/E to pick elements) and stopping the recording (press S).
+**Desktop recording** — `DesktopRecorder` uses low-level Windows hooks (`WH_MOUSE_LL`, `WH_KEYBOARD_LL`) via P/Invoke with an explicit `PeekMessage`/`TranslateMessage`/`DispatchMessage` message pump (required for hook callbacks to fire). Key recording behaviours:
+- **Click capture**: `automation.FromPoint()` resolves the clicked element. Window chrome (title bar, scroll bars) and system UI elements (taskbar buttons, shell tray, UWP app IDs) are automatically filtered out.
+- **Keyboard capture**: Consecutive keystrokes are coalesced into `fill` steps. Special keys (Enter, Tab, Escape) are recorded as `press` steps.
+- **Ctrl+V paste**: Detected via `GetKeyState(VK_CONTROL)`. The actual clipboard content is read on an STA thread and recorded as the fill value (not just the "V" keystroke). Ctrl+A/C/X are silently ignored.
+- **Selector building**: `DesktopElementResolver.BuildSelector()` populates all available properties. Pure numeric AutomationIds (window handles) and default WinForms designer names (`textBox1`, `button2`) are skipped as unstable.
+- **Assertion capture**: When the user presses T/V/E in the console, the next click is converted to an assertion. Text extraction uses the stored element reference directly (not a re-search from stale `mainWindow`) and searches children/descendants for text.
+- **Post-recording validation**: Warns about TreePath-only selectors, consecutive clicks without waits, and missing assertions.
+
+**React UI** — `DesktopUiTestCaseTable` displays desktop test cases with step count and action preview. `EditDesktopUiTestCaseDialog` provides a full step editor with five cascading selector fields (AutomationId, Name, ClassName, ControlType, TreePath), action-specific context fields (Value, MenuPath, WindowTitle), and step add/remove/reorder controls.
 
 > **Note:** `PersistedTaskEntry` is **deprecated** (v1 schema only). It is retained solely for deserializing legacy test set files during migration. New code should use `TestObjective` exclusively.
 

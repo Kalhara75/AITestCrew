@@ -63,7 +63,9 @@ public static class DesktopElementResolver
             logger.LogDebug("Name '{Name}' not found, trying next selector", step.Name);
         }
 
-        // Priority 3: ClassName + ControlType
+        // Priority 3: ClassName + ControlType — but only if unambiguous.
+        // If multiple elements match (e.g. several Edit controls on the same form),
+        // fall through to TreePath which uses positional indexing to distinguish them.
         if (!string.IsNullOrEmpty(step.ClassName) && !string.IsNullOrEmpty(step.ControlType))
         {
             if (TryParseControlType(step.ControlType, out var ct))
@@ -71,15 +73,18 @@ public static class DesktopElementResolver
                 var condition = new AndCondition(
                     cf.ByClassName(step.ClassName),
                     cf.ByControlType(ct));
-                var el = window.FindFirstDescendant(condition);
-                if (el is not null) return el;
+                var allMatches = window.FindAllDescendants(condition);
+                if (allMatches.Length == 1)
+                    return allMatches[0]; // Unique match — safe to use
+                if (allMatches.Length > 1 && !string.IsNullOrEmpty(step.TreePath))
+                    logger.LogDebug("ClassName+ControlType matched {Count} elements, using TreePath",
+                        allMatches.Length);
+                else if (allMatches.Length > 1)
+                    return allMatches[0]; // No TreePath available — best effort
             }
-            logger.LogDebug("ClassName '{Class}' + ControlType '{CT}' not found, trying TreePath",
-                step.ClassName, step.ControlType);
         }
         else if (!string.IsNullOrEmpty(step.ControlType))
         {
-            // ControlType alone — useful when combined with Name fallback
             if (TryParseControlType(step.ControlType, out var ct))
             {
                 if (!string.IsNullOrEmpty(step.Name))
@@ -93,7 +98,9 @@ public static class DesktopElementResolver
             }
         }
 
-        // Priority 4: TreePath
+        // Priority 4: TreePath — positional path from window root.
+        // Critical for distinguishing between sibling controls of the same type
+        // (e.g. multiple Edit fields on a search form).
         if (!string.IsNullOrEmpty(step.TreePath))
         {
             var el = ResolveTreePath(window, step.TreePath);
@@ -108,7 +115,7 @@ public static class DesktopElementResolver
     /// Walk the automation tree from the window root using an indexed path.
     /// Format: "Pane[0]/Button[2]" — each segment is ControlType[index].
     /// </summary>
-    private static AutomationElement? ResolveTreePath(AutomationElement root, string treePath)
+    public static AutomationElement? ResolveTreePath(AutomationElement root, string treePath)
     {
         var segments = treePath.Split('/');
         AutomationElement? current = root;
