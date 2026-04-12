@@ -250,15 +250,30 @@ public class ApiTestAgent : BaseTestAgent
 
             Authentication note: {{authNote}}
 
-            Generate a mix of:
-            - Happy path tests (valid inputs, expected success)
-            - Boundary tests (empty strings, zero values, max lengths)
-            - Error tests (missing required fields, invalid types, wrong data)
+            OBJECTIVE INTERPRETATION RULES:
+            - Read the objective LITERALLY. Generate ONLY the test cases the objective
+              explicitly asks for — nothing more.
+            - If the objective specifies exact parameters, a specific endpoint, and a
+              specific validation (e.g. "call X with params Y and validate Z equals V"),
+              generate exactly ONE test case that does precisely that.
+            - If the objective uses words like "comprehensive", "thorough", "edge cases",
+              "boundary tests", "all scenarios", or "include error handling", then generate
+              multiple test cases including boundary and error variations (up to 8).
+            - If the objective is vague or open-ended (e.g. "test the login API" with no
+              specific parameters or validations), generate 3-5 reasonable test cases
+              covering the most obvious happy-path and error scenarios.
+            - NEVER add fuzzy matching, security header checks, boundary tests, or error
+              tests unless the objective explicitly requests them.
 
             RULES for expectedBodyContains:
-            - Only include field names that actually appear in the discovery response above.
-            - If no discovery sample is provided, leave expectedBodyContains as an empty array [].
-            - Never guess or invent field names.
+            - ALWAYS extract specific values the objective asks you to validate and include
+              them in expectedBodyContains. For example, if the objective says "validate NMI
+              property set to 6305824657" include "6305824657". If it says "check there is a
+              Meter Serial 444444" include "444444".
+            - If a discovery response is available above, you may also include field names
+              from it — but user-requested validations take priority.
+            - Never guess or invent values that are not mentioned in the objective or
+              the discovery response.
 
             For each test case, respond with this exact JSON structure:
             [
@@ -276,7 +291,8 @@ public class ApiTestAgent : BaseTestAgent
               }
             ]
 
-            Generate 5-8 test cases. Respond ONLY with the JSON array.
+            Generate ONLY the number of test cases needed to faithfully satisfy the objective.
+            Respond ONLY with the JSON array.
             """;
 
         return await AskLlmForJsonAsync<List<ApiTestCase>>(prompt, ct);
@@ -458,13 +474,16 @@ public class ApiTestAgent : BaseTestAgent
     private async Task<EndpointDiscovery?> DiscoverEndpointAsync(
         TestTask task, string apiBaseUrl, string? stackKey, CancellationToken ct)
     {
-        // Extract the endpoint path from the task description — look for anything starting with /
+        // Extract endpoint path + optional query string from the task description
+        // Matches paths like /Api/Foo?x=1 or Api/Foo?x=1 (with or without leading /)
         var match = System.Text.RegularExpressions.Regex.Match(
-            task.Description, @"(/[\w/\-]+)");
-        var path = match.Success ? match.Value : string.Empty;
-        if (string.IsNullOrEmpty(path)) return null;
+            task.Description, @"(/?[\w][\w/\-]*(?:\?[^\s""]+)?)");
+        var pathAndQuery = match.Success ? match.Value : string.Empty;
+        if (string.IsNullOrEmpty(pathAndQuery)) return null;
 
-        var url = $"{apiBaseUrl.TrimEnd('/')}{path}";
+        // Ensure leading slash
+        if (!pathAndQuery.StartsWith('/')) pathAndQuery = "/" + pathAndQuery;
+        var url = $"{apiBaseUrl.TrimEnd('/')}{pathAndQuery}";
 
         try
         {

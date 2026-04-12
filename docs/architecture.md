@@ -493,9 +493,12 @@ Tests are organised in a **Module > Test Set > Test Objective > Steps** hierarch
 2. Replace all non-alphanumeric characters with hyphens
 3. Collapse consecutive hyphens to one
 4. Trim leading/trailing hyphens
-5. Truncate to 80 characters at the last hyphen boundary
+5. If ≤ 80 characters, return as-is
+6. If > 80 characters, truncate to 70 characters at the last hyphen boundary and append `-{hash}` (first 8 hex chars of SHA-256 of the original input). This prevents collisions between different long strings that share a common prefix.
 
-Example: `"Standing Data Replication (SDR)"` → `"standing-data-replication-sdr"`
+Examples:
+- `"Standing Data Replication (SDR)"` → `"standing-data-replication-sdr"` (short, no hash)
+- `"Please test the following API with the given parameters and validate it return record and NMI property set to 6305824218..."` → `"please-test-the-following-api-with-the-given-parameters-and-validate-it-a1b2c3d4"` (truncated + hash)
 
 ### Migration
 
@@ -659,13 +662,13 @@ Provides shared infrastructure for all agents:
 
 ## Discovery-Driven Test Generation
 
-Before the LLM generates test cases, `ApiTestAgent.DiscoverEndpointAsync` makes a live GET request to the primary endpoint extracted from the task description (regex: first `/path` pattern). The response is used to:
+Before the LLM generates test cases, `ApiTestAgent.DiscoverEndpointAsync` makes a live GET request to the primary endpoint extracted from the task description. The regex captures the full path and query string (e.g. `NMIDiscoveryManagement/NMIDetails?ParticipantCode=SPARQ&NMI=123`), with or without a leading `/`. The response is used to:
 
 1. Provide a real response body sample (first 1,500 characters) to the LLM
 2. Extract top-level JSON field names
-3. Instruct the LLM: *"only use field names you actually see here"*
+3. Supplement user-requested validations with real field names from the response
 
-This prevents hallucinated assertions (e.g. checking for a field called `productId` when the real field is `id`), which would cause tests to fail spuriously.
+**Objective-driven assertions take priority over discovery.** When the objective mentions specific values to validate (e.g. *"validate NMI property set to 6305824657"*), those values are always included in `expectedBodyContains`, regardless of whether the discovery call succeeded. Discovery provides additional grounding to prevent hallucinated field names, but is not a prerequisite for assertions.
 
 ---
 

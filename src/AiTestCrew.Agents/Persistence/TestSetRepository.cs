@@ -246,12 +246,20 @@ public class TestSetRepository
             if (!string.IsNullOrWhiteSpace(objectiveName))
                 testSet.ObjectiveNames[objective] = objectiveName;
 
-            // Append objectives, deduplicating by Id
+            // Merge objectives: match by ParentObjective text (replaces existing),
+            // fall back to Id dedup for backward compatibility
+            var existingByText = testSet.TestObjectives
+                .Select((o, i) => (o, i))
+                .Where(x => !string.IsNullOrEmpty(x.o.ParentObjective))
+                .ToDictionary(x => x.o.ParentObjective, x => x.i, StringComparer.OrdinalIgnoreCase);
             var existingIds = testSet.TestObjectives.Select(o => o.Id).ToHashSet();
+
             foreach (var obj in newObjectives)
             {
-                if (!existingIds.Contains(obj.Id))
-                    testSet.TestObjectives.Add(obj);
+                if (existingByText.TryGetValue(obj.ParentObjective, out var idx))
+                    testSet.TestObjectives[idx] = obj; // Re-run same objective: update steps
+                else if (!existingIds.Contains(obj.Id))
+                    testSet.TestObjectives.Add(obj);   // New objective: append
             }
 
             // Persist API target (new value overrides existing if provided)

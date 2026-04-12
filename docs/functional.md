@@ -10,7 +10,7 @@ AITestCrew is an AI-powered test automation tool that uses a large language mode
 
 1. **Understands your objective** — You provide a plain English description of what to test (e.g. *"Test the /api/products endpoint"*).
 2. **Decomposes the objective** — The LLM breaks it into specific, actionable test tasks.
-3. **Generates test steps** — For each objective the LLM creates 5–8 concrete test steps (HTTP test cases): happy path, boundary, and error scenarios, using actual response field names discovered from a live pre-flight call.
+3. **Generates test steps** — The LLM interprets the objective literally and generates only the test steps it asks for. A specific objective (e.g. *"call X with params Y and validate Z"*) produces exactly one test. Vague objectives produce 3–5 steps; objectives that explicitly request comprehensive coverage produce up to 8. Assertions are grounded in values from the objective text and actual response field names discovered from a live pre-flight call.
 4. **Executes the tests** — Each test case is sent as a real HTTP request to the target API.
 5. **Validates responses** — A two-stage validation process (rule-based + LLM reasoning) checks status codes, response bodies, and data quality.
 6. **Reports results** — A summary table and an LLM-written narrative are printed to the console. Everything is also written to a timestamped log file.
@@ -107,10 +107,10 @@ dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset controlled-
 
 The `--obj-name` flag assigns a short display name to the objective. This name is shown in the UI and CLI list output instead of the full objective text. If omitted, the full text is displayed (truncated where needed). In the Web UI, the "Short Name" field in the Run Objective dialog serves the same purpose.
 
-In module-scoped mode, generated test cases are **merged** into the target test set. Running another objective against the same test set accumulates tests.
+In module-scoped mode, generated test cases are **merged** into the target test set. Running another objective against the same test set accumulates tests. Re-running the exact same objective text updates the existing entry in place (replaces its steps with the newly generated ones).
 
 Output:
-- Executes 5–8 LLM-generated test steps per objective.
+- Executes LLM-generated test steps per objective (count depends on objective specificity).
 - Saves/merges the objective (with its steps) into the target test set.
 - Prints a results table and LLM summary to the console.
 
@@ -360,11 +360,15 @@ All directories are created automatically next to the compiled binary. On first 
 
 ## Test Case Generation
 
-For each objective, the LLM generates a mix of test steps:
+The LLM generates test steps based on the **literal intent** of the objective:
 
-- **Happy path** — valid inputs, expected success responses
-- **Boundary cases** — empty strings, zero values, maximum lengths
-- **Error cases** — missing required fields, invalid types, wrong data
+| Objective style | What the LLM generates |
+|---|---|
+| **Specific** — exact endpoint, parameters, and validations (e.g. *"Test NMIDetails with NMI=123 and validate Meter Serial 456"*) | Exactly **1** test step matching the request |
+| **Vague / open-ended** — no specific parameters or validations (e.g. *"Test the login API"*) | **3–5** reasonable steps covering obvious happy-path and error scenarios |
+| **Comprehensive** — uses keywords like *"thorough"*, *"edge cases"*, *"boundary tests"* | Up to **8** steps including boundary and error variations |
+
+Boundary tests, fuzzy matching, security checks, and error tests are **never** added unless the objective explicitly requests them.
 
 Each step specifies:
 - HTTP method and endpoint path
@@ -372,7 +376,9 @@ Each step specifies:
 - Expected HTTP status code
 - Strings expected to be present or absent in the response body
 
-Field name assertions are grounded in a real discovery call made before generation, so the LLM uses actual response field names rather than guessing.
+**Validation extraction** — When the objective mentions specific values to check (e.g. *"validate NMI property set to 6305824657"* or *"check there is a Meter Serial 444444"*), those values are included in `expectedBodyContains` automatically. The discovery call provides supplementary field names from the real API response, but user-requested validations always take priority.
+
+The discovery call includes the full endpoint path and query parameters from the objective, so it captures a representative response sample for the exact request being tested.
 
 ---
 
