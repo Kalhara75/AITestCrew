@@ -26,6 +26,7 @@ public enum TestTargetType
     BackgroundJob_Hangfire,
     MessageBus,
     Database,
+    AseXml_Generate,
     EndToEnd
 }
 

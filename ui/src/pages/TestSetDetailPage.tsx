@@ -6,6 +6,7 @@ import { fetchModuleTestSet, fetchModuleRuns, fetchModule, deleteTestSet, delete
 import { TestCaseTable } from '../components/TestCaseTable';
 import { WebUiTestCaseTable } from '../components/WebUiTestCaseTable';
 import { DesktopUiTestCaseTable } from '../components/DesktopUiTestCaseTable';
+import { AseXmlTestCaseTable } from '../components/AseXmlTestCaseTable';
 import { RunHistoryTable } from '../components/RunHistoryTable';
 import { TriggerRunButton } from '../components/TriggerRunButton';
 import { StatusBadge } from '../components/StatusBadge';
@@ -229,6 +230,9 @@ export function TestSetDetailPage() {
               onTestCaseUpdated={handleTestCaseUpdated}
             />
           )}
+          {selectedObjective.aseXmlSteps?.length > 0 && (
+            <AseXmlTestCaseTable objectives={[selectedObjective]} />
+          )}
 
           {/* Run history for this objective */}
           <div style={{ marginTop: 24 }}>
@@ -432,8 +436,13 @@ function StatPill({ label, value }: { label: string; value: string | number }) {
 
 function typeBadgeStyle(targetType: string): React.CSSProperties {
   const isApi = targetType.startsWith('API');
+  const isAseXml = targetType.startsWith('AseXml');
+  const base = { fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4 };
+  if (isAseXml) {
+    return { ...base, background: '#eef2ff', color: '#4f46e5', border: '1px solid #c7d2fe' };
+  }
   return {
-    fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
+    ...base,
     background: isApi ? '#eff6ff' : '#f0fdf4',
     color: isApi ? '#2563eb' : '#16a34a',
     border: `1px solid ${isApi ? '#bfdbfe' : '#bbf7d0'}`,

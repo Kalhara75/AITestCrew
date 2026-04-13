@@ -69,6 +69,14 @@ export interface DesktopUiTestDefinition {
   takeScreenshotOnFailure: boolean;
 }
 
+export interface AseXmlTestDefinition {
+  description: string;
+  templateId: string;
+  transactionType: string;
+  fieldValues: Record<string, string>;
+  validateAgainstSchema: boolean;
+}
+
 export interface TestObjective {
   id: string;
   name: string;
@@ -79,6 +87,7 @@ export interface TestObjective {
   apiSteps: ApiTestDefinition[];
   webUiSteps: WebUiTestDefinition[];
   desktopUiSteps: DesktopUiTestDefinition[];
+  aseXmlSteps: AseXmlTestDefinition[];
   stepCount: number;
 }
 

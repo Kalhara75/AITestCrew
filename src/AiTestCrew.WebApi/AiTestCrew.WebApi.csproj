@@ -18,4 +18,10 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+  <ItemGroup>
+    <!-- Shared aseXML templates at repo root — copied into bin/templates/asexml/... -->
+    <Content Include="..\..\templates\asexml\**\*.*"
+             Link="templates\asexml\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

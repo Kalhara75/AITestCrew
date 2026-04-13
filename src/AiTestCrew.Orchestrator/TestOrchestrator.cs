@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using AiTestCrew.Agents.ApiAgent;
+using AiTestCrew.Agents.AseXmlAgent;
 using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Configuration;
@@ -137,7 +138,10 @@ public class TestOrchestrator
                     ? t : TestTargetType.API_REST;
 
                 var parameters = new Dictionary<string, object>();
-                if (obj.DesktopUiSteps.Count > 0)
+                if (obj.AseXmlSteps.Count > 0)
+                    parameters["PreloadedTestCases"] = obj.AseXmlSteps
+                        .Select(s => s.ToTestCase(s.Description)).ToList();
+                else if (obj.DesktopUiSteps.Count > 0)
                     parameters["PreloadedTestCases"] = obj.DesktopUiSteps
                         .Select(s => s.ToTestCase(s.Description)).ToList();
                 else if (obj.WebUiSteps.Count > 0)
@@ -487,6 +491,7 @@ public class TestOrchestrator
         var apiSteps = new List<ApiTestDefinition>();
         var webUiSteps = new List<WebUiTestDefinition>();
         var desktopUiSteps = new List<DesktopUiTestDefinition>();
+        var aseXmlSteps = new List<AseXmlTestDefinition>();
         var agentName = "";
         var targetType = "API_REST";
 
@@ -514,10 +519,22 @@ public class TestOrchestrator
                     foreach (var tc in desktopCases)
                         desktopUiSteps.Add(DesktopUiTestDefinition.FromTestCase(tc));
                 }
+                else if (v is List<AseXmlTestCase> xmlCases)
+                {
+                    targetType = "AseXml_Generate";
+                    foreach (var tc in xmlCases)
+                        aseXmlSteps.Add(AseXmlTestDefinition.FromTestCase(tc));
+                }
+                else if (v is List<AseXmlTestDefinition> xmlDefs)
+                {
+                    // Agent already returned definitions (preferred) — use as-is.
+                    targetType = "AseXml_Generate";
+                    aseXmlSteps.AddRange(xmlDefs);
+                }
             }
         }
 
-        if (apiSteps.Count == 0 && webUiSteps.Count == 0 && desktopUiSteps.Count == 0)
+        if (apiSteps.Count == 0 && webUiSteps.Count == 0 && desktopUiSteps.Count == 0 && aseXmlSteps.Count == 0)
             return null;
 
         var displayName = !string.IsNullOrWhiteSpace(objectiveName)
@@ -535,7 +552,8 @@ public class TestOrchestrator
             TargetType = targetType,
             ApiSteps = apiSteps,
             WebUiSteps = webUiSteps,
-            DesktopUiSteps = desktopUiSteps
+            DesktopUiSteps = desktopUiSteps,
+            AseXmlSteps = aseXmlSteps
         };
     }
 
@@ -576,6 +594,11 @@ public class TestOrchestrator
             - BackgroundJob_Hangfire: Hangfire job testing
             - MessageBus: Message bus pub/sub testing
             - Database: Direct database validation
+            - AseXml_Generate: Generate an AEMO aseXML transaction payload (e.g.
+              MeterFaultAndIssueNotification, CustomerDetailsNotification) from a
+              named template + user-supplied field values. Choose this when the
+              objective mentions sending/producing/generating an aseXML transaction,
+              an AEMO B2B message, or references a transaction type name.
 
             For Phase 1, focus on API_REST tasks.
             If the objective mentions database, add a Database task but mark it

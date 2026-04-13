@@ -28,6 +28,7 @@ AITestCrew routes each test task to a specialised agent based on the task's `Tes
 | **Brave Cloud UI Agent** (`BraveCloudUiTestAgent`) | `UI_Web_Blazor` | Playwright-based Blazor web UI testing with Azure AD SSO + TOTP/MFA authentication |
 | **Legacy Web UI Agent** (`LegacyWebUiTestAgent`) | `UI_Web_MVC` | Playwright-based legacy ASP.NET MVC web UI testing with forms authentication and StorageState caching |
 | **WinForms Desktop UI Agent** (`WinFormsUiTestAgent`) | `UI_Desktop_WinForms` | FlaUI-based Windows Forms desktop application testing — LLM-driven exploration via UI Automation tree, recording via Windows hooks, deterministic replay |
+| **aseXML Generation Agent** (`AseXmlGenerationAgent`) | `AseXml_Generate` | Template-driven AEMO B2B aseXML payload generation. LLM picks a template and extracts user field values from the objective; the renderer performs deterministic `{{token}}` substitution with auto-generated MessageID/TransactionID/timestamps. |
 
 All agents extend `BaseTestAgent`, which provides shared LLM communication (`AskLlmAsync`, `AskLlmForJsonAsync`). Web UI agents share `BaseWebUiTestAgent` (Playwright), desktop UI agents share `BaseDesktopUiTestAgent` (FlaUI).
 
@@ -37,11 +38,24 @@ BaseTestAgent                          ← LLM helpers
   ├── BaseWebUiTestAgent               ← Playwright shared infra (abstract)
   │     ├── BraveCloudUiTestAgent      ← Blazor (UI_Web_Blazor)
   │     └── LegacyWebUiTestAgent       ← Legacy MVC (UI_Web_MVC)
-  └── BaseDesktopUiTestAgent           ← FlaUI shared infra (abstract)
-        └── WinFormsUiTestAgent        ← Windows Forms (UI_Desktop_WinForms)
+  ├── BaseDesktopUiTestAgent           ← FlaUI shared infra (abstract)
+  │     └── WinFormsUiTestAgent        ← Windows Forms (UI_Desktop_WinForms)
+  └── AseXmlGenerationAgent            ← AEMO aseXML payload rendering (AseXml_Generate)
 ```
 
 The following target types are defined but do not yet have agent implementations: `Background_Hangfire`, `MessageBus`, `Database`.
+
+### aseXML templates
+
+Templates live under `templates/asexml/{TransactionType}/{templateId}.xml`, each paired with a `{templateId}.manifest.json` that declares every token used in the template and classifies it as:
+
+- **`auto`** — generated at render time (e.g. `MessageID`, `TransactionID`, timestamps). Never overridable.
+- **`user`** — supplied by the caller (LLM-extracted from the objective, or, later, via the edit dialog). `required: true` fields cause a failing step when missing.
+- **`const`** — hardwired in the template (e.g. `From`, `To`, `SupplyOn`, `SupplyOff`). Surfaced for display but not editable.
+
+Adding a new transaction type is a content change, not a code change: drop a new `{template}.xml` + `{template}.manifest.json` pair under `templates/asexml/{TransactionType}/` and the registry picks it up at next startup. Adding a new auto-field generator is a one-method change in `src/AiTestCrew.Agents/AseXmlAgent/Templates/FieldGenerators.cs`.
+
+Rendered XML is written to `output/asexml/{timestamp}_{taskId}/{NN}-{caseName}.xml`. Delivery to a FTP/SFTP drop location and downstream UI validation are planned for Phase 2/3 via separate agents.
 
 ---
 
@@ -148,6 +162,33 @@ Or module-scoped:
 ```
 dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset controlled-loads --rebaseline "Test the /api/ControlledLoadDecodes endpoint"
 ```
+
+---
+
+### Generate aseXML transactions
+
+Generate AEMO B2B aseXML payloads from templates using plain-English objectives. The LLM reads the template catalogue, picks the matching template, and extracts user field values from the objective. The renderer then produces the XML deterministically — auto-fields (`MessageID`, `TransactionID`, timestamps) are fresh on every run.
+
+```bash
+# Pre-req (once per module): create the module and test set
+dotnet run --project src/AiTestCrew.Runner -- --create-module "AEMO B2B"
+dotnet run --project src/AiTestCrew.Runner -- --create-testset aemo-b2b "MFN scenarios"
+
+# Generate one MFN from an objective
+dotnet run --project src/AiTestCrew.Runner -- \
+  --module aemo-b2b --testset mfn-scenarios \
+  --obj-name "MFN One In All In (NMI 4103035611)" \
+  "Send a MeterFaultAndIssueNotification for NMI 4103035611 checksum 3, identified 2025-05-04, start 2025-05-07 10:00:00+10:00, end 2025-05-07, duration 02:00, meter 060738, reason 'One In All In'."
+
+# Re-render all saved cases — fresh MessageID/TransactionID each time
+dotnet run --project src/AiTestCrew.Runner -- --module aemo-b2b --testset mfn-scenarios --reuse mfn-scenarios
+```
+
+Rendered XML is written to `src/AiTestCrew.Runner/bin/Debug/net8.0-windows/output/asexml/{yyyyMMdd_HHmmss}_{taskId}/{NN}-{caseName}.xml`. Each file's `TestStep` detail includes the resolved field values plus the generated `MessageID` / `TransactionID`.
+
+**Adding a new transaction type** is a content-only change: drop a new `{templateId}.xml` + `{templateId}.manifest.json` pair under `templates/asexml/{TransactionType}/` and rebuild (the `<Content>` entry in `AiTestCrew.Runner.csproj` and `AiTestCrew.WebApi.csproj` copies it to each project's bin). No recompile of agents or orchestrator needed — `TemplateRegistry` discovers the new pair at next startup.
+
+See [aseXML templates](#asexml-templates) above for the manifest schema and generator reference.
 
 ---
 

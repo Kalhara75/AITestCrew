@@ -1,0 +1,33 @@
+<ase:aseXML xsi:schemaLocation="urn:aseXML:r46 http://www.nemmco.com.au/aseXML/schemas/r46/aseXML_r46.xsd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ase="urn:aseXML:r46">
+  <Header>
+    <From description="{{FromDescription}}">{{From}}</From>
+    <To description="{{ToDescription}}">{{To}}</To>
+    <MessageID>{{MessageID}}</MessageID>
+    <MessageDate>{{MessageDate}}</MessageDate>
+    <TransactionGroup>{{TransactionGroup}}</TransactionGroup>
+    <Priority>{{Priority}}</Priority>
+    <SecurityContext></SecurityContext>
+    <Market>{{Market}}</Market>
+  </Header>
+  <Transactions>
+    <Transaction transactionDate="{{TransactionDate}}" transactionID="{{TransactionID}}">
+      <MeterFaultAndIssueNotification>
+        <NMI checksum="{{NMIChecksum}}">{{NMI}}</NMI>
+        <DateIdentified>{{DateIdentified}}</DateIdentified>
+        <StartDate>{{StartDate}}</StartDate>
+        <StartTime>{{StartTime}}</StartTime>
+        <EndDate>{{EndDate}}</EndDate>
+        <Duration>{{Duration}}</Duration>
+        <SupplyOn>{{SupplyOn}}</SupplyOn>
+        <SupplyOff>{{SupplyOff}}</SupplyOff>
+        <Meters>
+          <Meter>
+            <SerialNumber>{{MeterSerial}}</SerialNumber>
+          </Meter>
+        </Meters>
+        <ReasonForNotice>{{ReasonForNotice}}</ReasonForNotice>
+        <Notes>{{Notes}}</Notes>
+      </MeterFaultAndIssueNotification>
+    </Transaction>
+  </Transactions>
+</ase:aseXML>

@@ -6,6 +6,8 @@ using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Spectre.Console;
 using AiTestCrew.Agents.ApiAgent;
+using AiTestCrew.Agents.AseXmlAgent;
+using AiTestCrew.Agents.AseXmlAgent.Templates;
 using AiTestCrew.Agents.Auth;
 using AiTestCrew.Agents.BraveCloudUiAgent;
 using AiTestCrew.Agents.DesktopUiBase;
@@ -645,6 +647,19 @@ builder.Services.AddSingleton<WinFormsUiTestAgent>(sp => new WinFormsUiTestAgent
     sp.GetRequiredService<TestEnvironmentConfig>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<WinFormsUiTestAgent>());
+
+// aseXML generation agent — template-driven AEMO B2B payload renderer
+builder.Services.AddSingleton<TemplateRegistry>(sp => TemplateRegistry.LoadFrom(
+    sp.GetRequiredService<TestEnvironmentConfig>().AseXml.TemplatesPath,
+    sp.GetRequiredService<ILogger<TemplateRegistry>>()
+));
+builder.Services.AddSingleton<AseXmlGenerationAgent>(sp => new AseXmlGenerationAgent(
+    sp.GetRequiredService<Kernel>(),
+    sp.GetRequiredService<ILogger<AseXmlGenerationAgent>>(),
+    sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<TemplateRegistry>()
+));
+builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AseXmlGenerationAgent>());
 
 // Test set persistence + execution history + modules
 builder.Services.AddSingleton(new TestSetRepository(AppContext.BaseDirectory));

@@ -23,4 +23,11 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+  <ItemGroup>
+    <!-- aseXML templates live at the repo root so they're visible from both
+         Runner and WebApi. Copied into bin/templates/asexml/... -->
+    <Content Include="..\..\templates\asexml\**\*.*"
+             Link="templates\asexml\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

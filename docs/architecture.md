@@ -87,6 +87,16 @@ Agents/
     DesktopRecorder.cs            — Records desktop test cases via Windows hooks (mouse + keyboard) + UI Automation
   WinFormsUiAgent/
     WinFormsUiTestAgent.cs        — Windows Forms desktop agent (FlaUI, UI_Desktop_WinForms)
+  AseXmlAgent/
+    AseXmlGenerationAgent.cs      — AEMO B2B aseXML payload generation (AseXml_Generate target type)
+                                    LLM picks a template + extracts user fields; renderer is deterministic
+    AseXmlTestDefinition.cs       — Step persistence model (templateId + user field values + case wrapper)
+    Templates/
+      TemplateManifest.cs         — POCO for the per-template manifest JSON (field specs: auto/user/const)
+      TemplateRegistry.cs         — Scans templates/asexml/**/*.manifest.json at startup; singleton cache
+      AseXmlRenderer.cs           — Pure-function renderer: applies generators, enforces required fields,
+                                    substitutes {{tokens}}, validates well-formedness via XDocument.Parse
+      FieldGenerators.cs          — Auto-field generators (messageId, transactionId, nowOffset, today)
   Persistence/
     PersistedModule.cs            — Module manifest model (id, name, description, timestamps)
     PersistedTestSet.cs           — JSON envelope model for saved test sets (contains List<TestObjective> TestObjectives, v2 schema)
@@ -137,10 +147,11 @@ BaseTestAgent  (LLM, AskLlmAsync/AskLlmForJsonAsync)
 
 **Storage state & TOTP** — `BraveCloudUiTestAgent` saves browser cookies/localStorage to `BraveCloudUiStorageStatePath` after a successful SSO login. Subsequent calls within `BraveCloudUiStorageStateMaxAgeHours` pass this file to `browser.NewContextAsync()` via `StorageStatePath`, skipping the full Azure AD redirect flow. The path is resolved to absolute at DI startup (both Runner and WebApi share the same resolved path). When `BraveCloudUiTotpSecret` is configured (base32), the agent computes TOTP codes via OtpNet and enters them automatically during SSO. When empty and MFA is encountered: `PlaywrightHeadless=false` → waits 120 s for manual entry; `PlaywrightHeadless=true` → fails with remediation instructions. The CLI `--auth-setup` command provides a standalone way to perform SSO + 2FA manually and save the auth state.
 
-**Test case persistence** — `TestObjective` has three step collections:
+**Test case persistence** — `TestObjective` has four step collections:
 - `ApiSteps` (`List<ApiTestDefinition>`) — populated by API agents
 - `WebUiSteps` (`List<WebUiTestDefinition>`) — populated by web UI agents and the Playwright recorder
 - `DesktopUiSteps` (`List<DesktopUiTestDefinition>`) — populated by desktop UI agents and the desktop recorder
+- `AseXmlSteps` (`List<AseXmlTestDefinition>`) — populated by `AseXmlGenerationAgent`
 
 `TargetType` (string, default `"API_REST"`) is also stored so the orchestrator can reconstruct tasks with the correct `TestTargetType` on reuse.
 
@@ -224,6 +235,27 @@ The overlay panel (fixed, bottom-right, dark theme) provides:
 4. All event handlers (input, change, click, keydown) are suppressed during pick mode to prevent accidental step recording.
 
 Duplicate `fill` steps on the same selector are deduplicated (update-in-place). Session ends on Save & Stop, browser close, or 15-minute timeout.
+
+---
+
+#### aseXML Generation Agent
+
+`AseXmlGenerationAgent` renders AEMO B2B aseXML payloads from templates. Unlike the other agents, which execute *against* a target system, this agent's output is a set of files on disk — the produced XML is later delivered (Phase 2) and its effects validated (Phase 3) by separate agents.
+
+**Template catalogue** — Each transaction type gets a subfolder under `templates/asexml/{TransactionType}/` holding one or more `{templateId}.xml` bodies paired with `{templateId}.manifest.json` field specs. Both `.csproj` files (`Runner` and `WebApi`) contain a `<Content Include="..\..\templates\asexml\**\*.*" ... CopyToOutputDirectory="PreserveNewest" />` entry so the templates land in `bin/.../templates/asexml/` at build time and are discovered by `TemplateRegistry.LoadFrom` at startup.
+
+**Manifest field semantics** — each field in the manifest has a `source`:
+- `auto` — generated at render time via a named generator (`messageId`, `transactionId`, `nowOffset`, `today`). Patterns use `{rand8}` for 8-char alphanumeric substitution. Cannot be overridden.
+- `user` — supplied via the `AseXmlTestDefinition.FieldValues` dictionary. `required: true` fields cause a failing step when missing. `example` is shown to the LLM and (later) used as a UI placeholder.
+- `const` — hardwired in the template; surfaced for display only.
+
+**LLM writes values, never XML** — `GenerateTestCasesAsync` asks the LLM to pick a `templateId` and fill `fieldValues`. The resulting `AseXmlTestCase` is passed to `AseXmlRenderer.Render(manifest, body, userValues)` which is a pure function: applies generators to `auto` fields, enforces `required` on `user` fields, substitutes `const` values, runs a single regex pass `\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}` for token substitution with proper XML escaping, and verifies well-formedness via `XDocument.Parse`. An unknown token (template references a name not in the manifest) is a hard failure — prevents silent malformed output from a typo drift between template and manifest.
+
+**Reuse mode** — only the `AseXmlTestDefinition` (templateId + user field values) is persisted. On reuse, generators fire again, so each run gets a fresh `MessageID`/`TransactionID`/timestamps — matching how real transaction streams behave.
+
+**Output** — Rendered XML is written to `output/asexml/{yyyyMMdd_HHmmss}_{taskId}/{NN}-{safeName}.xml`. Each file becomes one passing `TestStep` with the resolved field values and generated IDs in `Detail` for inspection. `Metadata["outputDir"]` surfaces the run directory for future Phase 2 delivery chaining.
+
+**Extensibility** — new transaction types are content-only changes (drop a new `{template}.xml` + `.manifest.json` pair; no recompile needed to discover, just a restart of Runner/WebApi). New auto-field generators are one method in `FieldGenerators.cs` plus a `switch` arm in `Generate(spec)`.
 
 ---
 

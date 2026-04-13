@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 namespace AiTestCrew.Agents.Persistence;
 
 using AiTestCrew.Agents.ApiAgent;
+using AiTestCrew.Agents.AseXmlAgent;
 using AiTestCrew.Agents.Shared;
 
 /// <summary>
@@ -53,8 +54,14 @@ public class TestObjective
     /// </summary>
     public List<DesktopUiTestDefinition> DesktopUiSteps { get; set; } = [];
 
+    /// <summary>
+    /// aseXML generation test step definitions — each is a template id + user field values.
+    /// Populated for AseXml_Generate targets.
+    /// </summary>
+    public List<AseXmlTestDefinition> AseXmlSteps { get; set; } = [];
+
     /// <summary>Total number of test steps in this objective.</summary>
-    public int StepCount => ApiSteps.Count + WebUiSteps.Count + DesktopUiSteps.Count;
+    public int StepCount => ApiSteps.Count + WebUiSteps.Count + DesktopUiSteps.Count + AseXmlSteps.Count;
 
     // ── Backward compatibility for old v2 JSON with singular fields ──
 

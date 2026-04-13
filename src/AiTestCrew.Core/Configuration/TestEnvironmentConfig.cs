@@ -82,4 +82,23 @@ public class TestEnvironmentConfig
     public int WinFormsAppLaunchTimeoutSeconds { get; set; } = 30;
     public string? WinFormsScreenshotDir { get; set; }
     public bool WinFormsCloseAppBetweenTests { get; set; } = true;
+
+    // --- aseXML (AEMO B2B transactions) ---
+    // TemplatesPath: directory containing transaction templates + manifests, grouped by
+    //   transaction type. Each template is a .xml with {{tokens}} plus a sibling
+    //   .manifest.json describing which fields are auto-generated, user-supplied, or constant.
+    // OutputPath: directory where rendered XML payloads are written, one sub-folder per run.
+    public AseXmlConfig AseXml { get; set; } = new();
+}
+
+/// <summary>
+/// Configuration for the aseXML generation agent (and, later, delivery agent).
+/// </summary>
+public class AseXmlConfig
+{
+    /// <summary>Path to the templates root. Relative paths are resolved against AppContext.BaseDirectory.</summary>
+    public string TemplatesPath { get; set; } = "templates/asexml";
+
+    /// <summary>Path where rendered XML is written. Relative paths are resolved against AppContext.BaseDirectory.</summary>
+    public string OutputPath { get; set; } = "output/asexml";
 }

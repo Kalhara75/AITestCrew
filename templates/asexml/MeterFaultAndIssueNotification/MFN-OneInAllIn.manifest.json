@@ -1,0 +1,33 @@
+{
+  "templateId": "MFN-OneInAllIn",
+  "transactionType": "MeterFaultAndIssueNotification",
+  "transactionGroup": "OWNX",
+  "description": "Inbound Meter Fault And Issue Notification (MFN) with 'One In All In' ReasonForNotice value, used to test DNSP-initiated one-way notifications for shared fusing outages to a FRMP.",
+  "fields": {
+    "From":             { "source": "const", "value": "ENERGYAP" },
+    "FromDescription":  { "source": "const", "value": "Tasmanian Networks Pty Ltd" },
+    "To":               { "source": "const", "value": "SPARQ" },
+    "ToDescription":    { "source": "const", "value": "Shell Energy Retail Pty Ltd" },
+    "TransactionGroup": { "source": "const", "value": "OWNX" },
+    "Priority":         { "source": "const", "value": "Medium" },
+    "Market":           { "source": "const", "value": "NEM" },
+    "SupplyOn":         { "source": "const", "value": "No" },
+    "SupplyOff":        { "source": "const", "value": "Remove Fuse" },
+
+    "MessageID":        { "source": "auto", "generator": "messageId",     "pattern": "MSRINB-MFN-{rand8}-DD" },
+    "MessageDate":      { "source": "auto", "generator": "nowOffset",     "offset": "+10:00" },
+    "TransactionDate":  { "source": "auto", "generator": "nowOffset",     "offset": "+10:00" },
+    "TransactionID":    { "source": "auto", "generator": "transactionId", "pattern": "AURORAP-TXN-BE-{rand8}" },
+
+    "NMI":              { "source": "user", "required": true,  "example": "4103035611" },
+    "NMIChecksum":      { "source": "user", "required": true,  "example": "3" },
+    "DateIdentified":   { "source": "user", "required": true,  "example": "2025-05-04" },
+    "StartDate":        { "source": "user", "required": true,  "example": "2025-05-07" },
+    "StartTime":        { "source": "user", "required": true,  "example": "10:00:00+10:00" },
+    "EndDate":          { "source": "user", "required": true,  "example": "2025-05-07" },
+    "Duration":         { "source": "user", "required": true,  "example": "02:00" },
+    "MeterSerial":      { "source": "user", "required": true,  "example": "060738" },
+    "ReasonForNotice":  { "source": "user", "required": true,  "example": "One In All In" },
+    "Notes":            { "source": "user", "required": false, "example": "TS123~1#06#ADMEMC#" }
+  }
+}
