@@ -331,11 +331,11 @@ public class ApiTestAgent : BaseTestAgent
             }
 
             // Send it
-            Logger.LogDebug("[{Agent}] >> {Method} {Url}", Name, tc.Method, url);
+            Logger.LogInformation("[{Agent}] >> {Method} {Url}", Name, tc.Method, url);
             var response = await _http.SendAsync(request, ct);
             var responseBody = await response.Content.ReadAsStringAsync(ct);
 
-            Logger.LogDebug("[{Agent}] << {Status} ({Length} bytes)",
+            Logger.LogInformation("[{Agent}] << {Status} ({Length} bytes)",
                 Name, (int)response.StatusCode, responseBody.Length);
 
             // Validate the response
@@ -346,7 +346,7 @@ public class ApiTestAgent : BaseTestAgent
                 Action = $"{tc.Method} {tc.Endpoint}",
                 Summary = $"[{tc.Name}] {validation.Reason}",
                 Status = validation.Passed ? TestStatus.Passed : TestStatus.Failed,
-                Detail = FormatResponseDetail(response, responseBody),
+                Detail = FormatResponseDetail(url, response, responseBody, request),
                 Duration = stepSw.Elapsed
             };
         }
@@ -587,19 +587,31 @@ public class ApiTestAgent : BaseTestAgent
     }
 
     private static string FormatResponseDetail(
-        HttpResponseMessage response, string body)
+        string requestUrl, HttpResponseMessage response, string body,
+        HttpRequestMessage? request = null)
     {
-        var headers = string.Join("\n",
+        var reqHeaders = request is not null
+            ? string.Join("\n", request.Headers
+                .Where(h => !h.Key.Equals("Authorization", StringComparison.OrdinalIgnoreCase))
+                .Select(h => $"  {h.Key}: {string.Join(", ", h.Value)}"))
+            : "";
+        var respHeaders = string.Join("\n",
             response.Headers.Select(h => $"  {h.Key}: {string.Join(", ", h.Value)}"));
         var truncated = body.Length > 500 ? body[..500] + "..." : body;
 
-        return $"""
-            Status: {(int)response.StatusCode} {response.ReasonPhrase}
-            Headers:
-            {headers}
-            Body:
-            {truncated}
-            """;
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Request: {requestUrl}");
+        if (!string.IsNullOrEmpty(reqHeaders))
+        {
+            sb.AppendLine("Request Headers:");
+            sb.AppendLine(reqHeaders);
+        }
+        sb.AppendLine($"Status: {(int)response.StatusCode} {response.ReasonPhrase}");
+        sb.AppendLine("Headers:");
+        sb.AppendLine(respHeaders);
+        sb.AppendLine("Body:");
+        sb.Append(truncated);
+        return sb.ToString();
     }
 }
 
