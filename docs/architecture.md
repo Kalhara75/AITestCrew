@@ -307,6 +307,24 @@ When all three are empty, the `resolve-endpoint` step fails fast with a clear me
 
 **Why sibling-dispatch over `TestTask.DependsOn`**. The orchestrator's parallel-fanout execution loop doesn't honour `DependsOn` (the field is declared but currently unused). Sibling dispatch keeps the entire Generate → Deliver → Wait → multi-UI-verify flow inside a single logical task and a single `TestObjective`, which matches the user's mental model ("the verifications are steps in the same test case as the delivery") without the broader orchestrator refactor that activating `DependsOn` would require. If future phases genuinely need independent chained tasks, that's where to go.
 
+**DI lazy sibling resolution**. `AseXmlDeliveryAgent` is registered both as its concrete type and as `ITestAgent` (so the orchestrator can discover it). An eager `IEnumerable<ITestAgent>` constructor arg would therefore recurse into the agent's own factory when DI resolves the enumerable. The agent takes `IServiceProvider` instead and caches `_services.GetServices<ITestAgent>().Where(a => a is not AseXmlDeliveryAgent)` on first use. See `AseXmlDeliveryAgent.Siblings`.
+
+**Verification CRUD endpoints**. Recorded verifications are also editable/deletable from the web UI via:
+
+- `DELETE /api/modules/{mod}/testsets/{ts}/objectives/{obj}/deliveries/{dIdx}/verifications/{vIdx}` — removes one verification at the given index.
+- `PUT ...` — replaces the verification in place (body = `VerificationStep`). Used by the generic `EditWebUiTestCaseDialog` when saving.
+
+Both endpoints live in `src/AiTestCrew.WebApi/Endpoints/ModuleEndpoints.cs` alongside the objective-level CRUD.
+
+**Generic `EditWebUiTestCaseDialog`**. `ui/src/components/EditWebUiTestCaseDialog.tsx` is data-shape-agnostic — it takes `definition: WebUiTestDefinition`, `caseName: string`, `onSave({name, definition})`, and optional `onDelete()` / `title` / `deleteLabel` / `deleteConfirmMessage`. Two consumers share it:
+
+1. **Standalone Web UI test cases** (`WebUiTestCaseTable`) — wraps save with `updateObjective`, delete with either `deleteObjective` (last step) or `updateObjective` with the step removed.
+2. **Post-delivery verifications** (`AseXmlDeliveryTestCaseTable`) — wraps save with the verification `PUT`, delete with the verification `DELETE`.
+
+Adding a third consumer (e.g. a hypothetical "edit recorded setup step" flow) is a props change, not a new dialog.
+
+**Auth state for verification recording**. `--record-verification --target UI_Web_MVC` passes `LegacyWebUiStorageStatePath` to the recorder; `UI_Web_Blazor` passes `BraveCloudUiStorageStatePath`. This mirrors how the standalone agents use those paths at execution time, so captured verifications never include login flows (assuming the user ran `--auth-setup --target <UI_*>` first). The CLI prints a hint if neither storage state is configured.
+
 ---
 
 ### AiTestCrew.Orchestrator
@@ -883,3 +901,96 @@ TestOrchestrator.RunAsync(objective, Normal)
 - **Auth credentials are never passed to the LLM.** They are injected directly into `HttpRequestMessage` by `InjectAuthAsync()` via `IApiTargetResolver.GetTokenProvider()` after the LLM-generated headers are applied. Each API stack gets its own `LoginTokenProvider` (pointing at that stack's security module login endpoint) with independent token caching. Auth credentials (`AuthUsername`, `AuthPassword`) are shared across all stacks — only the login endpoint differs.
 - **LLM validation is advisory for security headers.** Missing `X-Content-Type-Options`, `X-Frame-Options`, and `Strict-Transport-Security` are noted in the validation reason text but do not cause test failures.
 - **Response bodies are truncated** to 2,000 characters before being sent to the LLM for validation, and to 500 characters in the console detail view, to limit token usage and avoid leaking large payloads into logs inadvertently.
+- **Bravo endpoint passwords** (resolved from `mil.V2_MIL_EndPoint.Password`) are never logged or surfaced in step details. `AseXmlDeliveryAgent` passes the `BravoEndpoint` record between layers but every log statement touches only `EndPointCode`, `UserName`, host, `OutBoxUrl`, and the zip flag.
+- **Playwright storage state** files (`bravecloud-auth-state.json`, the legacy MVC equivalent) are gitignored. Re-generate via `--auth-setup --target <UI_*>` on any machine that needs to record or replay UI tests.
+
+---
+
+## Extension map — where to reach when extending
+
+This section complements the "Where to extend" table in `CLAUDE.md` with architectural context. Each row describes one extension axis and where the seams live.
+
+### Adding a new aseXML transaction type
+
+- **No code changes.** Drop a new `{templateId}.xml` + `{templateId}.manifest.json` pair under `templates/asexml/{TransactionType}/`.
+- Both projects' `.csproj` files wildcard-copy the templates folder into their `bin/templates/asexml/` output.
+- `TemplateRegistry.LoadFrom` scans at startup and discovers the pair.
+- The same template serves both `AseXmlGenerationAgent` and `AseXmlDeliveryAgent` — there is no delivery-specific template.
+- Use `/add-asexml-template` to scaffold and smoke-test.
+
+### Adding a new auto-field generator
+
+- `src/AiTestCrew.Agents/AseXmlAgent/Templates/FieldGenerators.cs` — add a new static method.
+- `Generate(FieldSpec spec)` — add a `switch` arm dispatching to the new method (case-insensitive match on `spec.Generator`).
+- Document the generator name + pattern syntax in the manifest schema docs.
+- Keep the set small: only add when a real manifest needs it.
+
+### Adding a new delivery protocol (AS2, HTTP POST, SMB, etc.)
+
+- Implement `IXmlDropTarget` — a new class under `src/AiTestCrew.Agents/AseXmlAgent/Delivery/*DropTarget.cs`.
+- `DropTargetFactory.Create(endpoint)` — add a `switch` arm matching the new scheme prefix from `OutBoxUrl` (e.g. `as2://`).
+- If the new protocol needs config beyond the `BravoEndpoint` fields, extend `AseXmlConfig` and thread it through the factory constructor.
+- No changes to the delivery agent, resolver, or orchestrator.
+- Use `/add-delivery-protocol` to scaffold.
+
+### Adding a new UI verification target surface
+
+- Register a new `ITestAgent` that handles the new `TestTargetType`.
+- `VerificationStep.Target` already accepts any `TestTargetType` string — the delivery agent routes via `CanHandleAsync` dispatch, so no change to `AseXmlDeliveryAgent` is needed.
+- Add a new step-definition shape if the existing `WebUiTestDefinition` / `DesktopUiTestDefinition` don't fit.
+- `AseXmlDeliveryAgent.RunVerificationAsync` has a `if (target is UI_Web_*) / else if (UI_Desktop_*)` branch — extend it with the new branch to wrap the step list as `PreloadedTestCases`.
+- Recorder — optional; without a recorder the user supplies steps via the UI edit dialog (also optional for a new surface).
+
+### Adding a richer wait strategy for verifications
+
+- Extend `VerificationStep` with an optional `WaitStrategy` object (polymorphic or tagged-union).
+- `AseXmlDeliveryAgent.RunVerificationAsync` already calls `Task.Delay(WaitBeforeSeconds)` — replace that with a strategy dispatch:
+  - `"delay"` — current behaviour (fixed delay).
+  - `"sftp-pickup"` — poll the remote path for file disappearance via the same `IXmlDropTarget`'s underlying client.
+  - `"db-status"` — poll a Bravo DB table for a status transition (requires schema discovery + a new query in `BravoEndpointResolver` or a new `IWaitStrategyResolver`).
+- Keep `WaitBeforeSeconds` as a fallback / minimum wait to avoid hammering on polling loops.
+
+### Adding orchestration chaining (activating `TestTask.DependsOn`)
+
+- Currently declared on `TestTask` but unused by `TestOrchestrator`.
+- Requires a pre-pass in `RunAsync` before the parallel fanout: topological sort by `DependsOn`, then execute in waves rather than a flat `Task.WhenAll`.
+- Tasks can pass artefacts forward via `TestTask.Parameters` — a dependency resolver would inspect each predecessor's `TestResult.Metadata` and inject relevant keys into the dependent task.
+- Only pursue if a future test shape truly needs independent tasks rather than step-chaining inside one agent. Phase 3's sibling-dispatch model avoided this for verifications.
+
+### Adding a new WebApi endpoint
+
+- `src/AiTestCrew.WebApi/Endpoints/ModuleEndpoints.cs` (or create a sibling file if the surface is big enough to warrant it).
+- Register in `MapGroup(...)` inside that file's `MapModuleEndpoints` extension.
+- `Program.cs` already wires the group — new endpoints appear automatically.
+- Response shape: reuse `TestSetResponse(testSet, historyRepo)` for anything returning a full test set detail (keeps the UI's polling consistent).
+
+### Adding a new UI edit dialog
+
+- The generic `EditWebUiTestCaseDialog.tsx` handles any `WebUiTestDefinition`. Pass custom `onSave` / `onDelete` callbacks for a new context.
+- For a non-Web step shape (Desktop, API definition, etc.) build a parallel dialog following the same prop shape — `definition / caseName / onSave / onDelete / title / deleteLabel`. Keep the form-state / reorder / add-step / delete-step behaviour identical so users don't learn N different UIs.
+
+### Adding a new CLI flag
+
+- `src/AiTestCrew.Runner/Program.cs` — `ParseArgs` switch, `CliArgs` init property, appropriate handler.
+- If it affects a run: thread into `orchestrator.RunAsync(..., yourFlag: cli.YourFlag)` and then into `TestTask.Parameters[...]` if agents need it.
+- Keep the header-print block (`Module:`, `Test set:`, `Objective filter:`, etc.) up to date so users can see at a glance what flags resolved to.
+- Document in `CLAUDE.md` command cheatsheet + the flag reference table, and `docs/functional.md`'s command reference.
+
+### Adding a new test case / step JSON field
+
+- Persistence model lives in `src/AiTestCrew.Agents/Persistence/` (TestObjective, PersistedTestSet, PersistedExecutionRun) or adjacent to the agent for step-definition models.
+- Additive fields are backward-compatible: System.Text.Json's `PropertyNameCaseInsensitive` + default-value behaviour reads old JSON without migration.
+- Update the matching TS type in `ui/src/types/index.ts`.
+- Extend `FromTestCase` / `ToTestCase` if the field should survive the round-trip.
+- If the field should be editable, extend the relevant edit dialog.
+
+### Adding a new agent (entirely new target type)
+
+- Use `/add-agent`. The skill codifies:
+  1. Adding the enum value to `TestTargetType`.
+  2. Creating the agent class (`TargetAgent/{Name}TestAgent.cs`) extending `BaseTestAgent`.
+  3. Step-definition shape + `FromTestCase`/`ToTestCase` parity.
+  4. `ExecuteAsync` flow including reuse-mode `PreloadedTestCases` handling.
+  5. DI registration in both `Runner/Program.cs` and `WebApi/Program.cs`.
+  6. Orchestrator's `BuildObjectiveFromResults` + reuse task-builder updates.
+  7. Decomposer prompt update.

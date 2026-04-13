@@ -304,6 +304,31 @@ verify[1.2] <child steps>   → second verification
 
 If a verification step fails, the overall test case is marked Failed. Use Playwright screenshots (`PlaywrightScreenshotDir`) or WinForms screenshots (`WinFormsScreenshotDir`) for post-mortem.
 
+**Skip the login flow when recording MVC verifications**:
+
+The recorder opens with whatever cached auth state is configured for the target:
+
+- `UI_Web_Blazor` → `BraveCloudUiStorageStatePath` (Azure SSO session).
+- `UI_Web_MVC` → `LegacyWebUiStorageStatePath` (forms-auth cookies).
+
+If the corresponding path isn't cached yet, the CLI prints a hint:
+
+```
+No 'LegacyWebUiStorageStatePath' configured — recorder will start unauthenticated.
+Run --auth-setup --target UI_Web_MVC first to skip the login flow during recording.
+```
+
+Run `--auth-setup --target UI_Web_MVC` (or `UI_Web_Blazor`) once to populate the cache. Subsequent `--record-verification` runs open the recorder already logged in, so your captured steps are only the actual verification actions — no credentials ever land in the saved test set.
+
+**View, edit, and delete verifications in the web UI**:
+
+Open the test set detail page (`http://localhost:5173` → module → test set). Under each delivery case, the **Post-delivery UI verifications** panel shows one row per verification.
+
+- **View the recorded steps** — click a verification row (the ▸ chevron). The row expands to show a per-step table with action / selector / value / timeout. `{{Tokens}}` are highlighted in indigo so you can verify auto-parameterisation worked at a glance.
+- **Edit a verification** — Web UI verifications show a pencil ✎ icon. Click it to open the same **Edit Web UI Test Case** dialog used for standalone web UI tests, pre-populated with the recorded definition. Change the Name, Description, Start URL, Screenshot-on-failure flag, or reorder / delete / edit individual steps (same editor). Saving calls `PUT /api/modules/{mod}/testsets/{ts}/objectives/{obj}/deliveries/{d}/verifications/{v}`.
+- **Delete a verification** — trash icon + inline Yes/No confirm. The delete call is `DELETE` on the same path. Use this when you want to re-record from scratch.
+- **Desktop (WinForms) verifications** — currently view + delete only (no edit dialog). To modify a recorded desktop verification, delete and re-record.
+
 **Constraints**:
 - Recording requires a prior Passed run for the target objective (otherwise there's no known MessageID/TransactionID to parameterise against).
 - Only delivery objectives (`AseXml_Deliver`) support verifications. Attempting to attach a verification to another target fails with a clear error.
@@ -1087,4 +1112,53 @@ The following are scaffolded in the codebase but not yet active:
 | Background job testing (Hangfire) | Target type defined; no agent implemented |
 | Message bus testing | Target type defined; no agent implemented |
 | Database validation | Target type defined; no agent implemented |
-| Retry and adaptive re-planning | Planned for Phase 2 |
+| Retry and adaptive re-planning | Planned |
+| aseXML Generate → Deliver → Verify | **Implemented** — all three phases (Phase 1: template-driven generation; Phase 2: SFTP/FTP delivery with Bravo DB endpoint lookup + optional zip wrap; Phase 3: post-delivery UI verification with `{{Token}}` substitution, auto-parameterised recording, view/edit/delete UI) |
+| aseXML wait strategy beyond fixed delay | Field `WaitBeforeSeconds` ships; richer strategies (SFTP-pickup poll, Bravo DB status poll) planned |
+| Desktop verification edit dialog | View + delete shipped in the web UI; structured edit dialog deferred (delete-and-re-record today) |
+| Aggregate reporting / dashboards | UI shows per-objective status + run history; aggregated cross-module views planned |
+
+---
+
+## Command reference (alphabetical)
+
+Every flag the Runner CLI accepts, one row per flag. Scope column shows which run modes / commands use it.
+
+| Flag | Scope | Value | Purpose |
+|---|---|---|---|
+| `--api-module <key>` | Normal, Reuse | e.g. `sdr`, `security` | Pick a module within the active API stack (`ApiStacks.<stack>.Modules.<key>`). Persists on the test set. |
+| `--auth-setup` | Auth | (none) | Launch a browser for manual login; save storage state to config. Combine with `--target`. |
+| `--case-name "<name>"` | Record, Record-setup | string | Display name for the captured test case or setup. |
+| `--create-module "<name>"` | Management | string | Create a module directory + manifest. Name is slugified for the id. |
+| `--create-testset <moduleId> "<name>"` | Management | slug + string | Create an empty test set in a module. |
+| `--delivery-step-index <n>` | Record-verification | int, default 0 | Which delivery case inside the objective to attach to (objectives rarely have more than one, so usually omit). |
+| `--endpoint <EndPointCode>` | Delivery (Normal/Reuse/Rebaseline) | e.g. `GatewaySPARQ` | Bravo outbound endpoint from `mil.V2_MIL_EndPoint`. Overrides LLM extraction; persists on the test set. |
+| `--list` | List | (none) | List legacy-flat test sets. |
+| `--list-endpoints` | List | (none) | Query Bravo DB and print all `EndPointCode`s. Requires `AseXml.BravoDb.ConnectionString`. |
+| `--list-modules` | List | (none) | List all modules and their test-set counts. |
+| `--module <moduleId>` | Every run | slug | Module scope. Required for module-scoped runs and nearly all recording. |
+| `--obj-name "<name>"` | Normal, Rebaseline | string | Short display name for the objective (otherwise the full objective text is used). |
+| `--objective <idOrName>` | Reuse, Record-verification | slug OR display name | Reuse mode: scope run to a single test case. Record-verification: target delivery objective. Case-insensitive; matches `TestObjective.Id` first, falls back to `TestObjective.Name`. |
+| `--rebaseline` | Rebaseline | flag | Regenerate saved test cases via LLM and overwrite. AI-generated objectives only (recorded ones refuse). |
+| `--record` | Recording | flag | Launch the matching recorder (Playwright for web, DesktopRecorder for WinForms). Requires `--module`, `--testset`, `--case-name`, `--target`. |
+| `--record-setup` | Recording | flag | Record reusable setup steps (e.g. login) at the test-set level. Steps run before every test case at replay. |
+| `--record-verification` | Recording | flag | Record a post-delivery UI verification attached to a delivery objective. Requires `--module`, `--testset`, `--objective`, `--target`, `--verification-name`. |
+| `--reuse <testSetId>` | Reuse | slug | Replay a saved test set. With `--module`, `--testset` is auto-derived from this id. |
+| `--stack <key>` | Normal, Reuse | e.g. `bravecloud`, `legacy` | API stack key from `TestEnvironmentConfig.ApiStacks`. Persists on the test set. |
+| `--target <type>` | Recording | `UI_Web_MVC` \| `UI_Web_Blazor` \| `UI_Desktop_WinForms` | UI surface for the recording. For `--auth-setup`, determines which auth flow / storage state is captured. |
+| `--testset <testSetId>` | Every module-scoped run | slug | Test set scope. Auto-derived from `--reuse` when module is scoped without this. |
+| `--verification-name "<name>"` | Record-verification | string | Display label for the recorded verification. |
+| `--wait <seconds>` | Record-verification | int, default = `AseXml.DefaultVerificationWaitSeconds` (30) | Delay between delivery and this verification at playback. |
+
+### Environment prerequisites by command
+
+| Command | Needs in `appsettings.json` |
+|---|---|
+| Any run (LLM) | `LlmProvider`, `LlmApiKey`, `LlmModel` |
+| API tests | `ApiStacks.<stack>.BaseUrl`, `.Modules`, optional `AuthToken` / `AuthUsername` / `AuthPassword` |
+| Legacy MVC UI tests | `LegacyWebUiUrl`, `LegacyWebUiUsername`, `LegacyWebUiPassword`, `LegacyWebUiStorageStatePath` |
+| Blazor UI tests | `BraveCloudUiUrl`, `BraveCloudUiUsername`, `BraveCloudUiPassword`, `BraveCloudUiStorageStatePath`, optional `BraveCloudUiTotpSecret` |
+| WinForms UI tests | `WinFormsAppPath`, `WinFormsAppArgs` |
+| aseXML Generate | `AseXml.TemplatesPath` (default `templates/asexml`), `AseXml.OutputPath` |
+| aseXML Deliver / `--list-endpoints` | `AseXml.BravoDb.ConnectionString` (never in `appsettings.example.json`) |
+| aseXML verification recording | Same as the matching UI target above; tip: run `--auth-setup --target <UI_*>` first to cache auth state |

@@ -19,9 +19,12 @@ A verification can only be recorded when the target objective has **already run 
 
 Before launching, confirm with the user:
 
-1. Which **module** + **test set** + **objective id** to attach the verification to. (If unclear, read `modules/<moduleId>/<testSetId>.json` and list the `testObjectives[].id` values where `aseXmlDeliverySteps.length > 0`.)
+1. Which **module** + **test set** + **objective (Id slug OR display Name)** to attach the verification to. The CLI accepts either form case-insensitively. If unclear, read `modules/<moduleId>/<testSetId>.json` and list the `testObjectives[].id` + `.name` values where `aseXmlDeliverySteps.length > 0`.
 2. That objective has at least one execution run with status `Passed` in `executions/<testSetId>/*.json`. If not, tell the user to run the delivery first.
 3. Which **target** surface the verification is for: `UI_Web_MVC` (uses `LegacyWebUiUrl`), `UI_Web_Blazor` (uses `BraveCloudUiUrl`), or `UI_Desktop_WinForms` (uses `WinFormsAppPath`). The matching config entry in `appsettings.json` must be populated.
+4. **Auth state is cached for the target.** The recorder opens already-logged-in when the matching storage state exists — `LegacyWebUiStorageStatePath` for MVC, `BraveCloudUiStorageStatePath` for Blazor. If either path isn't configured, the CLI prints a hint and the recording will start unauthenticated (capturing a login flow into the verification — undesirable). Run `--auth-setup --target <UI_*>` first to cache the state:
+   - `dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_MVC`
+   - `dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_Blazor`
 
 ### Step 2 — Read the engine's contracts
 
@@ -102,8 +105,23 @@ The CLI prints the saved step count and the test set JSON path. Open the JSON an
 
 Verify:
 - `{{NMI}}` and `{{MessageID}}` appear where the recorder substituted them.
-- Any literal you expected to be a token but isn't — either the value was shorter than 4 chars, or it didn't exactly match a context value. Manually edit the JSON to add the `{{Token}}` if you're sure.
-- Selectors are stable (aria-label / text-based rather than deep CSS trees). If a selector looks brittle, note it but leave it — Phase 1.5 UI editor will arrive later.
+- Any literal you expected to be a token but isn't — either the value was shorter than 4 chars, or it didn't exactly match a context value. Use the web UI edit dialog (next step) to tidy up, or edit the JSON manually if you prefer.
+- Selectors are stable (aria-label / text-based rather than deep CSS trees). If a selector looks brittle, the edit dialog lets you rewrite it before replay.
+
+### Step 5a — Tidy the recording in the web UI (optional but recommended)
+
+Open the test set in the web UI (`http://localhost:5173` → module → test set). Under the delivery case, the **Post-delivery UI verifications** panel now shows your new verification. You can:
+
+- **Expand the row (▸)** to see each step with action / selector / value / timeout, `{{Tokens}}` highlighted in indigo.
+- **Click the pencil ✎** on Web UI verifications to open the same **Edit Web UI Test Case** dialog used for standalone web UI tests. From there you can:
+  - Delete captured login-flow steps (though running `--auth-setup --target UI_Web_*` before recording avoids capturing them in the first place).
+  - Rewrite a brittle selector.
+  - Reorder / add / remove steps.
+  - Insert `{{Token}}` placeholders the auto-parameteriser missed (e.g. for values shorter than 4 chars).
+  - Edit the Name / Description / Start URL / screenshot-on-failure flag.
+- **Click the trash icon 🗑** to delete the whole verification and re-record from scratch.
+
+Desktop (WinForms) verifications support view + delete only — no edit dialog yet. Delete-and-re-record is the workflow for fixing desktop verifications.
 
 ### Step 6 — Replay to confirm
 

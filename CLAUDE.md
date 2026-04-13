@@ -97,24 +97,68 @@ executions/{testSetId}/{runId}.json      ← Execution history with per-objectiv
 ## Run modes
 
 ```bash
+# ── Normal / rebaseline / reuse ─────────────────────────────────────────────
 dotnet run --project src/AiTestCrew.Runner -- "objective"                                    # Normal (legacy flat)
 dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset ctrl-loads "objective"   # Normal (module-scoped, merges)
-dotnet run --project src/AiTestCrew.Runner -- --stack bravecloud --api-module sdr --module sdr --testset nmi "objective"  # Multi-stack: target BraveCloud SDR
-dotnet run --project src/AiTestCrew.Runner -- --stack legacy --api-module sdr --module sdr --testset nmi "objective"      # Multi-stack: target Legacy SDR
 dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset ctrl-loads --obj-name "Short Name" "objective"  # With short display name
+dotnet run --project src/AiTestCrew.Runner -- --rebaseline "obj"                             # Regenerate & save (AI-generated objectives only)
+dotnet run --project src/AiTestCrew.Runner -- --reuse <testSetId>                            # Reuse (legacy flat)
+dotnet run --project src/AiTestCrew.Runner -- --reuse <testSetId> --module <moduleId>         # Reuse module-scoped — runs ALL test cases
+dotnet run --project src/AiTestCrew.Runner -- --reuse <testSetId> --module <moduleId> --objective <idOrName>  # Reuse a single test case (--objective matches Id slug OR display name)
+
+# ── Multi-stack API targeting ──────────────────────────────────────────────
+dotnet run --project src/AiTestCrew.Runner -- --stack bravecloud --api-module sdr --module sdr --testset nmi "objective"
+dotnet run --project src/AiTestCrew.Runner -- --stack legacy --api-module sdr --module sdr --testset nmi "objective"
+
+# ── Module + test set management ───────────────────────────────────────────
 dotnet run --project src/AiTestCrew.Runner -- --list                                         # List saved test sets
 dotnet run --project src/AiTestCrew.Runner -- --list-modules                                 # List modules
-dotnet run --project src/AiTestCrew.Runner -- --reuse <id>                                   # Reuse saved test set (runs all test cases)
-dotnet run --project src/AiTestCrew.Runner -- --reuse <id> --module <mod> --objective <objId>  # Reuse a single test case only
-dotnet run --project src/AiTestCrew.Runner -- --rebaseline "obj"                             # Regenerate & save
 dotnet run --project src/AiTestCrew.Runner -- --create-module "Name"                         # Create a module
 dotnet run --project src/AiTestCrew.Runner -- --create-testset <moduleId> "Name"             # Create empty test set
+
+# ── Recording (standalone test cases) ──────────────────────────────────────
 dotnet run --project src/AiTestCrew.Runner -- --record-setup --module sdr --testset nmi      # Record reusable setup steps (e.g. login)
 dotnet run --project src/AiTestCrew.Runner -- --auth-setup                                   # Save Blazor SSO + 2FA auth state
 dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_MVC               # Save Legacy MVC forms auth state
-dotnet run --project src/AiTestCrew.Runner -- --record --module sec --testset users --case-name "Search" --target UI_Web_Blazor  # Record Blazor test
-dotnet run --project src/AiTestCrew.Runner -- --record --module desktop --testset calc --case-name "Basic Add" --target UI_Desktop_WinForms  # Record WinForms test
+dotnet run --project src/AiTestCrew.Runner -- --record --module sec --testset users --case-name "Search" --target UI_Web_Blazor
+dotnet run --project src/AiTestCrew.Runner -- --record --module desktop --testset calc --case-name "Basic Add" --target UI_Desktop_WinForms
+
+# ── aseXML (Phase 1: generate; Phase 2: deliver; Phase 3: verify) ─────────
+dotnet run --project src/AiTestCrew.Runner -- --module aemo-b2b --testset mfn-tests "Generate an MFN for NMI 4103035611 ..."  # Render XML to output/asexml/
+dotnet run --project src/AiTestCrew.Runner -- --list-endpoints                               # List endpoints from mil.V2_MIL_EndPoint (needs AseXml.BravoDb.ConnectionString)
+dotnet run --project src/AiTestCrew.Runner -- --module aemo-b2b --testset mfn-delivery --endpoint GatewaySPARQ --obj-name "Deliver MFN" "Deliver MFN for NMI 4103035611 to GatewaySPARQ ..."
+dotnet run --project src/AiTestCrew.Runner -- --record-verification --module aemo-b2b --testset mfn-delivery --objective <idOrName> --target UI_Web_Blazor --verification-name "MFN Process Overview shows 'One In All In'" --wait 30
+dotnet run --project src/AiTestCrew.Runner -- --record-verification --module aemo-b2b --testset mfn-delivery --objective <idOrName> --target UI_Web_MVC --verification-name "Legacy MFN Search grid row exists"
+# Tip: run --auth-setup --target UI_Web_MVC first so MVC recording starts authenticated (skips capturing the login flow).
 ```
+
+### Flag reference (alphabetical)
+
+| Flag | Modes | Value | Purpose |
+|---|---|---|---|
+| `--api-module <key>` | Normal / Reuse | e.g. `sdr` | Pick a module within a multi-stack API (`ApiStacks.<stack>.Modules`). Persists on the test set. |
+| `--auth-setup` | Auth | (none) | Launch a browser and save auth state. `--target UI_Web_Blazor` (default) = Azure SSO + TOTP; `--target UI_Web_MVC` = forms auth. |
+| `--case-name "<name>"` | Recording | string | Display name for a recorded test case or setup recording. |
+| `--create-module "<name>"` | Management | string | Create a module; slugifies the name. |
+| `--create-testset <moduleId> "<name>"` | Management | slug + string | Create an empty test set in a module. |
+| `--delivery-step-index <n>` | Record-verification | int (default 0) | Which delivery case in the objective to attach to. |
+| `--endpoint <EndPointCode>` | Delivery | e.g. `GatewaySPARQ` | Bravo `mil.V2_MIL_EndPoint.EndPointCode`. Overrides LLM extraction. Persisted on the test set. |
+| `--list` | List | (none) | List legacy flat test sets. |
+| `--list-endpoints` | List | (none) | Query Bravo DB and print available endpoint codes. |
+| `--list-modules` | List | (none) | List modules. |
+| `--module <moduleId>` | All | slug | Module scope for the command. |
+| `--obj-name "<name>"` | Normal / Rebaseline | string | Short display name for the generated objective. |
+| `--objective <idOrName>` | Reuse / Record-verification | slug OR display name | Reuse: scope to a single test case. Record-verification: target delivery objective. Case-insensitive; matches `TestObjective.Id` first, then `Name`. |
+| `--rebaseline` | Rebaseline | flag | Regenerate test cases via LLM and overwrite. Only valid for AI-generated objectives. |
+| `--record` | Recording | flag | Record a standalone test case (combine with `--target`). |
+| `--record-setup` | Recording | flag | Record setup steps (e.g. login) at the test-set level. |
+| `--record-verification` | Recording | flag | Record a post-delivery UI verification attached to a delivery objective. |
+| `--reuse <testSetId>` | Reuse | slug | Replay a saved test set. Module-scoped: auto-derives `--testset` if omitted. |
+| `--stack <key>` | Normal / Reuse | e.g. `bravecloud` | API stack key (`ApiStacks.<key>`). Persists on the test set. |
+| `--target <type>` | Recording | `UI_Web_MVC`, `UI_Web_Blazor`, `UI_Desktop_WinForms` | UI surface for recording. |
+| `--testset <testSetId>` | All | slug | Test set scope (auto-derived from `--reuse` if module-scoped). |
+| `--verification-name "<name>"` | Record-verification | string | Display label for the recorded verification. |
+| `--wait <seconds>` | Record-verification | int (default = `AseXml.DefaultVerificationWaitSeconds`, 30) | Delay between delivery and this verification at playback. |
 
 ## Agent pattern
 
@@ -140,22 +184,50 @@ All agents extend `BaseTestAgent` and implement `ITestAgent`:
 
 ## Available slash commands
 
+### Action skills (scaffold / implement)
+
 | Command | Purpose |
 |---|---|
-| `/add-agent <TargetType> "<desc>"` | Scaffold a new test agent |
-| `/run-aitest <args>` | Build and run the test suite |
-| `/add-validation <agent> "<rule>"` | Add a new validation rule |
+| `/add-agent <TargetType> "<desc>"` | Scaffold a new test agent for a new target type |
+| `/add-validation <agent> "<rule>"` | Add a new response validation rule to an existing agent |
 | `/add-asexml-template <TransactionType> <templateId> "<desc>"` | Scaffold a new aseXML template + manifest pair (content-only — no agent changes) |
-| `/add-asexml-verification` | Scaffold a post-delivery UI verification attached to an existing delivery objective (runs the recorder with auto-parameterisation) |
-| `/implement-feature "<description>"` | Implement any new feature |
-| `/review-agent <AgentName>` | Review an agent for quality and pattern compliance |
+| `/add-asexml-verification` | Scaffold a post-delivery UI verification attached to an existing delivery objective (recorder + auto-parameterisation) |
+| `/add-delivery-protocol <scheme> "<desc>"` | Scaffold a new `IXmlDropTarget` implementation (AS2, HTTP POST, SMB, etc.) |
+| `/implement-feature "<description>"` | Implement any new feature (general-purpose planner + builder) |
+| `/run-aitest <args>` | Build and run the test suite |
+| `/review-agent <AgentName>` | Review an agent implementation for correctness + pattern compliance |
+
+### Reference skills (read before you build)
+
+| Command | Purpose |
+|---|---|
+| `/asexml-reference` | End-to-end overview of the aseXML subsystem — Generate + Deliver + Verify, data model, extension points |
 | `/bravo-web-reference` | Bravo Web DOM patterns, Kendo UI selectors, and recorder/replay rules |
 | `/blazor-cloud-reference` | Brave Cloud DOM patterns, MudBlazor selectors, SPA timing, and recorder/replay rules |
 | `/desktop-winui-reference` | Desktop UI Automation patterns, FlaUI selectors, Windows hooks, recording/replay architecture |
 
+## Where to extend — quick map
+
+Adding a ___ is → ___
+
+| You want to add... | Use | Files touched |
+|---|---|---|
+| A new aseXML transaction type (e.g. CDN, MDM messages) | `/add-asexml-template` | `templates/asexml/<TransactionType>/*.xml` + manifest only. Zero C# changes. |
+| A new auto-field generator (e.g. sequenced counter, GUID format) | Step 7 of `/add-asexml-template` | `src/AiTestCrew.Agents/AseXmlAgent/Templates/FieldGenerators.cs` |
+| A new delivery protocol (e.g. AS2, HTTP POST, SMB, GPG-encrypted SFTP) | `/add-delivery-protocol` | `src/AiTestCrew.Agents/AseXmlAgent/Delivery/*DropTarget.cs` + `DropTargetFactory.cs` |
+| A new UI surface for verification (e.g. React single-page app) | `/add-agent` first (for standalone use) → then `VerificationStep.Target` already routes to it via `CanHandleAsync` | New agent + recorder; `VerificationStep.cs` already supports any `TestTargetType` |
+| A new test target type (e.g. message bus, database check) | `/add-agent` | New agent; `TestTargetType` enum; DI registration |
+| A new response validation rule | `/add-validation` | `ValidateResponseAsync` in the target agent |
+| A new CLI flag | Manual — `src/AiTestCrew.Runner/Program.cs` | `ParseArgs` + `CliArgs` + handler. Thread through `orchestrator.RunAsync` if it affects execution. |
+| A new WebApi endpoint | Manual — `src/AiTestCrew.WebApi/Endpoints/*Endpoints.cs` | Map into `app.MapGroup` in `Program.cs`. Match naming style of sibling routes. |
+| A new UI edit dialog | Manual — parallel to `EditWebUiTestCaseDialog.tsx` | Or reuse the existing one via its generic `definition` / `onSave` / `onDelete` props |
+| A new wait strategy for verifications (SFTP pickup poll, DB status poll) | Extend `VerificationStep` with an optional richer strategy object; `AseXmlDeliveryAgent.RunVerificationAsync` dispatch | Currently fixed-delay only (`WaitBeforeSeconds`) |
+| A new persistence field on any existing model | Extend the class; update `FromTestCase`/`ToTestCase` if applicable; update TS type | Re-reads old JSON via lenient deserialisation; no migration needed for additive changes |
+
 ## Documentation
 
-- `docs/functional.md` — user-facing feature reference
-- `docs/architecture.md` — component structure, data flow, design decisions
+- `docs/functional.md` — user-facing feature reference and CLI runbook
+- `docs/architecture.md` — component structure, data flow, design decisions, extension patterns
+- Phase 3 decision: the aseXML feature is feature-complete through **Generate → Deliver → Wait → Verify**. Future work is extension (new transaction types, new protocols, richer wait strategies, desktop edit dialog, Phase 1.5 UI edit for non-verification aseXML steps) rather than new phases.
 
-Keep both docs updated when behaviour or structure changes.
+Keep docs updated when behaviour or structure changes. The `/add-*` skills codify the "right way" to extend — reach for them first before hand-editing.
