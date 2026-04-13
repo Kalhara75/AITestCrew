@@ -27,6 +27,7 @@ public enum TestTargetType
     MessageBus,
     Database,
     AseXml_Generate,
+    AseXml_Deliver,
     EndToEnd
 }
 

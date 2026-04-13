@@ -7,6 +7,7 @@ using Microsoft.SemanticKernel.ChatCompletion;
 using Spectre.Console;
 using AiTestCrew.Agents.ApiAgent;
 using AiTestCrew.Agents.AseXmlAgent;
+using AiTestCrew.Agents.AseXmlAgent.Delivery;
 using AiTestCrew.Agents.AseXmlAgent.Templates;
 using AiTestCrew.Agents.Auth;
 using AiTestCrew.Agents.BraveCloudUiAgent;
@@ -661,6 +662,22 @@ builder.Services.AddSingleton<AseXmlGenerationAgent>(sp => new AseXmlGenerationA
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AseXmlGenerationAgent>());
 
+// aseXML delivery agent — resolves endpoint from Bravo DB and uploads via SFTP/FTP
+builder.Services.AddSingleton<IEndpointResolver>(sp => new BravoEndpointResolver(
+    sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<ILogger<BravoEndpointResolver>>()
+));
+builder.Services.AddSingleton<DropTargetFactory>();
+builder.Services.AddSingleton<AseXmlDeliveryAgent>(sp => new AseXmlDeliveryAgent(
+    sp.GetRequiredService<Kernel>(),
+    sp.GetRequiredService<ILogger<AseXmlDeliveryAgent>>(),
+    sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<TemplateRegistry>(),
+    sp.GetRequiredService<IEndpointResolver>(),
+    sp.GetRequiredService<DropTargetFactory>()
+));
+builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AseXmlDeliveryAgent>());
+
 // Test set persistence + execution history + modules
 builder.Services.AddSingleton(new TestSetRepository(AppContext.BaseDirectory));
 builder.Services.AddSingleton(new ExecutionHistoryRepository(AppContext.BaseDirectory, envConfig.MaxExecutionRunsPerTestSet));
@@ -697,6 +714,33 @@ builder.Logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProv
     "AiTestCrew",   envConfig.VerboseLogging ? LogLevel.Information : LogLevel.Warning);
 
 var host = builder.Build();
+
+// ── --list-endpoints: print Bravo delivery endpoints and exit ──
+if (cli.ListEndpoints)
+{
+    var resolver = host.Services.GetRequiredService<IEndpointResolver>();
+    try
+    {
+        var codes = await resolver.ListCodesAsync();
+        if (codes.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[grey]No endpoints found in mil.V2_MIL_EndPoint.[/]");
+            return;
+        }
+        var epTable = new Table()
+            .Border(TableBorder.Rounded)
+            .AddColumn("[bold]EndPointCode[/]");
+        foreach (var code in codes) epTable.AddRow(code);
+        AnsiConsole.Write(epTable);
+        AnsiConsole.MarkupLine($"[grey]{codes.Count} endpoint(s). Use --endpoint <code> to target one.[/]");
+    }
+    catch (Exception ex)
+    {
+        AnsiConsole.MarkupLine($"[red]Failed to list endpoints:[/] {ex.Message.EscapeMarkup()}");
+        AnsiConsole.MarkupLine("[grey]Check TestEnvironment.AseXml.BravoDb.ConnectionString in appsettings.json.[/]");
+    }
+    return;
+}
 
 // ── Provider label ──
 var providerLabel = envConfig.LlmProvider.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
@@ -742,7 +786,8 @@ await AnsiConsole.Status()
         suiteResult = await orchestrator.RunAsync(objective, cli.Mode, cli.ReuseId,
             moduleId: cli.ModuleId, targetTestSetId: cli.TestSetId,
             objectiveName: cli.ObjectiveName,
-            apiStackKey: cli.ApiStackKey, apiModule: cli.ApiModule);
+            apiStackKey: cli.ApiStackKey, apiModule: cli.ApiModule,
+            endpointCode: cli.EndpointCode);
     });
 
 // ── Results table ──
@@ -812,7 +857,9 @@ static CliArgs ParseArgs(string[] args)
     string? createModuleName = null, createTestSetModuleId = null, createTestSetName = null;
     string? objectiveName = null, caseName = null, recordTarget = null;
     string? apiStackKey = null, apiModuleKey = null;
+    string? endpointCode = null;
     bool listModules = false, recordMode = false, recordSetupMode = false, authSetupMode = false;
+    bool listEndpoints = false;
     var mode = RunMode.Normal;
 
     for (int i = 0; i < args.Length; i++)
@@ -889,6 +936,14 @@ static CliArgs ParseArgs(string[] args)
                 break;
             case "--api-module":
                 throw new ArgumentException("--api-module requires a <moduleKey> argument (e.g. sdr, security).");
+            case "--endpoint" when i + 1 < args.Length:
+                endpointCode = args[++i];
+                break;
+            case "--endpoint":
+                throw new ArgumentException("--endpoint requires an <EndPointCode> argument (e.g. GatewaySPARQ).");
+            case "--list-endpoints":
+                listEndpoints = true;
+                break;
             default:
                 remaining.Add(args[i]);
                 break;
@@ -915,7 +970,9 @@ static CliArgs ParseArgs(string[] args)
         CaseName = caseName,
         RecordTarget = recordTarget,
         ApiStackKey = apiStackKey,
-        ApiModule = apiModuleKey
+        ApiModule = apiModuleKey,
+        EndpointCode = endpointCode,
+        ListEndpoints = listEndpoints
     };
 }
 
@@ -940,4 +997,6 @@ class CliArgs
     public string? RecordTarget { get; init; }
     public string? ApiStackKey { get; init; }
     public string? ApiModule { get; init; }
+    public string? EndpointCode { get; init; }
+    public bool ListEndpoints { get; init; }
 }

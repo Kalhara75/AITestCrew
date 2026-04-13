@@ -227,7 +227,8 @@ public class TestSetRepository
         string moduleId, string testSetId,
         List<TestObjective> newObjectives, string objective,
         string? objectiveName = null,
-        string? apiStackKey = null, string? apiModule = null)
+        string? apiStackKey = null, string? apiModule = null,
+        string? endpointCode = null)
     {
         var path = ModuleFilePath(moduleId, testSetId);
         var fileLock = GetLock(path);
@@ -265,6 +266,9 @@ public class TestSetRepository
             // Persist API target (new value overrides existing if provided)
             if (apiStackKey is not null) testSet.ApiStackKey = apiStackKey;
             if (apiModule is not null) testSet.ApiModule = apiModule;
+
+            // Persist aseXML delivery endpoint (new value overrides existing if provided)
+            if (!string.IsNullOrWhiteSpace(endpointCode)) testSet.EndpointCode = endpointCode;
 
             testSet.LastRunAt = DateTime.UtcNow;
             testSet.RunCount++;

@@ -27,6 +27,13 @@ public class PersistedTestSet
     /// <summary>API module key this test set targets (e.g. "sdr", "security"). Null = legacy flat config.</summary>
     public string? ApiModule { get; set; }
 
+    /// <summary>
+    /// Bravo delivery endpoint code this test set targets (e.g. "GatewaySPARQ").
+    /// Null when the test set isn't a delivery test set. Mirrors how
+    /// <see cref="ApiStackKey"/>/<see cref="ApiModule"/> persist per-test-set targeting.
+    /// </summary>
+    public string? EndpointCode { get; set; }
+
     /// <summary>All user objectives that have contributed test objectives to this test set.</summary>
     public List<string> Objectives { get; set; } = [];
 

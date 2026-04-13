@@ -1,4 +1,6 @@
-Scaffold a new aseXML transaction template for the AseXmlGenerationAgent.
+Scaffold a new aseXML transaction template.
+
+The template is consumed by BOTH agents — `AseXmlGenerationAgent` (renders XML to disk, `AseXml_Generate`) and `AseXmlDeliveryAgent` (renders + uploads to a Bravo endpoint, `AseXml_Deliver`). A single `{templateId}.xml` + `{templateId}.manifest.json` pair covers both workflows; no separate delivery template is needed.
 
 Arguments: $ARGUMENTS
 Expected format: `<TransactionType> <templateId> "<description>"`
@@ -104,7 +106,7 @@ Rebuild once so the new template+manifest pair is copied into each project's `bi
 dotnet build src/AiTestCrew.Runner/AiTestCrew.Runner.csproj
 ```
 
-Then run a generation objective that exercises the new template:
+Then run the two relevant objectives — prove the template works with BOTH agents:
 
 ```bash
 cd src/AiTestCrew.Runner/bin/Debug/net8.0-windows
@@ -113,13 +115,22 @@ cd src/AiTestCrew.Runner/bin/Debug/net8.0-windows
 ./AiTestCrew.Runner.exe --create-module "AEMO B2B"
 ./AiTestCrew.Runner.exe --create-testset aemo-b2b "<TransactionType> scenarios"
 
-# Generate — phrase the objective so the LLM clearly picks your template
+# 1. GENERATE — phrase the objective with a verb like "generate/produce/render"
+#    so the LLM picks AseXml_Generate. Output lands in output/asexml/<ts>_<taskId>/.
 ./AiTestCrew.Runner.exe --module aemo-b2b --testset <slug> \
   --obj-name "<short label>" \
-  "<full objective mentioning the transaction type by name and all required user fields with values>"
+  "<full generation objective naming the transaction type + all required user fields>"
+
+# 2. DELIVER — phrase with "deliver/send/submit to <EndPointCode>" so the LLM picks
+#    AseXml_Deliver. Output lands in output/asexml/<ts>_<taskId>_deliver/, and a real
+#    SFTP/FTP upload happens. Pre-req: AseXml.BravoDb.ConnectionString in appsettings.json.
+./AiTestCrew.Runner.exe --module aemo-b2b --testset <slug>-delivery \
+  --endpoint <EndPointCode> \
+  --obj-name "<short label>" \
+  "Deliver <transaction type> ... to <EndPointCode> ..."
 ```
 
-Inspect `bin/.../output/asexml/{yyyyMMdd_HHmmss}_{taskId}/01-*.xml` and confirm:
+Inspect the generated artefacts in both runs and confirm:
 
 1. **Layout matches the real sample** (element order, namespaces, nesting).
 2. **User fields are your values**, verbatim.
@@ -127,6 +138,9 @@ Inspect `bin/.../output/asexml/{yyyyMMdd_HHmmss}_{taskId}/01-*.xml` and confirm:
 4. **Auto fields are fresh** (`MessageID`, `TransactionID`, timestamps each changed vs. the sample).
 5. **Well-formed XML** — the renderer runs `XDocument.Parse` internally, so a malformed output would have failed the step.
 6. **No stray `{{Tokens}}` left** in the output — those only survive if a manifest entry is missing, which should have been a render error.
+7. **Delivery — remote file lands at the right path** as reported by the `upload[1]` step. If the endpoint has `IsOutboundFilesZiped = 1`, a `package[1]` step appears and the uploaded filename is `{MessageID}.zip` containing a single `{MessageID}.xml` entry.
+
+Running only the generation half is acceptable when the Bravo DB / SFTP endpoint isn't reachable from your machine — but note that in the review so the next person can finish the delivery smoke.
 
 ### Step 7 — (Optional) Add a new auto-field generator
 
@@ -145,16 +159,18 @@ If you added a generator in step 7, also update the generators table in `docs/ar
 
 ### Step 9 — Do NOT do these things
 
-- Do NOT modify `AseXmlGenerationAgent.cs`, `AseXmlRenderer.cs`, `TemplateRegistry.cs`, or `AseXmlTestDefinition.cs` to support a specific transaction type. If those files need to change, you're introducing coupling the engine was designed to avoid — stop and explain why.
+- Do NOT modify `AseXmlGenerationAgent.cs`, `AseXmlDeliveryAgent.cs`, `AseXmlRenderer.cs`, `TemplateRegistry.cs`, or the step definition classes to support a specific transaction type. If those files need to change, you're introducing coupling the engine was designed to avoid — stop and explain why.
 - Do NOT modify the orchestrator, persistence, DI, or `TestTargetType` enum for a new template.
 - Do NOT write template XML programmatically, with Razor, or via string concatenation elsewhere. The template file IS the source of truth.
 - Do NOT hardcode auto-generated values (MessageID, TransactionID, timestamps) — they must go through generators so each run is unique.
 - Do NOT commit `bin/.../output/asexml/` artefacts. `.gitignore` should exclude the `output/` directory. If you see generated XML staged, unstage it.
 - Do NOT put sender codes or environment-specific URLs in a template without confirming with the user — those are often per-deployment and may need promoting from `const` to `user` in the future.
+- Do NOT add endpoint-specific knowledge to a template (e.g. "OnlyForGatewaySPARQ"). Endpoint selection is a property of the test case (`AseXmlDeliveryTestDefinition.EndpointCode`), not the template — the same template body must be usable against any endpoint. Endpoints themselves are managed in the Bravo DB's `mil.V2_MIL_EndPoint` table, not in templates or code.
 
 ### Architecture constraints to respect
 
-- Templates are pure content — the renderer logic lives in `AseXmlRenderer.cs` and handles all substitution, escaping, and validation.
+- Templates are pure content — the renderer logic lives in `AseXmlRenderer.cs` and handles all substitution, escaping, and validation. Both `AseXmlGenerationAgent` and `AseXmlDeliveryAgent` call the same renderer, so one template works for both.
 - Generators are the only source of auto values. Don't compute `MessageID`/timestamps yourself.
 - The LLM writes field values, never XML. If you find yourself asking the LLM to emit the XML body, you've broken the design — the determinism of the renderer is the core value proposition.
-- New transaction types do not change the public surface of the agent (its `TestTargetType`, `CanHandleAsync`, step persistence). If the target type needs to change, you're building a different agent (e.g. Delivery) — not extending Generation.
+- Adding a new transaction type does not change the public surface of either agent (their `TestTargetType`s, `CanHandleAsync`, step persistence shape). If the target type needs to change, you're building a different agent — not extending the template set.
+- Adding a new delivery protocol (AS2, HTTP POST, SMB) is NOT a template change — it's a new `IXmlDropTarget` implementation + a `DropTargetFactory` switch arm. Out of scope for this skill.

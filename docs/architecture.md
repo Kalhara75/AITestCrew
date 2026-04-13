@@ -259,6 +259,43 @@ Duplicate `fill` steps on the same selector are deduplicated (update-in-place). 
 
 ---
 
+#### aseXML Delivery Agent
+
+`AseXmlDeliveryAgent` extends the generation story end-to-end: it renders an aseXML payload and uploads it to a Bravo inbound drop location resolved from the target Bravo application's database. Target type: `AseXml_Deliver`.
+
+**Three-layer design.** The agent orchestrates three small components that can be tested and swapped independently:
+
+1. **`IEndpointResolver`** (`BravoEndpointResolver`) — queries `mil.V2_MIL_EndPoint` by `EndPointCode` via `Microsoft.Data.SqlClient`. Returns a `BravoEndpoint` record with `FtpServer`, `UserName`, `Password`, `OutBoxUrl`, and `IsOutboundFilesZipped`. Caches per-code lookups in a `ConcurrentDictionary` for process lifetime (restart to refresh) and caches the full code list on first call to `ListCodesAsync()`.
+2. **`IXmlDropTarget`** (`SftpDropTarget` / `FtpDropTarget`) — uploads a `Stream` to the resolved endpoint. The SFTP implementation wraps SSH.NET's `SftpClient`; the FTP implementation wraps FluentFTP's `AsyncFtpClient`. Both parse host/port from `FTPServer`, strip any scheme from `OutBoxUrl`, ensure the remote directory exists, upload, and verify the remote file is present. `DropTargetFactory.DetectScheme(outBoxUrl, ftpServer)` picks `sftp` vs `ftp`; defaults to SFTP when no scheme is present (matches Bravo's current convention).
+3. **`XmlZipPackager`** — a static helper using `System.IO.Compression.ZipArchive` (no NuGet). When the endpoint has `IsOutboundFilesZipped = true`, the agent calls `XmlZipPackager.Package(xml, "{MessageID}.xml")` and uploads the resulting `{MessageID}.zip` instead of the raw `.xml`. Both the raw XML and the zip are written to the local debug output directory so developers can see exactly what left the machine.
+
+**ExecuteAsync pipeline (per case)**:
+
+```
+render[N]        → AseXmlRenderer (reused from generation)
+resolve-endpoint → IEndpointResolver.ResolveAsync(code)
+[package[N]]     → XmlZipPackager.Package(xml, "{MessageID}.xml")   — only when IsOutboundFilesZipped
+upload[N]        → DropTargetFactory.Create(endpoint).UploadAsync(endpoint, remoteFileName, stream)
+```
+
+Remote filename is `{MessageID}.xml` (or `{MessageID}.zip` when zipped) — matches the AEMO sample convention (`MSRINB-MFN-49635377-DD.xml`).
+
+**Endpoint selection**. Three sources, in precedence order:
+
+1. `task.Parameters["EndpointCode"]` — populated by the `--endpoint` CLI flag (highest precedence).
+2. `AseXmlDeliveryTestDefinition.EndpointCode` — the LLM-extracted or user-saved per-case value.
+3. Saved `PersistedTestSet.EndpointCode` on reuse, flowed into the task by `TestOrchestrator.RunAsync`.
+
+When all three are empty, the `resolve-endpoint` step fails fast with a clear message — no SQL call is attempted. When a code is supplied but not found, the step fails with an explicit "not found" message that does not leak SQL error detail.
+
+**Security discipline**. The `Password` field on `BravoEndpoint` is never logged or surfaced in step details. Step summaries and the log stream include `EndPointCode`, `UserName`, host, `OutBoxUrl`, and the zip flag, but not the password. The Bravo DB connection string lives in `appsettings.json` (gitignored) — never in `appsettings.example.json`.
+
+**Self-contained design choice**. The delivery agent renders the XML itself rather than consuming output from a preceding `AseXml_Generate` task. This avoids activating `TestTask.DependsOn` in the orchestrator (declared but currently unused) and keeps Phase 2 scope tight. The trade-off is that the generation agent remains available for render-only flows, while the delivery agent handles the render+deliver lifecycle as one atomic test step. Phase 3 (Wait + UI validate) will revisit the chaining question when it genuinely needs a multi-stage pipeline.
+
+**Extensibility — new protocols**. Adding a new upload protocol (AS2, HTTP POST, SMB, etc.) is a drop-in: implement `IXmlDropTarget`, add a `switch` arm to `DropTargetFactory.Create(endpoint)` matching the appropriate scheme prefix, and register the new class in DI if it has constructor dependencies beyond a logger. The agent, renderer, resolver, and persistence layer are untouched. Keep the set of implementations small — only add one when a real endpoint needs it.
+
+---
+
 ### AiTestCrew.Orchestrator
 
 Decomposes objectives, routes tasks to agents, aggregates results, manages run modes. References Core and Agents.

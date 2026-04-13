@@ -7,6 +7,7 @@ import { TestCaseTable } from '../components/TestCaseTable';
 import { WebUiTestCaseTable } from '../components/WebUiTestCaseTable';
 import { DesktopUiTestCaseTable } from '../components/DesktopUiTestCaseTable';
 import { AseXmlTestCaseTable } from '../components/AseXmlTestCaseTable';
+import { AseXmlDeliveryTestCaseTable } from '../components/AseXmlDeliveryTestCaseTable';
 import { RunHistoryTable } from '../components/RunHistoryTable';
 import { TriggerRunButton } from '../components/TriggerRunButton';
 import { StatusBadge } from '../components/StatusBadge';
@@ -232,6 +233,9 @@ export function TestSetDetailPage() {
           )}
           {selectedObjective.aseXmlSteps?.length > 0 && (
             <AseXmlTestCaseTable objectives={[selectedObjective]} />
+          )}
+          {selectedObjective.aseXmlDeliverySteps?.length > 0 && (
+            <AseXmlDeliveryTestCaseTable objectives={[selectedObjective]} />
           )}
 
           {/* Run history for this objective */}

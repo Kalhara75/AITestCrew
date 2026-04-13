@@ -29,6 +29,7 @@ AITestCrew routes each test task to a specialised agent based on the task's `Tes
 | **Legacy Web UI Agent** (`LegacyWebUiTestAgent`) | `UI_Web_MVC` | Playwright-based legacy ASP.NET MVC web UI testing with forms authentication and StorageState caching |
 | **WinForms Desktop UI Agent** (`WinFormsUiTestAgent`) | `UI_Desktop_WinForms` | FlaUI-based Windows Forms desktop application testing — LLM-driven exploration via UI Automation tree, recording via Windows hooks, deterministic replay |
 | **aseXML Generation Agent** (`AseXmlGenerationAgent`) | `AseXml_Generate` | Template-driven AEMO B2B aseXML payload generation. LLM picks a template and extracts user field values from the objective; the renderer performs deterministic `{{token}}` substitution with auto-generated MessageID/TransactionID/timestamps. |
+| **aseXML Delivery Agent** (`AseXmlDeliveryAgent`) | `AseXml_Deliver` | Renders an aseXML payload and uploads it to a Bravo inbound drop location resolved from `mil.V2_MIL_EndPoint` by `EndPointCode`. SFTP/FTP auto-detected from `OutBoxUrl` scheme. Wraps the XML in a `{MessageID}.zip` when the endpoint's `IsOutboundFilesZiped = 1`. |
 
 All agents extend `BaseTestAgent`, which provides shared LLM communication (`AskLlmAsync`, `AskLlmForJsonAsync`). Web UI agents share `BaseWebUiTestAgent` (Playwright), desktop UI agents share `BaseDesktopUiTestAgent` (FlaUI).
 
@@ -40,7 +41,8 @@ BaseTestAgent                          ← LLM helpers
   │     └── LegacyWebUiTestAgent       ← Legacy MVC (UI_Web_MVC)
   ├── BaseDesktopUiTestAgent           ← FlaUI shared infra (abstract)
   │     └── WinFormsUiTestAgent        ← Windows Forms (UI_Desktop_WinForms)
-  └── AseXmlGenerationAgent            ← AEMO aseXML payload rendering (AseXml_Generate)
+  ├── AseXmlGenerationAgent            ← AEMO aseXML payload rendering (AseXml_Generate)
+  └── AseXmlDeliveryAgent              ← Render + SFTP/FTP upload to Bravo (AseXml_Deliver)
 ```
 
 The following target types are defined but do not yet have agent implementations: `Background_Hangfire`, `MessageBus`, `Database`.
@@ -189,6 +191,52 @@ Rendered XML is written to `src/AiTestCrew.Runner/bin/Debug/net8.0-windows/outpu
 **Adding a new transaction type** is a content-only change: drop a new `{templateId}.xml` + `{templateId}.manifest.json` pair under `templates/asexml/{TransactionType}/` and rebuild (the `<Content>` entry in `AiTestCrew.Runner.csproj` and `AiTestCrew.WebApi.csproj` copies it to each project's bin). No recompile of agents or orchestrator needed — `TemplateRegistry` discovers the new pair at next startup.
 
 See [aseXML templates](#asexml-templates) above for the manifest schema and generator reference.
+
+---
+
+### Deliver aseXML transactions
+
+Generate an aseXML payload and ship it to a real Bravo inbound drop location in one step. The `AseXmlDeliveryAgent` resolves the endpoint from the Bravo DB (`mil.V2_MIL_EndPoint` keyed by `EndPointCode`), renders the XML using the same template + manifest pipeline as `--module/--testset` generation, and uploads via SFTP or FTP (auto-detected from `OutBoxUrl`). If the endpoint has `IsOutboundFilesZiped = 1`, the XML is wrapped in a `{MessageID}.zip` archive before upload.
+
+**Prerequisites** (in `appsettings.json`, never `appsettings.example.json`):
+
+```json
+"AseXml": {
+  "BravoDb": {
+    "ConnectionString": "Server=<bravo-db-host>;Database=<db-name>;User Id=<user>;Password=<pw>;TrustServerCertificate=True;"
+  }
+}
+```
+
+```bash
+# Discover available endpoints from the Bravo DB
+dotnet run --project src/AiTestCrew.Runner -- --list-endpoints
+
+# Deliver an MFN to GatewaySPARQ (endpoint code extracted from the objective)
+dotnet run --project src/AiTestCrew.Runner -- \
+  --module aemo-b2b --testset mfn-delivery \
+  --obj-name "Deliver MFN One In All In to GatewaySPARQ" \
+  "Deliver a MeterFaultAndIssueNotification for NMI 4103035611 checksum 3, identified 2025-05-04, start 2025-05-07 10:00:00+10:00, end 2025-05-07, duration 02:00, meter 060738, reason 'One In All In' to the GatewaySPARQ endpoint."
+
+# Same case but force the endpoint explicitly (overrides the objective / saved default)
+dotnet run --project src/AiTestCrew.Runner -- \
+  --module aemo-b2b --testset mfn-delivery \
+  --endpoint GatewaySPARQ \
+  --obj-name "MFN One In All In to GatewaySPARQ (explicit)" \
+  "Send an MFN for NMI 4103035611 ..."
+
+# Re-run saved deliveries — new MessageID/TransactionID each run, same endpoint
+dotnet run --project src/AiTestCrew.Runner -- --reuse mfn-delivery --module aemo-b2b
+```
+
+Agent steps per case (visible in the run report):
+
+- `render[N]` — XML body produced and written to the local debug dir at `output/asexml/{timestamp}_{taskId}_deliver/{NN}-*.xml`.
+- `resolve-endpoint[N]` — Bravo DB lookup; summary line includes host, `OutBoxUrl`, and whether the endpoint is zipped.
+- `package[N]` — only when `IsOutboundFilesZiped = 1`; reports uncompressed / compressed size and ratio.
+- `upload[N]` — `SFTP` or `FTP` tag + remote path + bytes + duration.
+
+**Security**: the endpoint `Password` is never written to logs or step details. Connection strings belong in `appsettings.json` only.
 
 ---
 

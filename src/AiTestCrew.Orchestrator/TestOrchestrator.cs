@@ -67,7 +67,8 @@ public class TestOrchestrator
         string? objectiveName = null,
         string? objectiveId = null,
         string? apiStackKey = null,
-        string? apiModule = null)
+        string? apiModule = null,
+        string? endpointCode = null)
     {
         var sw = Stopwatch.StartNew();
         var startedAt = DateTime.UtcNow;
@@ -138,7 +139,10 @@ public class TestOrchestrator
                     ? t : TestTargetType.API_REST;
 
                 var parameters = new Dictionary<string, object>();
-                if (obj.AseXmlSteps.Count > 0)
+                if (obj.AseXmlDeliverySteps.Count > 0)
+                    parameters["PreloadedTestCases"] = obj.AseXmlDeliverySteps
+                        .Select(s => s.ToTestCase(s.Description)).ToList();
+                else if (obj.AseXmlSteps.Count > 0)
                     parameters["PreloadedTestCases"] = obj.AseXmlSteps
                         .Select(s => s.ToTestCase(s.Description)).ToList();
                 else if (obj.DesktopUiSteps.Count > 0)
@@ -164,6 +168,13 @@ public class TestOrchestrator
                 var effectiveModule = apiModule ?? saved.ApiModule;
                 if (effectiveStack is not null) parameters["ApiStackKey"] = effectiveStack;
                 if (effectiveModule is not null) parameters["ApiModule"] = effectiveModule;
+
+                // Inject aseXML delivery endpoint: CLI override > saved default
+                var effectiveEndpoint = !string.IsNullOrWhiteSpace(endpointCode)
+                    ? endpointCode
+                    : saved.EndpointCode;
+                if (!string.IsNullOrWhiteSpace(effectiveEndpoint))
+                    parameters["EndpointCode"] = effectiveEndpoint!;
 
                 return new TestTask
                 {
@@ -213,6 +224,7 @@ public class TestOrchestrator
             {
                 if (apiStackKey is not null) t.Parameters["ApiStackKey"] = apiStackKey;
                 if (apiModule is not null) t.Parameters["ApiModule"] = apiModule;
+                if (!string.IsNullOrWhiteSpace(endpointCode)) t.Parameters["EndpointCode"] = endpointCode;
             }
 
             _logger.LogInformation("Decomposed into {Count} tasks:", tasks.Count);
@@ -329,9 +341,9 @@ public class TestOrchestrator
         if (mode is RunMode.Normal or RunMode.Rebaseline)
         {
             if (isModuleScoped)
-                await SaveTestSetToModuleAsync(objective, results, moduleId!, targetTestSetId!, mode, objectiveName, apiStackKey, apiModule);
+                await SaveTestSetToModuleAsync(objective, results, moduleId!, targetTestSetId!, mode, objectiveName, apiStackKey, apiModule, endpointCode);
             else
-                await SaveTestSetAsync(objective, results, objectiveName, apiStackKey, apiModule);
+                await SaveTestSetAsync(objective, results, objectiveName, apiStackKey, apiModule, endpointCode);
         }
 
         // ── Update run statistics (Reuse mode) ──
@@ -391,7 +403,8 @@ public class TestOrchestrator
     private async Task SaveTestSetAsync(
         string objective, List<TestResult> results,
         string? objectiveName = null,
-        string? apiStackKey = null, string? apiModule = null)
+        string? apiStackKey = null, string? apiModule = null,
+        string? endpointCode = null)
     {
         var testObjective = BuildObjectiveFromResults(objective, results, objectiveName);
         if (testObjective is null)
@@ -413,7 +426,8 @@ public class TestOrchestrator
             RunCount = 1,
             TestObjectives = [testObjective],
             ApiStackKey = apiStackKey,
-            ApiModule = apiModule
+            ApiModule = apiModule,
+            EndpointCode = string.IsNullOrWhiteSpace(endpointCode) ? null : endpointCode
         };
 
         if (!string.IsNullOrWhiteSpace(objectiveName))
@@ -428,7 +442,8 @@ public class TestOrchestrator
         string objective, List<TestResult> results,
         string moduleId, string testSetId, RunMode mode,
         string? objectiveName = null,
-        string? apiStackKey = null, string? apiModule = null)
+        string? apiStackKey = null, string? apiModule = null,
+        string? endpointCode = null)
     {
         var testObjective = BuildObjectiveFromResults(objective, results, objectiveName);
         if (testObjective is null)
@@ -467,7 +482,8 @@ public class TestOrchestrator
                 RunCount = (existing?.RunCount ?? 0) + 1,
                 TestObjectives = [..objectivesFromOthers, testObjective],
                 ApiStackKey = apiStackKey ?? existing?.ApiStackKey,
-                ApiModule = apiModule ?? existing?.ApiModule
+                ApiModule = apiModule ?? existing?.ApiModule,
+                EndpointCode = !string.IsNullOrWhiteSpace(endpointCode) ? endpointCode : existing?.EndpointCode
             };
             await _testSetRepo.SaveAsync(testSet, moduleId);
             _logger.LogInformation("Test set rebaselined (objective: {Obj}): {Module}/{Id}",
@@ -476,7 +492,7 @@ public class TestOrchestrator
         else
         {
             // Normal: merge into existing test set
-            await _testSetRepo.MergeObjectivesAsync(moduleId, testSetId, [testObjective], objective, objectiveName, apiStackKey, apiModule);
+            await _testSetRepo.MergeObjectivesAsync(moduleId, testSetId, [testObjective], objective, objectiveName, apiStackKey, apiModule, endpointCode);
             _logger.LogInformation("Test objective merged into: {Module}/{Id}", moduleId, testSetId);
         }
     }
@@ -492,6 +508,7 @@ public class TestOrchestrator
         var webUiSteps = new List<WebUiTestDefinition>();
         var desktopUiSteps = new List<DesktopUiTestDefinition>();
         var aseXmlSteps = new List<AseXmlTestDefinition>();
+        var aseXmlDeliverySteps = new List<AseXmlDeliveryTestDefinition>();
         var agentName = "";
         var targetType = "API_REST";
 
@@ -519,6 +536,17 @@ public class TestOrchestrator
                     foreach (var tc in desktopCases)
                         desktopUiSteps.Add(DesktopUiTestDefinition.FromTestCase(tc));
                 }
+                else if (v is List<AseXmlDeliveryTestCase> deliveryCases)
+                {
+                    targetType = "AseXml_Deliver";
+                    foreach (var tc in deliveryCases)
+                        aseXmlDeliverySteps.Add(AseXmlDeliveryTestDefinition.FromTestCase(tc));
+                }
+                else if (v is List<AseXmlDeliveryTestDefinition> deliveryDefs)
+                {
+                    targetType = "AseXml_Deliver";
+                    aseXmlDeliverySteps.AddRange(deliveryDefs);
+                }
                 else if (v is List<AseXmlTestCase> xmlCases)
                 {
                     targetType = "AseXml_Generate";
@@ -534,7 +562,8 @@ public class TestOrchestrator
             }
         }
 
-        if (apiSteps.Count == 0 && webUiSteps.Count == 0 && desktopUiSteps.Count == 0 && aseXmlSteps.Count == 0)
+        if (apiSteps.Count == 0 && webUiSteps.Count == 0 && desktopUiSteps.Count == 0
+            && aseXmlSteps.Count == 0 && aseXmlDeliverySteps.Count == 0)
             return null;
 
         var displayName = !string.IsNullOrWhiteSpace(objectiveName)
@@ -553,7 +582,8 @@ public class TestOrchestrator
             ApiSteps = apiSteps,
             WebUiSteps = webUiSteps,
             DesktopUiSteps = desktopUiSteps,
-            AseXmlSteps = aseXmlSteps
+            AseXmlSteps = aseXmlSteps,
+            AseXmlDeliverySteps = aseXmlDeliverySteps
         };
     }
 
@@ -597,8 +627,13 @@ public class TestOrchestrator
             - AseXml_Generate: Generate an AEMO aseXML transaction payload (e.g.
               MeterFaultAndIssueNotification, CustomerDetailsNotification) from a
               named template + user-supplied field values. Choose this when the
-              objective mentions sending/producing/generating an aseXML transaction,
-              an AEMO B2B message, or references a transaction type name.
+              objective only asks to produce/render the XML (no transmission).
+            - AseXml_Deliver: Generate AND transmit an aseXML payload to a Bravo
+              endpoint named in the objective (e.g. "deliver/send/transmit to
+              GatewaySPARQ"). Picks the endpoint from mil.V2_MIL_EndPoint by code.
+              Choose this over AseXml_Generate whenever the objective names an
+              endpoint or uses verbs like "deliver", "send", "drop", "transmit",
+              "submit", "push" for an aseXML transaction.
 
             For Phase 1, focus on API_REST tasks.
             If the objective mentions database, add a Database task but mark it

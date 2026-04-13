@@ -77,6 +77,15 @@ export interface AseXmlTestDefinition {
   validateAgainstSchema: boolean;
 }
 
+export interface AseXmlDeliveryTestDefinition {
+  description: string;
+  templateId: string;
+  transactionType: string;
+  fieldValues: Record<string, string>;
+  endpointCode: string;
+  validateAgainstSchema: boolean;
+}
+
 export interface TestObjective {
   id: string;
   name: string;
@@ -88,6 +97,7 @@ export interface TestObjective {
   webUiSteps: WebUiTestDefinition[];
   desktopUiSteps: DesktopUiTestDefinition[];
   aseXmlSteps: AseXmlTestDefinition[];
+  aseXmlDeliverySteps: AseXmlDeliveryTestDefinition[];
   stepCount: number;
 }
 

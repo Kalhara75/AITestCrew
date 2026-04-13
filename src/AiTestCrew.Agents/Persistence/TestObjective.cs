@@ -60,8 +60,15 @@ public class TestObjective
     /// </summary>
     public List<AseXmlTestDefinition> AseXmlSteps { get; set; } = [];
 
+    /// <summary>
+    /// aseXML delivery test step definitions — template + user field values + endpoint code.
+    /// Populated for AseXml_Deliver targets.
+    /// </summary>
+    public List<AseXmlDeliveryTestDefinition> AseXmlDeliverySteps { get; set; } = [];
+
     /// <summary>Total number of test steps in this objective.</summary>
-    public int StepCount => ApiSteps.Count + WebUiSteps.Count + DesktopUiSteps.Count + AseXmlSteps.Count;
+    public int StepCount => ApiSteps.Count + WebUiSteps.Count + DesktopUiSteps.Count
+        + AseXmlSteps.Count + AseXmlDeliverySteps.Count;
 
     // ── Backward compatibility for old v2 JSON with singular fields ──
 

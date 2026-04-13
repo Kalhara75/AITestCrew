@@ -92,13 +92,34 @@ public class TestEnvironmentConfig
 }
 
 /// <summary>
-/// Configuration for the aseXML generation agent (and, later, delivery agent).
+/// Configuration for the aseXML generation and delivery agents.
 /// </summary>
 public class AseXmlConfig
 {
     /// <summary>Path to the templates root. Relative paths are resolved against AppContext.BaseDirectory.</summary>
     public string TemplatesPath { get; set; } = "templates/asexml";
 
-    /// <summary>Path where rendered XML is written. Relative paths are resolved against AppContext.BaseDirectory.</summary>
+    /// <summary>Path where rendered XML (and, for zipped endpoints, the archive) is written. Relative paths are resolved against AppContext.BaseDirectory.</summary>
     public string OutputPath { get; set; } = "output/asexml";
+
+    /// <summary>Bravo application database used by the delivery agent to resolve endpoint connection details.</summary>
+    public BravoDbConfig BravoDb { get; set; } = new();
+
+    /// <summary>Upload timeout (per file) in seconds for the delivery agent.</summary>
+    public int DeliveryTimeoutSeconds { get; set; } = 60;
+
+    /// <summary>Retry count for a single upload attempt. Zero means fail-fast.</summary>
+    public int DeliveryRetryCount { get; set; }
+}
+
+/// <summary>
+/// Bravo application DB connection used to resolve SFTP/FTP endpoint details for the delivery agent.
+/// </summary>
+public class BravoDbConfig
+{
+    /// <summary>
+    /// SQL Server connection string for the Bravo application DB.
+    /// Stored in appsettings.json only — never in appsettings.example.json.
+    /// </summary>
+    public string ConnectionString { get; set; } = "";
 }

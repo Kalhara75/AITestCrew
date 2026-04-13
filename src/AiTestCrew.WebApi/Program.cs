@@ -2,6 +2,7 @@ using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using AiTestCrew.Agents.ApiAgent;
 using AiTestCrew.Agents.AseXmlAgent;
+using AiTestCrew.Agents.AseXmlAgent.Delivery;
 using AiTestCrew.Agents.AseXmlAgent.Templates;
 using AiTestCrew.Agents.Auth;
 using AiTestCrew.Agents.BraveCloudUiAgent;
@@ -94,6 +95,22 @@ builder.Services.AddSingleton<AseXmlGenerationAgent>(sp => new AseXmlGenerationA
     sp.GetRequiredService<TemplateRegistry>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AseXmlGenerationAgent>());
+
+// aseXML delivery agent — resolves endpoint from Bravo DB and uploads via SFTP/FTP
+builder.Services.AddSingleton<IEndpointResolver>(sp => new BravoEndpointResolver(
+    sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<ILogger<BravoEndpointResolver>>()
+));
+builder.Services.AddSingleton<DropTargetFactory>();
+builder.Services.AddSingleton<AseXmlDeliveryAgent>(sp => new AseXmlDeliveryAgent(
+    sp.GetRequiredService<Kernel>(),
+    sp.GetRequiredService<ILogger<AseXmlDeliveryAgent>>(),
+    sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<TemplateRegistry>(),
+    sp.GetRequiredService<IEndpointResolver>(),
+    sp.GetRequiredService<DropTargetFactory>()
+));
+builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AseXmlDeliveryAgent>());
 
 // ── Persistence — share the same data directory as the Runner ──
 var runnerBinDir = Path.GetFullPath(Path.Combine(runnerDir, "bin", "Debug", "net8.0-windows"));
