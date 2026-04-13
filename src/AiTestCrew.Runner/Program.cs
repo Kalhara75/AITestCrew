@@ -219,6 +219,7 @@ if (cli.RecordMode)
                 ParentObjective = cli.CaseName,
                 AgentName       = "WinForms Desktop UI Agent",
                 TargetType      = targetType,
+                Source          = "Recorded",
                 DesktopUiSteps  = [desktopStep]
             };
             testSet.TestObjectives.Add(testObj);
@@ -305,6 +306,7 @@ if (cli.RecordMode)
             ParentObjective = cli.CaseName,
             AgentName       = agentName,
             TargetType      = targetType,
+            Source          = "Recorded",
             WebUiSteps      = [uiStep]
         };
         testSet.TestObjectives.Add(testObj);

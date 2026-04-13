@@ -5,13 +5,12 @@ import { useActiveRun } from '../contexts/ActiveRunContext';
 
 interface Props {
   testSetId: string;
-  objective: string;
   moduleId?: string;
   apiStackKey?: string | null;
   apiModule?: string | null;
 }
 
-export function TriggerRunButton({ testSetId, objective, moduleId, apiStackKey, apiModule }: Props) {
+export function TriggerRunButton({ testSetId, moduleId, apiStackKey, apiModule }: Props) {
   const navigate = useNavigate();
   const { individualRun, individualRunStatus, setIndividualRun } = useActiveRun();
   const [error, setError] = useState<string | null>(null);
@@ -35,13 +34,12 @@ export function TriggerRunButton({ testSetId, objective, moduleId, apiStackKey, 
     }
   }
 
-  const handleRun = async (mode: string) => {
+  const handleRun = async () => {
     setError(null);
     try {
       const res = await triggerRun({
-        mode,
+        mode: 'Reuse',
         testSetId: testSetId,
-        objective: mode !== 'Reuse' ? objective : undefined,
         moduleId,
         apiStackKey: apiStackKey ?? undefined,
         apiModule: apiModule ?? undefined,
@@ -79,11 +77,8 @@ export function TriggerRunButton({ testSetId, objective, moduleId, apiStackKey, 
   return (
     <div>
       <div style={{ display: 'flex', gap: 8 }}>
-        <button onClick={() => handleRun('Reuse')} style={btnStyle('#2563eb', '#1d4ed8')}>
+        <button onClick={handleRun} style={btnStyle('#2563eb', '#1d4ed8')}>
           Re-run Tests
-        </button>
-        <button onClick={() => handleRun('Rebaseline')} style={btnStyle('#d97706', '#b45309')}>
-          Rebaseline
         </button>
       </div>
       {error && (

@@ -144,6 +144,8 @@ BaseTestAgent  (LLM, AskLlmAsync/AskLlmForJsonAsync)
 
 `TargetType` (string, default `"API_REST"`) is also stored so the orchestrator can reconstruct tasks with the correct `TestTargetType` on reuse.
 
+`Source` (string, default `"Generated"`) tracks how the objective was created: `"Generated"` for AI/LLM-created objectives or `"Recorded"` for objectives captured via `--record`. Rebaseline is only available for generated objectives. Legacy JSON files without the field are backfilled in `MigrateLegacyObjective()` using the `recorded-` ID prefix heuristic.
+
 #### Desktop UI Agent
 
 `WinFormsUiTestAgent` extends `BaseDesktopUiTestAgent`, which uses FlaUI (UI Automation 3) to automate Windows Forms applications.

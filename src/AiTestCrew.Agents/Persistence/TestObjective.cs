@@ -30,6 +30,12 @@ public class TestObjective
     public string TargetType { get; set; } = "API_REST";
 
     /// <summary>
+    /// How this objective was created: "Generated" (AI/LLM) or "Recorded" (user recording).
+    /// Recorded objectives cannot be rebaselined.
+    /// </summary>
+    public string Source { get; set; } = "Generated";
+
+    /// <summary>
     /// API test step definitions — each is an individual HTTP request + assertions.
     /// Populated for API_REST / API_GraphQL targets.
     /// </summary>

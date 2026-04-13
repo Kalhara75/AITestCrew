@@ -75,6 +75,7 @@ export interface TestObjective {
   parentObjective: string;
   agentName: string;
   targetType: string;
+  source: string;
   apiSteps: ApiTestDefinition[];
   webUiSteps: WebUiTestDefinition[];
   desktopUiSteps: DesktopUiTestDefinition[];

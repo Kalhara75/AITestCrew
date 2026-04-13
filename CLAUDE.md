@@ -70,7 +70,7 @@ executions/{testSetId}/{runId}.json      ← Execution history with per-objectiv
 ```
 
 ### Key persistence models
-- `TestObjective` — one per user objective, contains `ApiSteps: List<ApiTestDefinition>`, `WebUiSteps: List<WebUiTestDefinition>`, and `DesktopUiSteps: List<DesktopUiTestDefinition>`
+- `TestObjective` — one per user objective, contains `ApiSteps: List<ApiTestDefinition>`, `WebUiSteps: List<WebUiTestDefinition>`, and `DesktopUiSteps: List<DesktopUiTestDefinition>`. `Source` field tracks origin: `"Generated"` (AI) or `"Recorded"` (user recording). Rebaseline is only allowed for generated objectives.
 - `PersistedTestSet` — contains `List<TestObjective> TestObjectives` (v2 schema), optional `ApiStackKey` + `ApiModule` for multi-stack targeting
 - `PersistedExecutionRun` — contains `List<PersistedObjectiveResult> ObjectiveResults`
 - `PersistedTaskEntry` — **deprecated** (v1 schema, kept only for migration deserialization)

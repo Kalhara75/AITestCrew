@@ -138,7 +138,7 @@ dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset controlled-
 ---
 
 ### Rebaseline
-Regenerate test cases from scratch via LLM (fresh set), overwrite the saved test set, and execute. Use this when the API has changed and you want new tests.
+Regenerate test cases from scratch via LLM (fresh set), overwrite the saved objective, and execute. Use this when the API has changed and you want new tests. Rebaseline only applies to **AI-generated** objectives — recorded objectives (created via `--record`) cannot be rebaselined.
 
 ```
 dotnet run --project src/AiTestCrew.Runner -- --rebaseline "Test the /api/products endpoint"
@@ -491,7 +491,7 @@ The test set detail page uses a **master-detail** pattern:
   - For Web UI steps: test name, start URL, step count, screenshot-on-failure flag
 - **AI Edit Test Cases button** — opens the AI patch panel for natural language corrections (see [Editing Test Cases](#editing-test-cases))
 - **Execution history** — all previous runs with status, pass/fail counts, duration, and date
-- **Trigger buttons** — "Re-run Tests" (reuse mode) and "Rebaseline" (regenerate tests)
+- **Trigger buttons** — "Re-run Tests" (reuse mode) at the test set level; "Run" and "Rebaseline" per objective
 - **Delete Test Set** button — permanently removes the test set and all execution history after confirmation
 
 ### Execution Detail
@@ -516,8 +516,10 @@ From a module detail page, click **Run Objective** to:
 
 From a test set detail page:
 - **Re-run Tests** — re-executes all test cases in the set (Reuse mode). Each objective's status updates independently.
-- **Rebaseline** — regenerates all test cases via LLM and re-executes.
-- **Run (per test case)** — the **Run** button on each test case row triggers execution of only that single objective. The API receives `objectiveId` in the run request, and the orchestrator filters to only that task. The test case's status and last run date update independently without affecting other test cases.
+- **Run (per objective)** — the **Run** button on each objective row triggers execution of only that single objective. The API receives `objectiveId` in the run request, and the orchestrator filters to only that task. The objective's status and last run date update independently without affecting other objectives.
+- **Rebaseline (per objective)** — the **Rebaseline** button appears only on AI-generated objectives (not on recorded ones). It shows a confirmation dialog before regenerating all test cases for that objective via LLM. Recorded objectives display a "Recorded" badge and only offer the Run action.
+
+Each test objective tracks its origin via the `source` field: `"Generated"` for AI-created objectives or `"Recorded"` for objectives captured via the `--record` CLI command.
 
 From a module detail page:
 - **Run All** — triggers sequential execution of all test sets in the module (Reuse mode). Each test set runs in order; if a test set fails, execution continues to the next. A progress banner shows a segmented progress bar with per-test-set status (Pending / Running / Completed / Failed) and clickable links to each test set.

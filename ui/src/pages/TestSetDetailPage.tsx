@@ -133,7 +133,7 @@ export function TestSetDetailPage() {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexDirection: 'column' }}>
-            <TriggerRunButton testSetId={testSet.id} objective={testSet.objective} moduleId={moduleId} apiStackKey={testSet.apiStackKey} apiModule={testSet.apiModule} />
+            <TriggerRunButton testSetId={testSet.id} moduleId={moduleId} apiStackKey={testSet.apiStackKey} apiModule={testSet.apiModule} />
             {isModuleScoped && (
               <button onClick={() => setShowDeleteConfirm(true)} style={deleteBtnStyle}>
                 Delete Test Set
@@ -339,6 +339,14 @@ function ObjectiveListTable({
               >
                 <td style={{ ...tdStyle, fontWeight: 500, color: '#0f172a' }}>
                   {obj.name}
+                  {(obj.source ?? 'Generated') === 'Recorded' && (
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, marginLeft: 8,
+                      padding: '1px 6px', borderRadius: 4,
+                      background: '#fef3c7', color: '#92400e',
+                      border: '1px solid #fde68a',
+                    }}>Recorded</span>
+                  )}
                 </td>
                 <td style={{ ...tdStyle, textAlign: 'center', color: '#64748b' }}>
                   {obj.stepCount}
@@ -358,6 +366,8 @@ function ObjectiveListTable({
                   <TriggerObjectiveRunButton
                     testSetId={testSetId}
                     objectiveId={obj.id}
+                    parentObjective={obj.parentObjective}
+                    source={obj.source ?? 'Generated'}
                     moduleId={moduleId}
                     apiStackKey={apiStackKey}
                     apiModule={apiModule}

@@ -9,8 +9,8 @@ public static class RunEndpoints
 {
     public static RouteGroupBuilder MapRunEndpoints(this RouteGroupBuilder group)
     {
-        group.MapPost("/", (RunRequest request, RunTracker tracker, ModuleRunTracker moduleRunTracker,
-            TestOrchestrator orchestrator, ILogger<TestOrchestrator> logger) =>
+        group.MapPost("/", async (RunRequest request, RunTracker tracker, ModuleRunTracker moduleRunTracker,
+            TestOrchestrator orchestrator, TestSetRepository tsRepo, ILogger<TestOrchestrator> logger) =>
         {
             // Validate request
             if (string.IsNullOrWhiteSpace(request.Mode))
@@ -29,13 +29,28 @@ public static class RunEndpoints
             if (!string.IsNullOrWhiteSpace(request.ModuleId) && string.IsNullOrWhiteSpace(request.TestSetId))
                 return Results.BadRequest(new { error = "testSetId is required when moduleId is specified" });
 
-            // Single-objective execution requires testSetId and Reuse mode
+            // Single-objective execution requires testSetId and Reuse or Rebaseline mode
             if (!string.IsNullOrWhiteSpace(request.ObjectiveId))
             {
                 if (string.IsNullOrWhiteSpace(request.TestSetId))
                     return Results.BadRequest(new { error = "testSetId is required when objectiveId is specified" });
-                if (mode != RunMode.Reuse)
-                    return Results.BadRequest(new { error = "objectiveId is only supported in Reuse mode" });
+                if (mode != RunMode.Reuse && mode != RunMode.Rebaseline)
+                    return Results.BadRequest(new { error = "objectiveId is only supported in Reuse or Rebaseline mode" });
+            }
+
+            // Recorded objectives cannot be rebaselined
+            if (mode == RunMode.Rebaseline && !string.IsNullOrWhiteSpace(request.ObjectiveId))
+            {
+                var testSet = !string.IsNullOrWhiteSpace(request.ModuleId)
+                    ? await tsRepo.LoadAsync(request.ModuleId, request.TestSetId!)
+                    : await tsRepo.LoadAsync(request.TestSetId!);
+                if (testSet is null)
+                    return Results.NotFound(new { error = $"Test set '{request.TestSetId}' not found" });
+                var obj = testSet.TestObjectives.Find(o => o.Id == request.ObjectiveId);
+                if (obj is null)
+                    return Results.NotFound(new { error = $"Objective '{request.ObjectiveId}' not found in test set" });
+                if (obj.Source == "Recorded")
+                    return Results.BadRequest(new { error = "Recorded objectives cannot be rebaselined — only AI-generated objectives support rebaseline" });
             }
 
             // Only one run at a time

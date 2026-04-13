@@ -134,6 +134,15 @@ public class PersistedTestSet
             SchemaVersion = 2;
         }
 #pragma warning restore CS0612
+
+        // Backfill Source for objectives created before Source tracking
+        foreach (var obj in TestObjectives)
+        {
+            if (string.IsNullOrEmpty(obj.Source))
+                obj.Source = obj.Id.StartsWith("recorded-", StringComparison.Ordinal)
+                    ? "Recorded"
+                    : "Generated";
+        }
     }
 
     /// <summary>
