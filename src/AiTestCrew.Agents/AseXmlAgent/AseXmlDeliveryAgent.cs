@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using AiTestCrew.Agents.ApiAgent;
@@ -34,7 +35,12 @@ public class AseXmlDeliveryAgent : BaseTestAgent
     private readonly TemplateRegistry _templates;
     private readonly IEndpointResolver _endpoints;
     private readonly DropTargetFactory _dropFactory;
-    private readonly IReadOnlyList<ITestAgent> _siblings;
+    private readonly IServiceProvider _services;
+    // Lazily-materialised sibling agent list. We can't take IEnumerable<ITestAgent>
+    // in the constructor because this agent is itself registered as ITestAgent —
+    // that would cause DI to recurse when resolving the enumerable. Instead we
+    // keep the service provider and resolve siblings (filtering self) on first use.
+    private IReadOnlyList<ITestAgent>? _siblingsCache;
 
     public override string Name => "aseXML Delivery Agent";
     public override string Role => "Senior AEMO B2B Test Engineer";
@@ -46,15 +52,19 @@ public class AseXmlDeliveryAgent : BaseTestAgent
         TemplateRegistry templates,
         IEndpointResolver endpoints,
         DropTargetFactory dropFactory,
-        IEnumerable<ITestAgent> siblings) : base(kernel, logger)
+        IServiceProvider services) : base(kernel, logger)
     {
         _config = config;
         _templates = templates;
         _endpoints = endpoints;
         _dropFactory = dropFactory;
-        // Filter self out at assignment time so we can't recurse into ourselves.
-        _siblings = siblings.Where(a => a is not AseXmlDeliveryAgent).ToList();
+        _services = services;
     }
+
+    private IReadOnlyList<ITestAgent> Siblings =>
+        _siblingsCache ??= _services.GetServices<ITestAgent>()
+            .Where(a => a is not AseXmlDeliveryAgent)
+            .ToList();
 
     public override Task<bool> CanHandleAsync(TestTask task) =>
         Task.FromResult(task.Target == TestTargetType.AseXml_Deliver);
@@ -444,7 +454,7 @@ public class AseXmlDeliveryAgent : BaseTestAgent
         }
 
         ITestAgent? sibling = null;
-        foreach (var candidate in _siblings)
+        foreach (var candidate in Siblings)
         {
             if (await candidate.CanHandleAsync(syntheticTask)) { sibling = candidate; break; }
         }

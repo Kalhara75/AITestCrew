@@ -109,7 +109,7 @@ builder.Services.AddSingleton<AseXmlDeliveryAgent>(sp => new AseXmlDeliveryAgent
     sp.GetRequiredService<TemplateRegistry>(),
     sp.GetRequiredService<IEndpointResolver>(),
     sp.GetRequiredService<DropTargetFactory>(),
-    sp.GetServices<ITestAgent>()
+    sp  // IServiceProvider — siblings resolved lazily to avoid DI recursion
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AseXmlDeliveryAgent>());
 
