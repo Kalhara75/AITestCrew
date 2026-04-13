@@ -24,6 +24,15 @@ public class AseXmlDeliveryTestDefinition
 
     public bool ValidateAgainstSchema { get; set; }
 
+    /// <summary>
+    /// Optional UI verification steps that run AFTER the XML has been uploaded
+    /// and a fixed wait has elapsed. Each step can target a different UI
+    /// surface (Legacy MVC, Blazor, WinForms) and receives the delivery's
+    /// resolved field values via <c>{{Token}}</c> substitution at playback.
+    /// Empty list means upload-only.
+    /// </summary>
+    public List<VerificationStep> PostDeliveryVerifications { get; set; } = [];
+
     public AseXmlDeliveryTestCase ToTestCase(string name) => new()
     {
         Name = string.IsNullOrWhiteSpace(name) ? Description : name,
@@ -32,7 +41,8 @@ public class AseXmlDeliveryTestDefinition
         TransactionType = TransactionType,
         FieldValues = FieldValues,
         EndpointCode = EndpointCode,
-        ValidateAgainstSchema = ValidateAgainstSchema
+        ValidateAgainstSchema = ValidateAgainstSchema,
+        PostDeliveryVerifications = PostDeliveryVerifications
     };
 
     public static AseXmlDeliveryTestDefinition FromTestCase(AseXmlDeliveryTestCase tc) => new()
@@ -42,7 +52,8 @@ public class AseXmlDeliveryTestDefinition
         TransactionType = tc.TransactionType,
         FieldValues = tc.FieldValues,
         EndpointCode = tc.EndpointCode,
-        ValidateAgainstSchema = tc.ValidateAgainstSchema
+        ValidateAgainstSchema = tc.ValidateAgainstSchema,
+        PostDeliveryVerifications = tc.PostDeliveryVerifications
     };
 }
 
@@ -58,4 +69,5 @@ public class AseXmlDeliveryTestCase
     public Dictionary<string, string> FieldValues { get; set; } = [];
     public string EndpointCode { get; set; } = "";
     public bool ValidateAgainstSchema { get; set; }
+    public List<VerificationStep> PostDeliveryVerifications { get; set; } = [];
 }

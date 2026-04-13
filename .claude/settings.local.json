@@ -17,7 +17,8 @@
       "Bash(curl -s http://localhost:5050/api/modules/standing-data-replication-sdr/testsets/bes4-sdr-api-tests)",
       "Bash(grep:*)",
       "Bash(dotnet restore:*)",
-      "Bash(dotnet nuget:*)"
+      "Bash(dotnet nuget:*)",
+      "Bash(./AiTestCrew.Runner.exe --record-verification --module nonexistent --testset nonexistent --objective foo --target UI_Web_Blazor --verification-name \"smoke\")"
     ]
   }
 }

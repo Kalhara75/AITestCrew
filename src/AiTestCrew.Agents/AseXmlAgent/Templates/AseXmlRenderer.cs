@@ -1,6 +1,6 @@
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Xml.Linq;
+using AiTestCrew.Core.Utilities;
 
 namespace AiTestCrew.Agents.AseXmlAgent.Templates;
 
@@ -8,11 +8,14 @@ namespace AiTestCrew.Agents.AseXmlAgent.Templates;
 /// Deterministic aseXML render — pure function of (manifest, template body, user values).
 /// Applies generators for auto fields, enforces required user fields, substitutes
 /// hardwired const values, then token-replaces "{{FieldName}}" in the template.
+///
+/// The token grammar is shared with <see cref="TokenSubstituter"/> via its
+/// <see cref="TokenSubstituter.TokenRx"/> — the renderer keeps its own Replace
+/// loop because it must XML-escape substituted values (the general-purpose
+/// <see cref="TokenSubstituter.Substitute"/> is XML-agnostic).
 /// </summary>
 public static class AseXmlRenderer
 {
-    private static readonly Regex TokenRx = new(@"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}", RegexOptions.Compiled);
-
     public record RenderResult(string Xml, Dictionary<string, string> ResolvedFields);
 
     /// <summary>
@@ -71,8 +74,10 @@ public static class AseXmlRenderer
 
         // Substitute {{tokens}}. Any token without a resolved value is treated as an error —
         // prevents silent malformed output caused by a typo between template and manifest.
+        // Uses the shared TokenSubstituter regex but keeps the XML-escape in the Replace
+        // callback because substituted values become XML text content.
         var unknownTokens = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var rendered = TokenRx.Replace(templateBody, m =>
+        var rendered = TokenSubstituter.TokenRx.Replace(templateBody, m =>
         {
             var key = m.Groups[1].Value;
             if (resolved.TryGetValue(key, out var value)) return XmlEscape(value);

@@ -110,6 +110,13 @@ public class AseXmlConfig
 
     /// <summary>Retry count for a single upload attempt. Zero means fail-fast.</summary>
     public int DeliveryRetryCount { get; set; }
+
+    /// <summary>
+    /// Default wait (seconds) before a post-delivery UI verification runs, when
+    /// the recording command doesn't pass --wait. Allows Bravo time to consume
+    /// the dropped file before UI assertions query it.
+    /// </summary>
+    public int DefaultVerificationWaitSeconds { get; set; } = 30;
 }
 
 /// <summary>

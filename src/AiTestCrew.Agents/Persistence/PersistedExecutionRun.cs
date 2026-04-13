@@ -124,9 +124,47 @@ public class PersistedExecutionRun
                     Detail = s.Detail,
                     Duration = s.Duration,
                     Timestamp = s.Timestamp
-                }).ToList()
+                }).ToList(),
+                Deliveries = ExtractDeliveries(r.Metadata)
             }).ToList()
         };
+    }
+
+    /// <summary>
+    /// Projects a delivery agent's <c>TestResult.Metadata["deliveries"]</c> entry
+    /// (<c>List&lt;Dictionary&lt;string, object?&gt;&gt;</c>) into the typed
+    /// <see cref="PersistedDelivery"/> list for persistence. Returns null when no
+    /// deliveries are present so non-delivery objectives don't carry empty arrays.
+    /// </summary>
+    private static List<PersistedDelivery>? ExtractDeliveries(IReadOnlyDictionary<string, object> metadata)
+    {
+        if (!metadata.TryGetValue("deliveries", out var raw) || raw is null) return null;
+
+        var list = new List<PersistedDelivery>();
+        if (raw is IEnumerable<Dictionary<string, object?>> typed)
+        {
+            foreach (var d in typed)
+            {
+                list.Add(new PersistedDelivery
+                {
+                    MessageId     = AsString(d, "messageId"),
+                    TransactionId = AsString(d, "transactionId"),
+                    EndpointCode  = AsString(d, "endpointCode"),
+                    RemotePath    = AsString(d, "remotePath"),
+                    UploadedAs    = AsString(d, "uploadedAs"),
+                    Bytes         = AsLong(d, "bytes"),
+                    Status        = AsString(d, "status"),
+                });
+            }
+        }
+        return list.Count > 0 ? list : null;
+
+        static string AsString(IReadOnlyDictionary<string, object?> d, string k) =>
+            d.TryGetValue(k, out var v) && v is not null ? v.ToString() ?? "" : "";
+        static long AsLong(IReadOnlyDictionary<string, object?> d, string k) =>
+            d.TryGetValue(k, out var v) && v is not null
+                ? (v is long l ? l : long.TryParse(v.ToString(), out var parsed) ? parsed : 0)
+                : 0;
     }
 }
 
@@ -146,6 +184,29 @@ public class PersistedObjectiveResult
     public int FailedSteps { get; set; }
     public int TotalSteps { get; set; }
     public List<PersistedStepResult> Steps { get; set; } = [];
+
+    /// <summary>
+    /// aseXML delivery receipts from this objective, captured from the delivery
+    /// agent's TestResult.Metadata["deliveries"]. Null for non-delivery objectives.
+    /// Used by the Phase 3 recorder to seed auto-parameterisation context with
+    /// MessageID / TransactionID / Filename / EndpointCode from the latest run.
+    /// </summary>
+    public List<PersistedDelivery>? Deliveries { get; set; }
+}
+
+/// <summary>
+/// Typed summary of one aseXML delivery within an execution run — the subset of
+/// <c>AseXmlDeliveryAgent.Metadata["deliveries"]</c> worth keeping in history.
+/// </summary>
+public class PersistedDelivery
+{
+    public string MessageId { get; set; } = "";
+    public string TransactionId { get; set; } = "";
+    public string EndpointCode { get; set; } = "";
+    public string RemotePath { get; set; } = "";
+    public string UploadedAs { get; set; } = "";   // "xml" | "zip"
+    public long Bytes { get; set; }
+    public string Status { get; set; } = "";
 }
 
 /// <summary>

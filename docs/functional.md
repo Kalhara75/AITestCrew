@@ -238,6 +238,68 @@ Agent steps per case (visible in the run report):
 
 **Security**: the endpoint `Password` is never written to logs or step details. Connection strings belong in `appsettings.json` only.
 
+#### Attach UI verifications (Phase 3)
+
+Once a delivery test case has been run at least once — so Bravo has actually processed a real file — you can attach UI verification steps to it. The steps run automatically after every subsequent delivery: the XML is dropped, a fixed delay elapses (configurable per verification), then the matching UI agent (Legacy MVC, Blazor, or WinForms) replays the recorded steps against the live UI. Values from each run's fresh render (`{{NMI}}`, `{{MessageID}}`, `{{TransactionID}}`, `{{Filename}}`, and any template field) are substituted into every UI step field at playback.
+
+**Recording** — the recorder launches with the **context already loaded** from (a) the delivery case's `FieldValues` dictionary and (b) the latest successful run's MessageID / TransactionID / Filename / EndpointCode from execution history. As you interact with the UI, any typed literal that matches a context value is saved as the corresponding `{{Token}}` — no manual JSON editing needed.
+
+```bash
+# Pre-req: the delivery objective has been run at least once with status Passed.
+# (Look up the objective id from the test set JSON or the web UI.)
+
+# Record a Blazor verification
+dotnet run --project src/AiTestCrew.Runner -- --record-verification \
+  --module aemo-b2b --testset mfn-delivery-tests \
+  --objective deliver-mfn-one-in-all-in \
+  --target UI_Web_Blazor \
+  --verification-name "MFN Process Overview shows 'One In All In'" \
+  --wait 30
+
+# Record a Legacy MVC verification against the same delivery case
+dotnet run --project src/AiTestCrew.Runner -- --record-verification \
+  --module aemo-b2b --testset mfn-delivery-tests \
+  --objective deliver-mfn-one-in-all-in \
+  --target UI_Web_MVC \
+  --verification-name "Legacy MFN Search grid row exists"
+
+# Record a WinForms desktop verification
+dotnet run --project src/AiTestCrew.Runner -- --record-verification \
+  --module aemo-b2b --testset mfn-delivery-tests \
+  --objective deliver-mfn-one-in-all-in \
+  --target UI_Desktop_WinForms \
+  --verification-name "Desktop admin tool shows the transaction"
+```
+
+At record time, the CLI prints the auto-parameterise context (which `{{Tokens}}` are available) so you can see what matches to expect.
+
+**Auto-parameterisation rules** — to keep false positives low:
+- Minimum literal length of **4 characters** (short values like a checksum `3` or duration `02:00` stay literal).
+- Longest-match-first — a MessageID wins over a substring that happens to collide.
+- Exact substring match only (no regex, no word boundaries).
+- First context key wins on collisions; a WARN is logged.
+
+**Playback** — on every subsequent `--reuse`, each delivery case produces steps in this order:
+
+```
+render[1] <Template>        → XML body produced
+resolve-endpoint[1]         → Bravo DB lookup for EndPointCode
+[package[1]]                → zip if the endpoint has IsOutboundFilesZiped = 1
+upload[1]                   → SFTP/FTP drop to the remote path
+wait[1.1]                   → configured seconds before the first verification
+verify[1.1] <child steps>   → first verification's UI steps, tokens substituted
+wait[1.2]                   → seconds before the second verification
+verify[1.2] <child steps>   → second verification
+...
+```
+
+If a verification step fails, the overall test case is marked Failed. Use Playwright screenshots (`PlaywrightScreenshotDir`) or WinForms screenshots (`WinFormsScreenshotDir`) for post-mortem.
+
+**Constraints**:
+- Recording requires a prior Passed run for the target objective (otherwise there's no known MessageID/TransactionID to parameterise against).
+- Only delivery objectives (`AseXml_Deliver`) support verifications. Attempting to attach a verification to another target fails with a clear error.
+- Manual edits to the saved JSON are supported — unknown tokens at playback are left as literals (with a WARN) rather than failing silently.
+
 ---
 
 ### Record (Web UI only)

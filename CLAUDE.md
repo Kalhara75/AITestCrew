@@ -55,7 +55,10 @@ Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → C
 | `ui/src/components/DesktopUiTestCaseTable.tsx` | Desktop test case list with edit/delete, step preview |
 | `ui/src/components/EditDesktopUiTestCaseDialog.tsx` | Desktop step editor — 5 selector fields, action-specific context fields |
 | `src/AiTestCrew.Agents/AseXmlAgent/AseXmlGenerationAgent.cs` | aseXML generation agent — template-driven AEMO B2B payload renderer (`AseXml_Generate` target type) |
-| `src/AiTestCrew.Agents/AseXmlAgent/AseXmlDeliveryAgent.cs` | aseXML delivery agent — renders + uploads to a Bravo endpoint via SFTP/FTP (`AseXml_Deliver` target type) |
+| `src/AiTestCrew.Agents/AseXmlAgent/AseXmlDeliveryAgent.cs` | aseXML delivery agent — renders + uploads to a Bravo endpoint via SFTP/FTP (`AseXml_Deliver` target type). Phase 3: post-delivery UI verifications run via sibling-agent dispatch with `{{Token}}` substitution from the render context |
+| `src/AiTestCrew.Agents/AseXmlAgent/VerificationStep.cs` | UI verification step attached to a delivery case (Legacy MVC / Blazor / WinForms target + wait + step list) |
+| `src/AiTestCrew.Agents/AseXmlAgent/Recording/VerificationRecorderHelper.cs` | Auto-parameterises recorded step literals into `{{Token}}` placeholders using the delivery's known context values |
+| `src/AiTestCrew.Core/Utilities/TokenSubstituter.cs` | Shared `{{FieldName}}` regex + lenient/strict substitution (used by renderer + UI verification playback) |
 | `src/AiTestCrew.Agents/AseXmlAgent/AseXmlTestDefinition.cs` | aseXML generation step persistence model (templateId + user field values) |
 | `src/AiTestCrew.Agents/AseXmlAgent/AseXmlDeliveryTestDefinition.cs` | aseXML delivery step persistence model (generation fields + `EndpointCode`) |
 | `src/AiTestCrew.Agents/AseXmlAgent/Templates/TemplateRegistry.cs` | Loads `*.xml` + `*.manifest.json` pairs from `templates/asexml/` at startup |
@@ -86,7 +89,7 @@ executions/{testSetId}/{runId}.json      ← Execution history with per-objectiv
 ```
 
 ### Key persistence models
-- `TestObjective` — one per user objective, contains `ApiSteps: List<ApiTestDefinition>`, `WebUiSteps: List<WebUiTestDefinition>`, `DesktopUiSteps: List<DesktopUiTestDefinition>`, `AseXmlSteps: List<AseXmlTestDefinition>`, and `AseXmlDeliverySteps: List<AseXmlDeliveryTestDefinition>`. `Source` field tracks origin: `"Generated"` (AI) or `"Recorded"` (user recording). Rebaseline is only allowed for generated objectives.
+- `TestObjective` — one per user objective, contains `ApiSteps: List<ApiTestDefinition>`, `WebUiSteps: List<WebUiTestDefinition>`, `DesktopUiSteps: List<DesktopUiTestDefinition>`, `AseXmlSteps: List<AseXmlTestDefinition>`, and `AseXmlDeliverySteps: List<AseXmlDeliveryTestDefinition>`. Each `AseXmlDeliveryTestDefinition` can own `PostDeliveryVerifications: List<VerificationStep>` — recorded UI steps that run after delivery with `{{Token}}` substitution from the render context. `Source` field tracks origin: `"Generated"` (AI) or `"Recorded"` (user recording). Rebaseline is only allowed for generated objectives.
 - `PersistedTestSet` — contains `List<TestObjective> TestObjectives` (v2 schema), optional `ApiStackKey` + `ApiModule` for multi-stack targeting, optional `EndpointCode` for aseXML delivery targeting
 - `PersistedExecutionRun` — contains `List<PersistedObjectiveResult> ObjectiveResults`
 - `PersistedTaskEntry` — **deprecated** (v1 schema, kept only for migration deserialization)
@@ -142,6 +145,7 @@ All agents extend `BaseTestAgent` and implement `ITestAgent`:
 | `/run-aitest <args>` | Build and run the test suite |
 | `/add-validation <agent> "<rule>"` | Add a new validation rule |
 | `/add-asexml-template <TransactionType> <templateId> "<desc>"` | Scaffold a new aseXML template + manifest pair (content-only — no agent changes) |
+| `/add-asexml-verification` | Scaffold a post-delivery UI verification attached to an existing delivery objective (runs the recorder with auto-parameterisation) |
 | `/implement-feature "<description>"` | Implement any new feature |
 | `/review-agent <AgentName>` | Review an agent for quality and pattern compliance |
 | `/bravo-web-reference` | Bravo Web DOM patterns, Kendo UI selectors, and recorder/replay rules |

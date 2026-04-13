@@ -147,6 +147,46 @@ public class ExecutionHistoryRepository
         }
     }
 
+    /// <summary>
+    /// Returns a context dictionary seeded from the latest successful delivery for
+    /// a specific objective — <c>MessageID</c>, <c>TransactionID</c>, <c>Filename</c>,
+    /// <c>EndpointCode</c>, <c>RemotePath</c>. Used by <c>--record-verification</c> to
+    /// auto-parameterise captured UI steps against real data the system has already
+    /// processed.
+    ///
+    /// Returns null when no passed run exists for the objective OR the passed run
+    /// has no persisted deliveries (e.g. non-delivery objective). <paramref name="moduleId"/>
+    /// is accepted for future use but the lookup is scoped by <paramref name="testSetId"/>
+    /// today (matching how history is stored on disk).
+    /// </summary>
+    public Task<Dictionary<string, string>?> GetLatestDeliveryContextAsync(
+        string testSetId, string? moduleId, string objectiveId)
+    {
+        foreach (var run in ListRuns(testSetId))  // already ordered StartedAt desc
+        {
+            var match = run.ObjectiveResults
+                .FirstOrDefault(o => string.Equals(o.ObjectiveId, objectiveId, StringComparison.OrdinalIgnoreCase)
+                                  && string.Equals(o.Status, "Passed", StringComparison.OrdinalIgnoreCase));
+            if (match is null) continue;
+            if (match.Deliveries is null || match.Deliveries.Count == 0) continue;
+
+            var d = match.Deliveries[0];
+            var filename = Path.GetFileName(d.RemotePath);  // derive from remotePath
+            var ctx = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["MessageID"]     = d.MessageId,
+                ["TransactionID"] = d.TransactionId,
+                ["Filename"]      = filename,
+                ["EndpointCode"]  = d.EndpointCode,
+                ["RemotePath"]    = d.RemotePath,
+                ["UploadedAs"]    = d.UploadedAs,
+            };
+            return Task.FromResult<Dictionary<string, string>?>(ctx);
+        }
+
+        return Task.FromResult<Dictionary<string, string>?>(null);
+    }
+
     /// <summary>Returns the number of execution run files for a test set (lightweight, no deserialization).</summary>
     public int CountRuns(string testSetId)
     {

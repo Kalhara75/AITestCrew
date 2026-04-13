@@ -2,12 +2,15 @@ using System.Diagnostics;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
+using AiTestCrew.Agents.ApiAgent;
 using AiTestCrew.Agents.AseXmlAgent.Delivery;
 using AiTestCrew.Agents.AseXmlAgent.Templates;
 using AiTestCrew.Agents.Base;
+using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
+using AiTestCrew.Core.Utilities;
 
 namespace AiTestCrew.Agents.AseXmlAgent;
 
@@ -19,8 +22,11 @@ namespace AiTestCrew.Agents.AseXmlAgent;
 /// the rendered payload is produced fresh (new MessageID / TransactionID /
 /// timestamps) and uploaded to the same endpoint.
 ///
-/// Phase 2 scope: render + resolve + (optional zip) + upload + debug copy.
-/// Polling Bravo for downstream consumption is Phase 3.
+/// Phase 3: after a successful upload, the agent optionally runs UI verification
+/// steps (Legacy MVC, Blazor, or WinForms) attached to the delivery test case.
+/// Values from the render (NMI, MessageID, TransactionID, filename, any template
+/// field) are injected into every UI step field via <c>{{Token}}</c> substitution
+/// at playback. Siblings are discovered via <see cref="CanHandleAsync"/> dispatch.
 /// </summary>
 public class AseXmlDeliveryAgent : BaseTestAgent
 {
@@ -28,6 +34,7 @@ public class AseXmlDeliveryAgent : BaseTestAgent
     private readonly TemplateRegistry _templates;
     private readonly IEndpointResolver _endpoints;
     private readonly DropTargetFactory _dropFactory;
+    private readonly IReadOnlyList<ITestAgent> _siblings;
 
     public override string Name => "aseXML Delivery Agent";
     public override string Role => "Senior AEMO B2B Test Engineer";
@@ -38,12 +45,15 @@ public class AseXmlDeliveryAgent : BaseTestAgent
         TestEnvironmentConfig config,
         TemplateRegistry templates,
         IEndpointResolver endpoints,
-        DropTargetFactory dropFactory) : base(kernel, logger)
+        DropTargetFactory dropFactory,
+        IEnumerable<ITestAgent> siblings) : base(kernel, logger)
     {
         _config = config;
         _templates = templates;
         _endpoints = endpoints;
         _dropFactory = dropFactory;
+        // Filter self out at assignment time so we can't recurse into ourselves.
+        _siblings = siblings.Where(a => a is not AseXmlDeliveryAgent).ToList();
     }
 
     public override Task<bool> CanHandleAsync(TestTask task) =>
@@ -314,6 +324,222 @@ public class AseXmlDeliveryAgent : BaseTestAgent
             ["bytes"] = uploadBytes,
             ["status"] = "Delivered",
         });
+
+        // 5) Post-delivery UI verifications (Phase 3)
+        if (tc.PostDeliveryVerifications.Count > 0)
+        {
+            var context = BuildVerificationContext(
+                messageId, transactionId, remoteFileName, uploadedAs,
+                endpoint.EndPointCode, resolvedFields);
+
+            for (var vIdx = 0; vIdx < tc.PostDeliveryVerifications.Count; vIdx++)
+            {
+                ct.ThrowIfCancellationRequested();
+                await RunVerificationAsync(
+                    tc.PostDeliveryVerifications[vIdx],
+                    index, vIdx + 1,
+                    remoteFileName,
+                    context,
+                    steps,
+                    ct);
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────
+    // Phase 3 — verifications
+    // ─────────────────────────────────────────────────────
+
+    private static Dictionary<string, string> BuildVerificationContext(
+        string messageId, string transactionId, string remoteFileName,
+        string uploadedAs, string endpointCode,
+        IReadOnlyDictionary<string, string> resolvedFields)
+    {
+        var ctx = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["MessageID"]     = messageId,
+            ["TransactionID"] = transactionId,
+            ["Filename"]      = remoteFileName,
+            ["EndpointCode"]  = endpointCode,
+            ["UploadedAs"]    = uploadedAs,
+        };
+        // Every resolved field (NMI, MeterSerial, DateIdentified, etc.) joins the context.
+        // Dedicated keys above win if the render happens to share a name.
+        foreach (var (k, v) in resolvedFields)
+        {
+            if (!ctx.ContainsKey(k)) ctx[k] = v;
+        }
+        return ctx;
+    }
+
+    private async Task RunVerificationAsync(
+        VerificationStep v,
+        int deliveryIndex,
+        int verifyIndex,
+        string remoteFileName,
+        IReadOnlyDictionary<string, string> context,
+        List<TestStep> steps,
+        CancellationToken ct)
+    {
+        var waitAction = $"wait[{deliveryIndex}.{verifyIndex}]";
+        if (v.WaitBeforeSeconds > 0)
+        {
+            steps.Add(TestStep.Pass(waitAction,
+                $"Waiting {v.WaitBeforeSeconds}s for Bravo to process {remoteFileName} before '{v.Description}'"));
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(v.WaitBeforeSeconds), ct);
+            }
+            catch (OperationCanceledException)
+            {
+                steps.Add(TestStep.Err(waitAction, "Wait cancelled"));
+                return;
+            }
+        }
+
+        var verifyAction = $"verify[{deliveryIndex}.{verifyIndex}]";
+
+        if (!Enum.TryParse<TestTargetType>(v.Target, ignoreCase: true, out var target))
+        {
+            steps.Add(TestStep.Fail(verifyAction,
+                $"VerificationStep.Target '{v.Target}' is not a known TestTargetType."));
+            return;
+        }
+
+        // Build a synthetic task for the sibling UI agent and preload a substituted test case.
+        var syntheticTask = new TestTask
+        {
+            Description = v.Description,
+            Target = target,
+            Parameters = new Dictionary<string, object>(),
+        };
+
+        if (target is TestTargetType.UI_Web_MVC or TestTargetType.UI_Web_Blazor)
+        {
+            if (v.WebUi is null)
+            {
+                steps.Add(TestStep.Fail(verifyAction,
+                    $"Target is '{v.Target}' but WebUi steps are missing on the VerificationStep."));
+                return;
+            }
+            var clone = CloneAndSubstitute(v.WebUi, context);
+            syntheticTask.Parameters["PreloadedTestCases"] = new List<WebUiTestCase> { clone.ToTestCase(v.Description) };
+        }
+        else if (target is TestTargetType.UI_Desktop_WinForms)
+        {
+            if (v.DesktopUi is null)
+            {
+                steps.Add(TestStep.Fail(verifyAction,
+                    $"Target is '{v.Target}' but DesktopUi steps are missing on the VerificationStep."));
+                return;
+            }
+            var clone = CloneAndSubstitute(v.DesktopUi, context);
+            syntheticTask.Parameters["PreloadedTestCases"] = new List<DesktopUiTestCase> { clone.ToTestCase(v.Description) };
+        }
+        else
+        {
+            steps.Add(TestStep.Fail(verifyAction,
+                $"Verification target '{v.Target}' is not a UI target; only UI_Web_MVC / UI_Web_Blazor / UI_Desktop_WinForms are supported."));
+            return;
+        }
+
+        ITestAgent? sibling = null;
+        foreach (var candidate in _siblings)
+        {
+            if (await candidate.CanHandleAsync(syntheticTask)) { sibling = candidate; break; }
+        }
+        if (sibling is null)
+        {
+            steps.Add(TestStep.Err(verifyAction,
+                $"No registered agent can handle target '{v.Target}'. Is the UI agent registered in DI?"));
+            return;
+        }
+
+        Logger.LogInformation(
+            "[{Agent}] Running verification {Idx} '{Desc}' via {Sibling}",
+            Name, verifyAction, v.Description, sibling.Name);
+
+        TestResult childResult;
+        try
+        {
+            childResult = await sibling.ExecuteAsync(syntheticTask, ct);
+        }
+        catch (Exception ex)
+        {
+            steps.Add(TestStep.Err(verifyAction,
+                $"Verification agent '{sibling.Name}' threw: {ex.Message}"));
+            return;
+        }
+
+        // Prefix each child step so the verification steps are clearly grouped.
+        foreach (var childStep in childResult.Steps)
+        {
+            steps.Add(new TestStep
+            {
+                Action = $"{verifyAction} {childStep.Action}",
+                Summary = childStep.Summary,
+                Status = childStep.Status,
+                Detail = childStep.Detail,
+                Duration = childStep.Duration,
+            });
+        }
+
+        // Surface the aggregate status from the verification so the delivery
+        // objective reflects a failed verification as Failed (not Passed).
+        if (childResult.Status is TestStatus.Failed or TestStatus.Error
+            && childResult.Steps.Count == 0)
+        {
+            // Sibling reported status without steps — make that visible.
+            steps.Add(new TestStep
+            {
+                Action = verifyAction,
+                Summary = childResult.Summary,
+                Status = childResult.Status,
+            });
+        }
+    }
+
+    private static WebUiTestDefinition CloneAndSubstitute(
+        WebUiTestDefinition src, IReadOnlyDictionary<string, string> ctx)
+    {
+        var clone = new WebUiTestDefinition
+        {
+            Description = src.Description,
+            StartUrl = TokenSubstituter.Substitute(src.StartUrl, ctx) ?? src.StartUrl,
+            TakeScreenshotOnFailure = src.TakeScreenshotOnFailure,
+            Steps = src.Steps.Select(s => new WebUiStep
+            {
+                Action    = s.Action,
+                Selector  = TokenSubstituter.Substitute(s.Selector, ctx),
+                Value     = TokenSubstituter.Substitute(s.Value,    ctx),
+                TimeoutMs = s.TimeoutMs,
+            }).ToList(),
+        };
+        return clone;
+    }
+
+    private static DesktopUiTestDefinition CloneAndSubstitute(
+        DesktopUiTestDefinition src, IReadOnlyDictionary<string, string> ctx)
+    {
+        var clone = new DesktopUiTestDefinition
+        {
+            Description = src.Description,
+            TakeScreenshotOnFailure = src.TakeScreenshotOnFailure,
+            Steps = src.Steps.Select(s => new DesktopUiStep
+            {
+                Action       = s.Action,
+                AutomationId = TokenSubstituter.Substitute(s.AutomationId, ctx),
+                Name         = TokenSubstituter.Substitute(s.Name,         ctx),
+                ClassName    = TokenSubstituter.Substitute(s.ClassName,    ctx),
+                ControlType  = TokenSubstituter.Substitute(s.ControlType,  ctx),
+                TreePath     = TokenSubstituter.Substitute(s.TreePath,     ctx),
+                Value        = TokenSubstituter.Substitute(s.Value,        ctx),
+                MenuPath     = TokenSubstituter.Substitute(s.MenuPath,     ctx),
+                WindowTitle  = TokenSubstituter.Substitute(s.WindowTitle,  ctx),
+                TimeoutMs    = s.TimeoutMs,
+            }).ToList(),
+        };
+        return clone;
     }
 
     // ─────────────────────────────────────────────────────

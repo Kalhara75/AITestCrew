@@ -108,7 +108,8 @@ builder.Services.AddSingleton<AseXmlDeliveryAgent>(sp => new AseXmlDeliveryAgent
     sp.GetRequiredService<TestEnvironmentConfig>(),
     sp.GetRequiredService<TemplateRegistry>(),
     sp.GetRequiredService<IEndpointResolver>(),
-    sp.GetRequiredService<DropTargetFactory>()
+    sp.GetRequiredService<DropTargetFactory>(),
+    sp.GetServices<ITestAgent>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AseXmlDeliveryAgent>());
 

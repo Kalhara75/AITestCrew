@@ -77,6 +77,14 @@ export interface AseXmlTestDefinition {
   validateAgainstSchema: boolean;
 }
 
+export interface VerificationStep {
+  description: string;
+  target: string;           // UI_Web_MVC | UI_Web_Blazor | UI_Desktop_WinForms
+  waitBeforeSeconds: number;
+  webUi?: WebUiTestDefinition;
+  desktopUi?: DesktopUiTestDefinition;
+}
+
 export interface AseXmlDeliveryTestDefinition {
   description: string;
   templateId: string;
@@ -84,6 +92,7 @@ export interface AseXmlDeliveryTestDefinition {
   fieldValues: Record<string, string>;
   endpointCode: string;
   validateAgainstSchema: boolean;
+  postDeliveryVerifications: VerificationStep[];
 }
 
 export interface TestObjective {

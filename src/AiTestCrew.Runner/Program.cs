@@ -8,6 +8,7 @@ using Spectre.Console;
 using AiTestCrew.Agents.ApiAgent;
 using AiTestCrew.Agents.AseXmlAgent;
 using AiTestCrew.Agents.AseXmlAgent.Delivery;
+using AiTestCrew.Agents.AseXmlAgent.Recording;
 using AiTestCrew.Agents.AseXmlAgent.Templates;
 using AiTestCrew.Agents.Auth;
 using AiTestCrew.Agents.BraveCloudUiAgent;
@@ -345,6 +346,163 @@ if (cli.RecordMode)
     return;
 }
 
+// ── Record-verification mode — Phase 3: capture UI steps and attach them to a delivery test case ──
+if (cli.RecordVerification)
+{
+    if (cli.ModuleId is null || cli.TestSetId is null || cli.VerifyObjectiveId is null)
+    {
+        AnsiConsole.MarkupLine("[red]--record-verification requires --module <id> --testset <id> --objective <objectiveId>[/]");
+        return;
+    }
+    if (string.IsNullOrWhiteSpace(cli.VerificationName))
+    {
+        AnsiConsole.MarkupLine("[red]--record-verification requires --verification-name \"<name>\"[/]");
+        return;
+    }
+    var verifyTarget = cli.RecordTarget ?? "UI_Web_Blazor";
+    if (verifyTarget is not ("UI_Web_MVC" or "UI_Web_Blazor" or "UI_Desktop_WinForms"))
+    {
+        AnsiConsole.MarkupLine($"[red]--target must be UI_Web_MVC, UI_Web_Blazor, or UI_Desktop_WinForms (got '{verifyTarget}').[/]");
+        return;
+    }
+
+    var verifyConfig = new ConfigurationBuilder()
+        .SetBasePath(AppContext.BaseDirectory)
+        .AddJsonFile("appsettings.json", optional: true)
+        .Build()
+        .GetSection("TestEnvironment")
+        .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
+
+    // Resolve storage-state paths (same logic as main DI path)
+    if (!string.IsNullOrEmpty(verifyConfig.BraveCloudUiStorageStatePath)
+        && !Path.IsPathRooted(verifyConfig.BraveCloudUiStorageStatePath))
+        verifyConfig.BraveCloudUiStorageStatePath = Path.Combine(AppContext.BaseDirectory, verifyConfig.BraveCloudUiStorageStatePath);
+
+    using var verifyLoggerFactory = LoggerFactory.Create(b =>
+        b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss "; })
+         .AddFilter("AiTestCrew", LogLevel.Information));
+    var verifyLogger = verifyLoggerFactory.CreateLogger("RecordVerification");
+
+    var vModuleId  = SlugHelper.ToSlug(cli.ModuleId);
+    var vTestSetId = SlugHelper.ToSlug(cli.TestSetId);
+
+    var vTsRepo = new TestSetRepository(AppContext.BaseDirectory);
+    var vHistRepo = new ExecutionHistoryRepository(AppContext.BaseDirectory);
+    var vTestSet = await vTsRepo.LoadAsync(vModuleId, vTestSetId);
+    if (vTestSet is null)
+    {
+        AnsiConsole.MarkupLine($"[red]Test set '{vTestSetId}' not found in module '{vModuleId}'.[/]");
+        return;
+    }
+
+    var targetObjective = vTestSet.TestObjectives.FirstOrDefault(o =>
+        string.Equals(o.Id, cli.VerifyObjectiveId, StringComparison.OrdinalIgnoreCase));
+    if (targetObjective is null)
+    {
+        var known = string.Join(", ", vTestSet.TestObjectives.Select(o => o.Id));
+        AnsiConsole.MarkupLine($"[red]Objective '{cli.VerifyObjectiveId}' not found in test set. Known: {known}[/]");
+        return;
+    }
+
+    if (targetObjective.AseXmlDeliverySteps.Count == 0)
+    {
+        AnsiConsole.MarkupLine(
+            $"[red]Objective '{targetObjective.Id}' is not an AseXml_Deliver objective; recording verifications is not supported for other targets.[/]");
+        return;
+    }
+    if (cli.DeliveryStepIndex < 0 || cli.DeliveryStepIndex >= targetObjective.AseXmlDeliverySteps.Count)
+    {
+        AnsiConsole.MarkupLine(
+            $"[red]--delivery-step-index {cli.DeliveryStepIndex} out of range (0..{targetObjective.AseXmlDeliverySteps.Count - 1}).[/]");
+        return;
+    }
+    var deliveryCase = targetObjective.AseXmlDeliverySteps[cli.DeliveryStepIndex];
+
+    // Build the recording context — user field values + latest successful delivery's MessageID/etc.
+    var context = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var (k, v) in deliveryCase.FieldValues)
+        if (!string.IsNullOrEmpty(v)) context[k] = v;
+
+    var historyCtx = await vHistRepo.GetLatestDeliveryContextAsync(vTestSetId, vModuleId, targetObjective.Id);
+    if (historyCtx is null)
+    {
+        AnsiConsole.MarkupLine(
+            $"[red]No successful delivery found for objective '{targetObjective.Id}'. " +
+            $"Run the delivery at least once first so the recorder has real data to reference.[/]");
+        return;
+    }
+    foreach (var (k, v) in historyCtx)
+        if (!string.IsNullOrEmpty(v)) context[k] = v;
+
+    AnsiConsole.MarkupLine($"[cyan]Recording verification[/] for {Markup.Escape(targetObjective.Id)} → target [bold]{verifyTarget}[/]");
+    AnsiConsole.MarkupLine($"[grey]Auto-parameterise context ({context.Count} key(s)):[/]");
+    foreach (var (k, v) in context.OrderBy(kv => kv.Key))
+        AnsiConsole.MarkupLine($"[grey]  {{{{{Markup.Escape(k)}}}}} = {Markup.Escape(v)}[/]");
+    AnsiConsole.WriteLine();
+
+    var waitSeconds = cli.VerificationWait ?? verifyConfig.AseXml.DefaultVerificationWaitSeconds;
+
+    var verifyStep = new AiTestCrew.Agents.AseXmlAgent.VerificationStep
+    {
+        Description = cli.VerificationName!,
+        Target = verifyTarget,
+        WaitBeforeSeconds = waitSeconds,
+    };
+
+    if (verifyTarget == "UI_Desktop_WinForms")
+    {
+        if (string.IsNullOrWhiteSpace(verifyConfig.WinFormsAppPath))
+        {
+            AnsiConsole.MarkupLine("[red]WinFormsAppPath not configured.[/]");
+            return;
+        }
+        var dtRecorded = await DesktopRecorder.RecordAsync(
+            verifyConfig.WinFormsAppPath, verifyConfig.WinFormsAppArgs,
+            cli.VerificationName!, verifyConfig, verifyLogger);
+        if (dtRecorded.Steps.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]No steps captured. Verification not saved.[/]");
+            return;
+        }
+        VerificationRecorderHelper.AutoParameteriseDesktopUi(dtRecorded, context, verifyLogger);
+        verifyStep.DesktopUi = DesktopUiTestDefinition.FromTestCase(dtRecorded);
+    }
+    else
+    {
+        var verifyBaseUrl = verifyTarget == "UI_Web_Blazor"
+            ? verifyConfig.BraveCloudUiUrl
+            : verifyConfig.LegacyWebUiUrl;
+        if (string.IsNullOrWhiteSpace(verifyBaseUrl))
+        {
+            var key = verifyTarget == "UI_Web_Blazor" ? "BraveCloudUiUrl" : "LegacyWebUiUrl";
+            AnsiConsole.MarkupLine($"[red]Base URL not configured. Set '{key}' in appsettings.json.[/]");
+            return;
+        }
+        var verifyStorageState = verifyTarget == "UI_Web_Blazor"
+            ? verifyConfig.BraveCloudUiStorageStatePath : null;
+        var webRecorded = await PlaywrightRecorder.RecordAsync(
+            verifyBaseUrl, cli.VerificationName!, verifyConfig, verifyLogger,
+            verifyStorageState, verifyTarget);
+        if (webRecorded.Steps.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]No steps captured. Verification not saved.[/]");
+            return;
+        }
+        VerificationRecorderHelper.AutoParameteriseWebUi(webRecorded, context, verifyLogger);
+        verifyStep.WebUi = WebUiTestDefinition.FromTestCase(webRecorded);
+    }
+
+    deliveryCase.PostDeliveryVerifications.Add(verifyStep);
+    await vTsRepo.SaveAsync(vTestSet, vModuleId);
+
+    AnsiConsole.MarkupLine(
+        $"\n[green]Saved verification[/] '{Markup.Escape(cli.VerificationName!)}' to {Markup.Escape(targetObjective.Id)}");
+    AnsiConsole.MarkupLine(
+        $"[grey]Delivery case now has {deliveryCase.PostDeliveryVerifications.Count} verification(s). " +
+        $"Replay: dotnet run -- --reuse {Markup.Escape(vTestSetId)} --module {Markup.Escape(vModuleId)}[/]");
+    return;
+}
+
 // ── Auth-setup mode — perform SSO login (with optional manual 2FA) and save browser auth state ──
 if (cli.AuthSetupMode)
 {
@@ -674,7 +832,8 @@ builder.Services.AddSingleton<AseXmlDeliveryAgent>(sp => new AseXmlDeliveryAgent
     sp.GetRequiredService<TestEnvironmentConfig>(),
     sp.GetRequiredService<TemplateRegistry>(),
     sp.GetRequiredService<IEndpointResolver>(),
-    sp.GetRequiredService<DropTargetFactory>()
+    sp.GetRequiredService<DropTargetFactory>(),
+    sp.GetServices<ITestAgent>()  // sibling agents for post-delivery UI verifications
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AseXmlDeliveryAgent>());
 
@@ -860,6 +1019,10 @@ static CliArgs ParseArgs(string[] args)
     string? endpointCode = null;
     bool listModules = false, recordMode = false, recordSetupMode = false, authSetupMode = false;
     bool listEndpoints = false;
+    bool recordVerification = false;
+    string? verifyObjectiveId = null, verificationName = null;
+    int? verificationWait = null;
+    int deliveryStepIndex = 0;
     var mode = RunMode.Normal;
 
     for (int i = 0; i < args.Length; i++)
@@ -944,6 +1107,33 @@ static CliArgs ParseArgs(string[] args)
             case "--list-endpoints":
                 listEndpoints = true;
                 break;
+            case "--record-verification":
+                recordVerification = true;
+                break;
+            case "--objective" when i + 1 < args.Length:
+                verifyObjectiveId = args[++i];
+                break;
+            case "--objective":
+                throw new ArgumentException("--objective requires an <objectiveId> argument.");
+            case "--verification-name" when i + 1 < args.Length:
+                verificationName = args[++i];
+                break;
+            case "--verification-name":
+                throw new ArgumentException("--verification-name requires a \"<name>\" argument.");
+            case "--wait" when i + 1 < args.Length:
+                if (!int.TryParse(args[++i], out var waitSecs))
+                    throw new ArgumentException("--wait requires an integer number of seconds.");
+                verificationWait = waitSecs;
+                break;
+            case "--wait":
+                throw new ArgumentException("--wait requires an integer number of seconds.");
+            case "--delivery-step-index" when i + 1 < args.Length:
+                if (!int.TryParse(args[++i], out var dsi))
+                    throw new ArgumentException("--delivery-step-index requires an integer.");
+                deliveryStepIndex = dsi;
+                break;
+            case "--delivery-step-index":
+                throw new ArgumentException("--delivery-step-index requires an integer.");
             default:
                 remaining.Add(args[i]);
                 break;
@@ -972,7 +1162,12 @@ static CliArgs ParseArgs(string[] args)
         ApiStackKey = apiStackKey,
         ApiModule = apiModuleKey,
         EndpointCode = endpointCode,
-        ListEndpoints = listEndpoints
+        ListEndpoints = listEndpoints,
+        RecordVerification = recordVerification,
+        VerifyObjectiveId = verifyObjectiveId,
+        VerificationName = verificationName,
+        VerificationWait = verificationWait,
+        DeliveryStepIndex = deliveryStepIndex
     };
 }
 
@@ -999,4 +1194,9 @@ class CliArgs
     public string? ApiModule { get; init; }
     public string? EndpointCode { get; init; }
     public bool ListEndpoints { get; init; }
+    public bool RecordVerification { get; init; }
+    public string? VerifyObjectiveId { get; init; }
+    public string? VerificationName { get; init; }
+    public int? VerificationWait { get; init; }
+    public int DeliveryStepIndex { get; init; }
 }
