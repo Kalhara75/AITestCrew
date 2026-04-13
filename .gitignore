@@ -25,6 +25,9 @@ logs/
 screenshots/
 *.log
 
+# aseXML generation output (rendered payloads — reproducible from test sets)
+output/
+
 # Auth state
 *-auth-state.json
 

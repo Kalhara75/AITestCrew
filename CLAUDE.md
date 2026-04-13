@@ -132,6 +132,7 @@ All agents extend `BaseTestAgent` and implement `ITestAgent`:
 | `/add-agent <TargetType> "<desc>"` | Scaffold a new test agent |
 | `/run-aitest <args>` | Build and run the test suite |
 | `/add-validation <agent> "<rule>"` | Add a new validation rule |
+| `/add-asexml-template <TransactionType> <templateId> "<desc>"` | Scaffold a new aseXML template + manifest pair (content-only — no agent changes) |
 | `/implement-feature "<description>"` | Implement any new feature |
 | `/review-agent <AgentName>` | Review an agent for quality and pattern compliance |
 | `/bravo-web-reference` | Bravo Web DOM patterns, Kendo UI selectors, and recorder/replay rules |
