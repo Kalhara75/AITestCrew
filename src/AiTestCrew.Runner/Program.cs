@@ -395,12 +395,21 @@ if (cli.RecordVerification)
         return;
     }
 
+    // Match by Id (slug) first, then by Name (display name) case-insensitively —
+    // same convention as --reuse --objective so users can pass either form.
     var targetObjective = vTestSet.TestObjectives.FirstOrDefault(o =>
-        string.Equals(o.Id, cli.ObjectiveId, StringComparison.OrdinalIgnoreCase));
+        string.Equals(o.Id, cli.ObjectiveId, StringComparison.OrdinalIgnoreCase))
+        ?? vTestSet.TestObjectives.FirstOrDefault(o =>
+            string.Equals(o.Name, cli.ObjectiveId, StringComparison.OrdinalIgnoreCase));
     if (targetObjective is null)
     {
-        var known = string.Join(", ", vTestSet.TestObjectives.Select(o => o.Id));
-        AnsiConsole.MarkupLine($"[red]Objective '{cli.ObjectiveId}' not found in test set. Known: {known}[/]");
+        var known = vTestSet.TestObjectives.Count > 0
+            ? string.Join("; ", vTestSet.TestObjectives.Select(o =>
+                string.IsNullOrWhiteSpace(o.Name) || o.Name == o.Id
+                    ? o.Id
+                    : $"{o.Id} (\"{o.Name}\")"))
+            : "(none)";
+        AnsiConsole.MarkupLine($"[red]Objective '{Markup.Escape(cli.ObjectiveId!)}' not found in test set. Available: {Markup.Escape(known)}[/]");
         return;
     }
 
