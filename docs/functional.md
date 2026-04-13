@@ -147,9 +147,18 @@ Or module-scoped:
 dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset controlled-loads --reuse controlled-loads
 ```
 
-- No LLM calls during test generation — uses saved `ApiTestDefinition` steps directly.
+Scope to a single test case within the set:
+```
+dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset controlled-loads \
+  --reuse controlled-loads --objective ctrl-loads-get
+```
+
+- By default `--reuse` runs every `TestObjective` (test case) in the set in parallel.
+- `--objective <id>` restricts the run to a single test case — useful for iterating on one delivery / UI verification without re-running siblings. The ID is the `TestObjective.Id` slug visible in the test set JSON or the Web UI detail page.
+- No LLM calls during test generation — uses saved step definitions directly.
 - LLM is still used for response validation and the final summary.
 - `RunCount` and `LastRunAt` are updated in the saved file after each reuse run.
+- The same `--objective <id>` flag is also consumed by `--record-verification` (as the objective to attach the recorded verification to) — the meaning is context-dependent on whether you're reusing or recording.
 
 ---
 

@@ -349,7 +349,7 @@ if (cli.RecordMode)
 // ── Record-verification mode — Phase 3: capture UI steps and attach them to a delivery test case ──
 if (cli.RecordVerification)
 {
-    if (cli.ModuleId is null || cli.TestSetId is null || cli.VerifyObjectiveId is null)
+    if (cli.ModuleId is null || cli.TestSetId is null || cli.ObjectiveId is null)
     {
         AnsiConsole.MarkupLine("[red]--record-verification requires --module <id> --testset <id> --objective <objectiveId>[/]");
         return;
@@ -396,11 +396,11 @@ if (cli.RecordVerification)
     }
 
     var targetObjective = vTestSet.TestObjectives.FirstOrDefault(o =>
-        string.Equals(o.Id, cli.VerifyObjectiveId, StringComparison.OrdinalIgnoreCase));
+        string.Equals(o.Id, cli.ObjectiveId, StringComparison.OrdinalIgnoreCase));
     if (targetObjective is null)
     {
         var known = string.Join(", ", vTestSet.TestObjectives.Select(o => o.Id));
-        AnsiConsole.MarkupLine($"[red]Objective '{cli.VerifyObjectiveId}' not found in test set. Known: {known}[/]");
+        AnsiConsole.MarkupLine($"[red]Objective '{cli.ObjectiveId}' not found in test set. Known: {known}[/]");
         return;
     }
 
@@ -945,6 +945,7 @@ await AnsiConsole.Status()
         suiteResult = await orchestrator.RunAsync(objective, cli.Mode, cli.ReuseId,
             moduleId: cli.ModuleId, targetTestSetId: cli.TestSetId,
             objectiveName: cli.ObjectiveName,
+            objectiveId: cli.ObjectiveId,  // reuse-mode filter to a single test case
             apiStackKey: cli.ApiStackKey, apiModule: cli.ApiModule,
             endpointCode: cli.EndpointCode);
     });
@@ -1020,7 +1021,7 @@ static CliArgs ParseArgs(string[] args)
     bool listModules = false, recordMode = false, recordSetupMode = false, authSetupMode = false;
     bool listEndpoints = false;
     bool recordVerification = false;
-    string? verifyObjectiveId = null, verificationName = null;
+    string? objectiveId = null, verificationName = null;
     int? verificationWait = null;
     int deliveryStepIndex = 0;
     var mode = RunMode.Normal;
@@ -1111,7 +1112,10 @@ static CliArgs ParseArgs(string[] args)
                 recordVerification = true;
                 break;
             case "--objective" when i + 1 < args.Length:
-                verifyObjectiveId = args[++i];
+                // Context-dependent:
+                //  * with --reuse: scopes the run to a single objective (test case) in the set
+                //  * with --record-verification: the objective to attach the verification to
+                objectiveId = args[++i];
                 break;
             case "--objective":
                 throw new ArgumentException("--objective requires an <objectiveId> argument.");
@@ -1164,7 +1168,7 @@ static CliArgs ParseArgs(string[] args)
         EndpointCode = endpointCode,
         ListEndpoints = listEndpoints,
         RecordVerification = recordVerification,
-        VerifyObjectiveId = verifyObjectiveId,
+        ObjectiveId = objectiveId,
         VerificationName = verificationName,
         VerificationWait = verificationWait,
         DeliveryStepIndex = deliveryStepIndex
@@ -1195,7 +1199,14 @@ class CliArgs
     public string? EndpointCode { get; init; }
     public bool ListEndpoints { get; init; }
     public bool RecordVerification { get; init; }
-    public string? VerifyObjectiveId { get; init; }
+
+    /// <summary>
+    /// --objective &lt;id&gt;. Context-dependent:
+    ///   * reuse mode: scope the run to a single objective within the test set
+    ///   * --record-verification: the objective to attach the verification to
+    /// </summary>
+    public string? ObjectiveId { get; init; }
+
     public string? VerificationName { get; init; }
     public int? VerificationWait { get; init; }
     public int DeliveryStepIndex { get; init; }

@@ -104,7 +104,8 @@ dotnet run --project src/AiTestCrew.Runner -- --stack legacy --api-module sdr --
 dotnet run --project src/AiTestCrew.Runner -- --module sdr --testset ctrl-loads --obj-name "Short Name" "objective"  # With short display name
 dotnet run --project src/AiTestCrew.Runner -- --list                                         # List saved test sets
 dotnet run --project src/AiTestCrew.Runner -- --list-modules                                 # List modules
-dotnet run --project src/AiTestCrew.Runner -- --reuse <id>                                   # Reuse saved test set
+dotnet run --project src/AiTestCrew.Runner -- --reuse <id>                                   # Reuse saved test set (runs all test cases)
+dotnet run --project src/AiTestCrew.Runner -- --reuse <id> --module <mod> --objective <objId>  # Reuse a single test case only
 dotnet run --project src/AiTestCrew.Runner -- --rebaseline "obj"                             # Regenerate & save
 dotnet run --project src/AiTestCrew.Runner -- --create-module "Name"                         # Create a module
 dotnet run --project src/AiTestCrew.Runner -- --create-testset <moduleId> "Name"             # Create empty test set
