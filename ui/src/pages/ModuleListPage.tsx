@@ -59,7 +59,7 @@ export function ModuleListPage() {
           {modules.map(m => {
             const running = isModuleRunning(m.id);
             return (
-              <Link key={m.id} to={`/modules/${m.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+              <Link key={m.id} to={`/modules/${m.id}`} style={{ textDecoration: 'none', color: 'inherit', display: 'flex', flexDirection: 'column' }}>
                 <div style={{
                   ...cardStyle,
                   ...(running ? { borderLeft: '3px solid #2563eb', borderColor: '#bfdbfe' } : {}),
@@ -161,7 +161,7 @@ const cardStyle: React.CSSProperties = {
   background: '#fff', borderRadius: 10, padding: 24,
   boxShadow: '0 1px 3px rgba(0,0,0,0.06)', border: '1px solid #e2e8f0',
   cursor: 'pointer', transition: 'box-shadow 0.15s, border-color 0.15s',
-  height: '100%', display: 'flex', flexDirection: 'column',
+  flex: 1, display: 'flex', flexDirection: 'column',
 };
 
 const statPill: React.CSSProperties = {

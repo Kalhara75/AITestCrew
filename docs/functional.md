@@ -465,6 +465,10 @@ Shows the test sets within a module as a card grid. Features:
 - **+ Test Set** button to create an empty test set
 - **Run Objective** button to enter an objective, select a target test set, and trigger a Normal-mode run that merges generated tests into the selected set
 - Each test set card shows name, objective count, step count, run count, and last run status
+- **Search bar** — live text filter matching test set name, objective, or ID
+- **Sort controls** — sort by Name, Last Run date, or Status with ascending/descending toggle
+- **Status filter chips** — filter by Passed, Failed, Error, Running, or No runs. Passed and Failed chips are always visible; others appear when relevant test sets exist
+- **Progressive loading** — initially renders up to 12 cards; additional cards load automatically as the user scrolls down
 
 ### Test Set Detail (Master-Detail)
 

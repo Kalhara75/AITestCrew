@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { fetchModule, fetchModuleTestSets } from '../api/modules';
@@ -26,6 +26,100 @@ export function ModuleDetailPage() {
     queryFn: () => fetchModuleTestSets(moduleId!),
     enabled: !!moduleId,
   });
+
+  // Search, filter, sort state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState<'name' | 'lastRun' | 'status'>('name');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [statusFilter, setStatusFilter] = useState<string | null>(null);
+
+  // Progressive loading
+  const PAGE_SIZE = 12;
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  const filteredTestSets = useMemo(() => {
+    if (!testSets) return [];
+    let result = [...testSets];
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter(ts =>
+        (ts.name || '').toLowerCase().includes(q) ||
+        (ts.objective || '').toLowerCase().includes(q) ||
+        (ts.id || '').toLowerCase().includes(q)
+      );
+    }
+
+    if (statusFilter !== null) {
+      if (statusFilter === 'No runs') {
+        result = result.filter(ts => !ts.lastRunStatus);
+      } else {
+        result = result.filter(ts => ts.lastRunStatus === statusFilter);
+      }
+    }
+
+    result.sort((a, b) => {
+      let cmp = 0;
+      if (sortBy === 'name') {
+        cmp = (a.name || a.objective || a.id).localeCompare(b.name || b.objective || b.id);
+      } else if (sortBy === 'lastRun') {
+        const aTime = a.lastRunAt && a.lastRunAt !== '0001-01-01T00:00:00' ? new Date(a.lastRunAt).getTime() : 0;
+        const bTime = b.lastRunAt && b.lastRunAt !== '0001-01-01T00:00:00' ? new Date(b.lastRunAt).getTime() : 0;
+        cmp = aTime - bTime;
+      } else if (sortBy === 'status') {
+        const order: Record<string, number> = { Failed: 0, Error: 1, Running: 2, Passed: 3 };
+        const aOrd = a.lastRunStatus ? (order[a.lastRunStatus] ?? 4) : 5;
+        const bOrd = b.lastRunStatus ? (order[b.lastRunStatus] ?? 4) : 5;
+        cmp = aOrd - bOrd;
+      }
+      return sortDir === 'desc' ? -cmp : cmp;
+    });
+
+    return result;
+  }, [testSets, searchQuery, sortBy, sortDir, statusFilter]);
+
+  // Reset visible count when filters change
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [searchQuery, sortBy, sortDir, statusFilter]);
+
+  const visibleTestSets = filteredTestSets.slice(0, visibleCount);
+  const hasMore = visibleCount < filteredTestSets.length;
+
+  // IntersectionObserver for progressive loading
+  const loadMore = useCallback(() => {
+    setVisibleCount(prev => Math.min(prev + PAGE_SIZE, filteredTestSets.length));
+  }, [filteredTestSets.length]);
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasMore) return;
+    const observer = new IntersectionObserver(
+      entries => { if (entries[0].isIntersecting) loadMore(); },
+      { rootMargin: '200px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasMore, loadMore]);
+
+  // Always show Passed and Failed chips; show others only when present in data
+  const availableStatuses = useMemo(() => {
+    if (!testSets) return [];
+    const present = new Set<string>();
+    for (const ts of testSets) {
+      present.add(ts.lastRunStatus || 'No runs');
+    }
+    const alwaysShow = ['Passed', 'Failed'];
+    return ['Passed', 'Failed', 'Error', 'Running', 'No runs'].filter(s => alwaysShow.includes(s) || present.has(s));
+  }, [testSets]);
+
+  const clearFilters = () => {
+    setSearchQuery('');
+    setStatusFilter(null);
+    setSortBy('name');
+    setSortDir('asc');
+  };
 
   if (loadingModule || loadingTestSets) return <p style={{ color: '#64748b', padding: 40, textAlign: 'center' }}>Loading module...</p>;
   if (moduleError) return <p style={{ color: '#dc2626', padding: 40, textAlign: 'center' }}>Error: {(moduleError as Error).message}</p>;
@@ -102,15 +196,72 @@ export function ModuleDetailPage() {
         </div>
       )}
 
-      {/* Test Sets Grid */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: '#0f172a' }}>Test Sets</h2>
-        <span style={{
-          fontSize: 12, fontWeight: 600, color: '#64748b', background: '#f1f5f9',
-          padding: '2px 10px', borderRadius: 12,
-        }}>{testSets?.length || 0}</span>
+      {/* Test Sets Toolbar */}
+      <div style={{ marginBottom: 16 }}>
+        {/* Row 1: Heading + count */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: '#0f172a' }}>Test Sets</h2>
+          <span style={{
+            fontSize: 12, fontWeight: 600, color: '#64748b', background: '#f1f5f9',
+            padding: '2px 10px', borderRadius: 12,
+          }}>{testSets?.length || 0}</span>
+        </div>
+
+        {/* Row 2: Search, sort, status filters — only show when there are test sets */}
+        {testSets && testSets.length > 0 && (
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            {/* Search */}
+            <input
+              type="text"
+              placeholder="Search test sets..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              style={searchInputStyle}
+            />
+
+            {/* Sort */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <select
+                value={sortBy}
+                onChange={e => setSortBy(e.target.value as 'name' | 'lastRun' | 'status')}
+                style={selectStyle}
+              >
+                <option value="name">Name</option>
+                <option value="lastRun">Last Run</option>
+                <option value="status">Status</option>
+              </select>
+              <button
+                onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}
+                style={sortDirBtnStyle}
+                title={sortDir === 'asc' ? 'Ascending' : 'Descending'}
+              >
+                {sortDir === 'asc' ? '\u2191' : '\u2193'}
+              </button>
+            </div>
+
+            {/* Status filter chips */}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button
+                onClick={() => setStatusFilter(null)}
+                style={chipStyle(statusFilter === null)}
+              >
+                All
+              </button>
+              {availableStatuses.map(s => (
+                <button
+                  key={s}
+                  onClick={() => setStatusFilter(statusFilter === s ? null : s)}
+                  style={chipStyle(statusFilter === s, s)}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
+      {/* Test Sets Grid */}
       {!testSets || testSets.length === 0 ? (
         <div style={{
           background: '#fff', borderRadius: 10, padding: 48, textAlign: 'center',
@@ -127,21 +278,54 @@ export function ModuleDetailPage() {
             + Create Test Set
           </button>
         </div>
-      ) : (
+      ) : filteredTestSets.length === 0 ? (
         <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))',
-          gap: 20,
+          background: '#fff', borderRadius: 10, padding: 48, textAlign: 'center',
+          border: '1px solid #e2e8f0',
         }}>
-          {testSets.map(ts => (
-            <TestSetCard
-              key={ts.id}
-              ts={ts}
-              moduleId={moduleId!}
-              isRunning={isRunning && (moduleRun?.currentTestSetIds?.includes(ts.id) ?? false)}
-            />
-          ))}
+          <p style={{ color: '#475569', fontSize: 16, margin: '0 0 8px', fontWeight: 500 }}>
+            No test sets match your filters
+          </p>
+          <p style={{ color: '#94a3b8', fontSize: 14, margin: '0 0 20px' }}>
+            Try adjusting your search or filter criteria.
+          </p>
+          <button onClick={clearFilters} style={btnStyle('#64748b')}>
+            Clear Filters
+          </button>
         </div>
+      ) : (
+        <>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))',
+            gap: 20,
+          }}>
+            {visibleTestSets.map(ts => (
+              <TestSetCard
+                key={ts.id}
+                ts={ts}
+                moduleId={moduleId!}
+                isRunning={isRunning && (moduleRun?.currentTestSetIds?.includes(ts.id) ?? false)}
+              />
+            ))}
+          </div>
+
+          {/* Progressive loading sentinel + indicator */}
+          {hasMore && (
+            <div
+              ref={sentinelRef}
+              style={{ textAlign: 'center', padding: '24px 0 8px', color: '#94a3b8', fontSize: 13 }}
+            >
+              Showing {visibleCount} of {filteredTestSets.length} test sets
+              <span style={{ marginLeft: 8, display: 'inline-block', animation: 'pulse 1.5s infinite' }}>...</span>
+            </div>
+          )}
+          {!hasMore && filteredTestSets.length > PAGE_SIZE && (
+            <div style={{ textAlign: 'center', padding: '16px 0 0', color: '#94a3b8', fontSize: 12 }}>
+              All {filteredTestSets.length} test sets shown
+            </div>
+          )}
+        </>
       )}
 
       <CreateTestSetDialog
@@ -183,3 +367,57 @@ const btnStyle = (bg: string): React.CSSProperties => ({
   background: bg, color: '#fff', border: 'none', padding: '8px 18px',
   borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer',
 });
+
+const searchInputStyle: React.CSSProperties = {
+  flex: '1 1 180px', minWidth: 140, maxWidth: 300,
+  background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8,
+  padding: '6px 12px', fontSize: 13, color: '#0f172a', outline: 'none',
+};
+
+const selectStyle: React.CSSProperties = {
+  background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8,
+  padding: '6px 10px', fontSize: 13, color: '#0f172a', cursor: 'pointer', outline: 'none',
+};
+
+const sortDirBtnStyle: React.CSSProperties = {
+  background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6,
+  padding: '4px 8px', fontSize: 14, cursor: 'pointer', lineHeight: 1, color: '#475569',
+};
+
+const statusColors: Record<string, { bg: string; fg: string; border: string }> = {
+  Passed:  { bg: '#dcfce7', fg: '#166534', border: '#bbf7d0' },
+  Failed:  { bg: '#fee2e2', fg: '#991b1b', border: '#fecaca' },
+  Error:   { bg: '#fef3c7', fg: '#92400e', border: '#fde68a' },
+  Running: { bg: '#dbeafe', fg: '#1e40af', border: '#bfdbfe' },
+  'No runs': { bg: '#f1f5f9', fg: '#475569', border: '#e2e8f0' },
+};
+
+function chipStyle(active: boolean, status?: string): React.CSSProperties {
+  const c = status ? statusColors[status] : undefined;
+  if (active && c) {
+    return {
+      background: c.bg, color: c.fg, border: `2px solid ${c.fg}`,
+      padding: '3px 12px', borderRadius: 14, fontSize: 12, fontWeight: 600,
+      cursor: 'pointer', whiteSpace: 'nowrap',
+    };
+  }
+  if (active) {
+    return {
+      background: '#0f172a', color: '#fff', border: '2px solid #0f172a',
+      padding: '3px 12px', borderRadius: 14, fontSize: 12, fontWeight: 600,
+      cursor: 'pointer', whiteSpace: 'nowrap',
+    };
+  }
+  if (c) {
+    return {
+      background: c.bg, color: c.fg, border: `1px solid ${c.border}`,
+      padding: '4px 12px', borderRadius: 14, fontSize: 12, fontWeight: 600,
+      cursor: 'pointer', whiteSpace: 'nowrap',
+    };
+  }
+  return {
+    background: '#f8fafc', color: '#64748b', border: '1px solid #e2e8f0',
+    padding: '4px 12px', borderRadius: 14, fontSize: 12, fontWeight: 600,
+    cursor: 'pointer', whiteSpace: 'nowrap',
+  };
+}

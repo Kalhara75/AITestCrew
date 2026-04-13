@@ -332,7 +332,8 @@ ui/src/
                                      recovers active run on page refresh via GET /api/runs/active
   pages/
     ModuleListPage.tsx             — Module card grid (root page)
-    ModuleDetailPage.tsx           — Test sets within a module + create/run dialogs
+    ModuleDetailPage.tsx           — Test sets within a module + search/sort/status-filter toolbar,
+                                     progressive card loading (IntersectionObserver), create/run dialogs
     TestSetDetailPage.tsx          — Test cases table + run history + trigger button (module-aware)
     ExecutionDetailPage.tsx        — Objective results with expandable step details (module-aware)
   components/

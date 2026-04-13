@@ -13,7 +13,7 @@ export function TestSetCard({ ts, moduleId, isRunning }: Props) {
   const displayTitle = ts.name || ts.objective || ts.id;
 
   return (
-    <Link to={linkTo} style={{ textDecoration: 'none', color: 'inherit' }}>
+    <Link to={linkTo} style={{ textDecoration: 'none', color: 'inherit', display: 'flex', flexDirection: 'column' }}>
       <div style={{
         background: '#fff',
         borderRadius: 10,
@@ -23,7 +23,7 @@ export function TestSetCard({ ts, moduleId, isRunning }: Props) {
         borderLeft: isRunning ? '3px solid #2563eb' : undefined,
         cursor: 'pointer',
         transition: 'box-shadow 0.15s, border-color 0.15s',
-        height: '100%',
+        flex: 1,
         display: 'flex',
         flexDirection: 'column',
       }}
