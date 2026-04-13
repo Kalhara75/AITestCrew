@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import { updateObjective, deleteObjective } from '../api/modules';
-import type { WebUiTestDefinition, WebUiStep, TestObjective } from '../types';
+import type { WebUiTestDefinition, WebUiStep } from '../types';
 
 const ACTIONS = [
   'navigate', 'click', 'fill', 'select', 'check', 'uncheck', 'hover', 'press',
@@ -11,23 +10,49 @@ const ACTIONS = [
 // Actions where selector is not applicable
 const NO_SELECTOR = new Set(['navigate', 'assert-url-contains', 'assert-title-contains', 'wait']);
 
-interface Props {
-  open: boolean;
-  objective: TestObjective;
-  stepIndex: number;
-  moduleId: string;
-  testSetId: string;
-  onClose: () => void;
-  onSaved: () => void;
-  onDeleted?: () => void;
+export interface EditWebUiSavePayload {
+  /** The (possibly edited) display name / case name. */
+  name: string;
+  /** The full WebUiTestDefinition with possibly-modified steps. */
+  definition: WebUiTestDefinition;
 }
 
+interface Props {
+  open: boolean;
+  /** Title shown at the top of the dialog. Defaults to "Edit Web UI Test Case". */
+  title?: string;
+  /** Initial definition shown in the form (cloned on mount). */
+  definition: WebUiTestDefinition;
+  /** Initial display name shown above Description. Editable; passed back to onSave. */
+  caseName: string;
+  onClose: () => void;
+  onSave: (payload: EditWebUiSavePayload) => Promise<void>;
+  /** Optional. When present, the bottom-left "Delete" button appears and calls this on confirm. */
+  onDelete?: () => Promise<void>;
+  /** Override the delete button label. Defaults to "Delete Step". */
+  deleteLabel?: string;
+  /** Override the confirmation message text. */
+  deleteConfirmMessage?: string;
+}
+
+/**
+ * Generic Web UI test-case / step-set editor.
+ *
+ * Originally introduced for individual web UI test cases (`WebUiTestCaseTable`)
+ * and now reused by aseXML post-delivery verifications. The dialog is data-
+ * shape-agnostic: callers pass a `WebUiTestDefinition` plus save/delete
+ * callbacks describing how to persist the edits in their own context.
+ *
+ * For verifications: the same shape (`WebUiTestDefinition`) is used inside
+ * `VerificationStep.WebUi`, so editing flows through the verification update
+ * endpoint instead of the objective update endpoint.
+ */
 export function EditWebUiTestCaseDialog({
-  open, objective, stepIndex, moduleId, testSetId, onClose, onSaved, onDeleted,
+  open, title, definition, caseName, onClose, onSave, onDelete,
+  deleteLabel, deleteConfirmMessage,
 }: Props) {
-  const step = objective.webUiSteps[stepIndex];
-  const [form, setForm] = useState<WebUiTestDefinition>(() => structuredClone(step));
-  const [name, setName] = useState(objective.name);
+  const [form, setForm] = useState<WebUiTestDefinition>(() => structuredClone(definition));
+  const [name, setName] = useState(caseName);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -68,10 +93,7 @@ export function EditWebUiTestCaseDialog({
     setSaving(true);
     setError(null);
     try {
-      const updatedSteps = [...objective.webUiSteps];
-      updatedSteps[stepIndex] = form;
-      await updateObjective(moduleId, testSetId, objective.id, { ...objective, name, webUiSteps: updatedSteps });
-      onSaved();
+      await onSave({ name, definition: form });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Save failed');
     } finally {
@@ -79,19 +101,12 @@ export function EditWebUiTestCaseDialog({
     }
   };
 
-  const isLastStep = objective.webUiSteps.length <= 1;
-
   const handleDelete = async () => {
+    if (!onDelete) return;
     setDeleting(true);
     setError(null);
     try {
-      if (isLastStep) {
-        await deleteObjective(moduleId, testSetId, objective.id);
-      } else {
-        const updatedSteps = objective.webUiSteps.filter((_, i) => i !== stepIndex);
-        await updateObjective(moduleId, testSetId, objective.id, { ...objective, webUiSteps: updatedSteps });
-      }
-      onDeleted?.();
+      await onDelete();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Delete failed');
       setDeleting(false);
@@ -103,7 +118,7 @@ export function EditWebUiTestCaseDialog({
     <div style={overlayStyle} onClick={onClose}>
       <div style={dialogStyle} onClick={e => e.stopPropagation()}>
         <h2 style={{ margin: '0 0 18px', fontSize: 18, fontWeight: 700, color: '#0f172a' }}>
-          Edit Web UI Test Case
+          {title ?? 'Edit Web UI Test Case'}
         </h2>
 
         <div style={{ maxHeight: 'calc(80vh - 130px)', overflowY: 'auto', paddingRight: 6 }}>
@@ -204,15 +219,15 @@ export function EditWebUiTestCaseDialog({
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 16 }}>
           <div>
-            {onDeleted && !confirmDelete && (
+            {onDelete && !confirmDelete && (
               <button onClick={() => setConfirmDelete(true)} style={deleteBtnStyle}>
-                Delete Step
+                {deleteLabel ?? 'Delete Step'}
               </button>
             )}
-            {confirmDelete && (
+            {confirmDelete && onDelete && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 13, color: '#dc2626' }}>
-                  {isLastStep ? 'Last step — entire test case will be deleted.' : 'Delete this step?'}
+                  {deleteConfirmMessage ?? 'Delete this step?'}
                 </span>
                 <button onClick={handleDelete} disabled={deleting} style={deleteBtnStyle}>
                   {deleting ? 'Deleting...' : 'Yes, delete'}

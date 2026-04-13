@@ -373,10 +373,15 @@ if (cli.RecordVerification)
         .GetSection("TestEnvironment")
         .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
 
-    // Resolve storage-state paths (same logic as main DI path)
+    // Resolve storage-state paths (same logic as main DI path) so the recorder
+    // starts authenticated against either Blazor (Azure SSO) or Legacy MVC
+    // (forms auth) — captured verifications then skip the login flow.
     if (!string.IsNullOrEmpty(verifyConfig.BraveCloudUiStorageStatePath)
         && !Path.IsPathRooted(verifyConfig.BraveCloudUiStorageStatePath))
         verifyConfig.BraveCloudUiStorageStatePath = Path.Combine(AppContext.BaseDirectory, verifyConfig.BraveCloudUiStorageStatePath);
+    if (!string.IsNullOrEmpty(verifyConfig.LegacyWebUiStorageStatePath)
+        && !Path.IsPathRooted(verifyConfig.LegacyWebUiStorageStatePath))
+        verifyConfig.LegacyWebUiStorageStatePath = Path.Combine(AppContext.BaseDirectory, verifyConfig.LegacyWebUiStorageStatePath);
 
     using var verifyLoggerFactory = LoggerFactory.Create(b =>
         b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss "; })
@@ -487,8 +492,18 @@ if (cli.RecordVerification)
             AnsiConsole.MarkupLine($"[red]Base URL not configured. Set '{key}' in appsettings.json.[/]");
             return;
         }
+        // Pass the matching cached auth state so the recorder starts authenticated.
+        // Run --auth-setup --target UI_Web_MVC|UI_Web_Blazor first to populate these.
         var verifyStorageState = verifyTarget == "UI_Web_Blazor"
-            ? verifyConfig.BraveCloudUiStorageStatePath : null;
+            ? verifyConfig.BraveCloudUiStorageStatePath
+            : verifyConfig.LegacyWebUiStorageStatePath;
+        if (string.IsNullOrEmpty(verifyStorageState))
+        {
+            var setupKey = verifyTarget == "UI_Web_Blazor" ? "BraveCloudUiStorageStatePath" : "LegacyWebUiStorageStatePath";
+            AnsiConsole.MarkupLine(
+                $"[grey]No '{setupKey}' configured — recorder will start unauthenticated. " +
+                $"Run --auth-setup --target {verifyTarget} first to skip the login flow during recording.[/]");
+        }
         var webRecorded = await PlaywrightRecorder.RecordAsync(
             verifyBaseUrl, cli.VerificationName!, verifyConfig, verifyLogger,
             verifyStorageState, verifyTarget);

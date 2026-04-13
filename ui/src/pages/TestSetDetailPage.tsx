@@ -235,7 +235,12 @@ export function TestSetDetailPage() {
             <AseXmlTestCaseTable objectives={[selectedObjective]} />
           )}
           {selectedObjective.aseXmlDeliverySteps?.length > 0 && (
-            <AseXmlDeliveryTestCaseTable objectives={[selectedObjective]} />
+            <AseXmlDeliveryTestCaseTable
+              objectives={[selectedObjective]}
+              moduleId={moduleId}
+              testSetId={id}
+              onTestCaseUpdated={handleTestCaseUpdated}
+            />
           )}
 
           {/* Run history for this objective */}

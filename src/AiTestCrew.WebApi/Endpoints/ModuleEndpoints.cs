@@ -292,6 +292,64 @@ public static class ModuleEndpoints
             return Results.Ok(TestSetResponse(testSet, historyRepo));
         });
 
+        // DELETE /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId}/deliveries/{deliveryIndex}/verifications/{verificationIndex}
+        // Removes a single post-delivery UI verification from an aseXML delivery case.
+        // Indices are 0-based positions in the test-set JSON's aseXmlDeliverySteps[].postDeliveryVerifications[] list.
+        group.MapDelete("/{moduleId}/testsets/{tsId}/objectives/{objectiveId}/deliveries/{deliveryIndex:int}/verifications/{verificationIndex:int}",
+            async (string moduleId, string tsId, string objectiveId,
+                int deliveryIndex, int verificationIndex,
+                TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+        {
+            var testSet = await tsRepo.LoadAsync(moduleId, tsId);
+            if (testSet is null)
+                return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
+
+            var objective = testSet.TestObjectives.FirstOrDefault(o =>
+                string.Equals(o.Id, objectiveId, StringComparison.OrdinalIgnoreCase));
+            if (objective is null)
+                return Results.NotFound(new { error = $"Objective '{objectiveId}' not found in test set '{tsId}'" });
+
+            if (deliveryIndex < 0 || deliveryIndex >= objective.AseXmlDeliverySteps.Count)
+                return Results.BadRequest(new { error = $"deliveryIndex {deliveryIndex} out of range (0..{objective.AseXmlDeliverySteps.Count - 1})" });
+
+            var delivery = objective.AseXmlDeliverySteps[deliveryIndex];
+            if (verificationIndex < 0 || verificationIndex >= delivery.PostDeliveryVerifications.Count)
+                return Results.BadRequest(new { error = $"verificationIndex {verificationIndex} out of range (0..{delivery.PostDeliveryVerifications.Count - 1})" });
+
+            delivery.PostDeliveryVerifications.RemoveAt(verificationIndex);
+            await tsRepo.SaveAsync(testSet, moduleId);
+            return Results.Ok(TestSetResponse(testSet, historyRepo));
+        });
+
+        // PUT /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId}/deliveries/{deliveryIndex}/verifications/{verificationIndex}
+        // Replaces a single post-delivery UI verification in place. Body is the full updated VerificationStep.
+        group.MapPut("/{moduleId}/testsets/{tsId}/objectives/{objectiveId}/deliveries/{deliveryIndex:int}/verifications/{verificationIndex:int}",
+            async (string moduleId, string tsId, string objectiveId,
+                int deliveryIndex, int verificationIndex,
+                AiTestCrew.Agents.AseXmlAgent.VerificationStep updated,
+                TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+        {
+            var testSet = await tsRepo.LoadAsync(moduleId, tsId);
+            if (testSet is null)
+                return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
+
+            var objective = testSet.TestObjectives.FirstOrDefault(o =>
+                string.Equals(o.Id, objectiveId, StringComparison.OrdinalIgnoreCase));
+            if (objective is null)
+                return Results.NotFound(new { error = $"Objective '{objectiveId}' not found in test set '{tsId}'" });
+
+            if (deliveryIndex < 0 || deliveryIndex >= objective.AseXmlDeliverySteps.Count)
+                return Results.BadRequest(new { error = $"deliveryIndex {deliveryIndex} out of range (0..{objective.AseXmlDeliverySteps.Count - 1})" });
+
+            var delivery = objective.AseXmlDeliverySteps[deliveryIndex];
+            if (verificationIndex < 0 || verificationIndex >= delivery.PostDeliveryVerifications.Count)
+                return Results.BadRequest(new { error = $"verificationIndex {verificationIndex} out of range (0..{delivery.PostDeliveryVerifications.Count - 1})" });
+
+            delivery.PostDeliveryVerifications[verificationIndex] = updated;
+            await tsRepo.SaveAsync(testSet, moduleId);
+            return Results.Ok(TestSetResponse(testSet, historyRepo));
+        });
+
         // PUT /api/modules/{moduleId}/testsets/{tsId}/setup-steps — save/update setup steps
         group.MapPut("/{moduleId}/testsets/{tsId}/setup-steps",
             async (string moduleId, string tsId, SetupStepsRequest request,

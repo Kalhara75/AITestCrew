@@ -2,7 +2,7 @@ import { apiFetch } from './client';
 import type {
   Module, TestSetListItem, TestSetDetail, RunSummary, ExecutionRun,
   MoveObjectiveRequest, TestObjective, AiPatchRequest, AiPatchPreview, AiPatchApplyRequest,
-  TriggerModuleRunResponse, ModuleRunStatus, WebUiStep,
+  TriggerModuleRunResponse, ModuleRunStatus, WebUiStep, VerificationStep,
 } from '../types';
 
 export const fetchModules = () =>
@@ -67,6 +67,33 @@ export const deleteObjective = (
   apiFetch<void>(
     `/modules/${moduleId}/testsets/${tsId}/objectives/${objectiveId}`,
     { method: 'DELETE' }
+  );
+
+/** Removes one post-delivery UI verification from an aseXML delivery case. */
+export const deleteVerification = (
+  moduleId: string,
+  tsId: string,
+  objectiveId: string,
+  deliveryIndex: number,
+  verificationIndex: number
+) =>
+  apiFetch<TestSetDetail>(
+    `/modules/${moduleId}/testsets/${tsId}/objectives/${objectiveId}/deliveries/${deliveryIndex}/verifications/${verificationIndex}`,
+    { method: 'DELETE' }
+  );
+
+/** Replaces a post-delivery UI verification (e.g. after editing its WebUi steps). */
+export const updateVerification = (
+  moduleId: string,
+  tsId: string,
+  objectiveId: string,
+  deliveryIndex: number,
+  verificationIndex: number,
+  updated: VerificationStep
+) =>
+  apiFetch<TestSetDetail>(
+    `/modules/${moduleId}/testsets/${tsId}/objectives/${objectiveId}/deliveries/${deliveryIndex}/verifications/${verificationIndex}`,
+    { method: 'PUT', body: JSON.stringify(updated) }
   );
 
 export const previewAiPatch = (moduleId: string, tsId: string, request: AiPatchRequest) =>

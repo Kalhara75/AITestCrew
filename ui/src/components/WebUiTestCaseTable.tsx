@@ -131,13 +131,33 @@ export function WebUiTestCaseTable({ objectives, moduleId, testSetId, onTestCase
       {editing && moduleId && testSetId && (
         <EditWebUiTestCaseDialog
           open
-          objective={editing.objective}
-          stepIndex={editing.stepIndex}
-          moduleId={moduleId}
-          testSetId={testSetId}
+          definition={editing.objective.webUiSteps[editing.stepIndex]}
+          caseName={editing.objective.name}
           onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); onTestCaseUpdated?.(); }}
-          onDeleted={() => { setEditing(null); onTestCaseUpdated?.(); }}
+          onSave={async ({ name, definition }) => {
+            const updatedSteps = [...editing.objective.webUiSteps];
+            updatedSteps[editing.stepIndex] = definition;
+            await updateObjective(moduleId, testSetId, editing.objective.id,
+              { ...editing.objective, name, webUiSteps: updatedSteps });
+            setEditing(null);
+            onTestCaseUpdated?.();
+          }}
+          onDelete={async () => {
+            if (editing.objective.webUiSteps.length <= 1) {
+              await deleteObjective(moduleId, testSetId, editing.objective.id);
+            } else {
+              const updatedSteps = editing.objective.webUiSteps.filter((_, i) => i !== editing.stepIndex);
+              await updateObjective(moduleId, testSetId, editing.objective.id,
+                { ...editing.objective, webUiSteps: updatedSteps });
+            }
+            setEditing(null);
+            onTestCaseUpdated?.();
+          }}
+          deleteConfirmMessage={
+            editing.objective.webUiSteps.length <= 1
+              ? 'Last step — entire test case will be deleted.'
+              : 'Delete this step?'
+          }
         />
       )}
     </div>
