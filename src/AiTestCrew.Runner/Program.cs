@@ -922,9 +922,23 @@ var modeLabel = cli.Mode switch
     RunMode.Rebaseline => "[yellow]REBASELINE[/] (regenerating test cases)",
     _                  => "[green]NORMAL[/] (generating new test cases)"
 };
+// In reuse mode, if --module is given but --testset isn't, the reuseId names
+// the test set too (the common case). Auto-derive so users don't have to pass
+// the same slug twice.
+var effectiveTestSetId = cli.TestSetId;
+if (cli.Mode == RunMode.Reuse
+    && cli.ModuleId is not null
+    && string.IsNullOrEmpty(effectiveTestSetId)
+    && !string.IsNullOrEmpty(cli.ReuseId))
+{
+    effectiveTestSetId = cli.ReuseId;
+}
+
 AnsiConsole.MarkupLine($"[grey]Mode:[/] {modeLabel}");
 if (cli.ModuleId is not null)
-    AnsiConsole.MarkupLine($"[grey]Module:[/] {cli.ModuleId}  [grey]Test set:[/] {cli.TestSetId}");
+    AnsiConsole.MarkupLine($"[grey]Module:[/] {cli.ModuleId}  [grey]Test set:[/] {effectiveTestSetId}");
+if (cli.ObjectiveId is not null)
+    AnsiConsole.MarkupLine($"[grey]Objective filter:[/] {cli.ObjectiveId}");
 if (cli.Mode != RunMode.Reuse)
     AnsiConsole.MarkupLine($"[grey]Objective:[/] {objective}");
 AnsiConsole.WriteLine();
@@ -943,7 +957,7 @@ await AnsiConsole.Status()
             ctx.Status("Decomposing objective...");
 
         suiteResult = await orchestrator.RunAsync(objective, cli.Mode, cli.ReuseId,
-            moduleId: cli.ModuleId, targetTestSetId: cli.TestSetId,
+            moduleId: cli.ModuleId, targetTestSetId: effectiveTestSetId,
             objectiveName: cli.ObjectiveName,
             objectiveId: cli.ObjectiveId,  // reuse-mode filter to a single test case
             apiStackKey: cli.ApiStackKey, apiModule: cli.ApiModule,

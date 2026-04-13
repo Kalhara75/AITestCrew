@@ -186,12 +186,30 @@ public class TestOrchestrator
             }).ToList();
 
             // ── Single-objective filter: run only one objective from the set ──
+            // Matches on Id (slug) first; falls back to Description (display name)
+            // case-insensitively so users can pass either form on the CLI.
             if (!string.IsNullOrEmpty(objectiveId))
             {
-                tasks = tasks.Where(t => t.Id == objectiveId).ToList();
+                var filtered = tasks
+                    .Where(t => string.Equals(t.Id, objectiveId, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (filtered.Count == 0)
+                {
+                    filtered = tasks
+                        .Where(t => string.Equals(t.Description, objectiveId, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                }
+                tasks = filtered;
+
                 if (tasks.Count == 0)
                 {
-                    var errorMsg = $"Objective '{objectiveId}' not found in test set '{reuseId ?? targetTestSetId}'";
+                    var available = saved.TestObjectives.Count > 0
+                        ? string.Join("; ", saved.TestObjectives.Select(o =>
+                            string.IsNullOrWhiteSpace(o.Name) || o.Name == o.Id
+                                ? o.Id
+                                : $"{o.Id} (\"{o.Name}\")"))
+                        : "(none)";
+                    var errorMsg = $"Objective '{objectiveId}' not found in test set '{reuseId ?? targetTestSetId}'. Available: {available}";
                     _logger.LogError(errorMsg);
                     return new TestSuiteResult
                     {
