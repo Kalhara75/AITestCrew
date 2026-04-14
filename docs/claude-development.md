@@ -29,6 +29,8 @@ You do not need to explain the project to Claude each time — it reads `CLAUDE.
 
 Slash commands live in `.claude/commands/`. They are invoked with `/command-name <arguments>` in Claude Code and expand into detailed, project-aware instructions that guide Claude through a specific development task.
 
+### Action Skills (scaffold / implement)
+
 ### `/add-agent`
 
 Scaffolds a complete new test agent.
@@ -126,6 +128,87 @@ Implements any new feature or enhancement.
 
 ---
 
+### `/add-asexml-template`
+
+Scaffolds a new aseXML transaction template (XML + manifest pair). No C# changes required.
+
+```
+/add-asexml-template <TransactionType> <templateId> "<description>"
+```
+
+**Examples:**
+```
+/add-asexml-template CustomerDetailsNotification CDN-MoveIn "Customer Details Notification for move-in events"
+/add-asexml-template MeterDataNotification MDN-Actual "Meter Data Notification with actual interval reads"
+```
+
+**What it does:**
+1. Finds or uses a provided representative sample
+2. Reads engine contracts (reference template, manifest, `AseXmlRenderer.cs`, `FieldGenerators.cs`)
+3. Creates the XML template at `templates/asexml/{TransactionType}/{templateId}.xml` with `{{Token}}` placeholders
+4. Creates the manifest at `templates/asexml/{TransactionType}/{templateId}.manifest.json` with field sources (`auto`/`user`/`const`)
+5. Verifies token-to-manifest parity
+6. Builds and smoke-tests with both Generate and Deliver objectives
+7. Optionally adds new auto-field generators in `FieldGenerators.cs`
+8. Updates documentation
+
+---
+
+### `/add-asexml-verification`
+
+Scaffolds a post-delivery UI verification attached to an existing aseXML delivery test case.
+
+```
+/add-asexml-verification <moduleId> <testSetId> <objectiveId> <target> "<verification-name>" [waitSeconds]
+```
+
+**Examples:**
+```
+/add-asexml-verification aemo-b2b mfn-delivery deliver-mfn UI_Web_Blazor "MFN Process Overview shows 'One In All In'" 30
+/add-asexml-verification aemo-b2b mfn-delivery deliver-mfn UI_Web_MVC "Legacy MFN Search grid row exists"
+```
+
+**What it does:**
+1. Confirms prerequisites: objective has run successfully, auth state cached for target
+2. Reads engine contracts (`VerificationStep.cs`, `VerificationRecorderHelper.cs`, `TokenSubstituter.cs`)
+3. Launches the recorder via CLI with auto-parameterisation context
+4. Records against real, already-processed data (search by NMI/MessageID)
+5. Reviews captured output and verifies `{{Token}}` substitutions
+6. Replays to confirm tokens substitute correctly with fresh values
+
+Verifications are owned by a single delivery case and use `{{Token}}` substitution so the same steps work with different MessageIDs.
+
+---
+
+### `/add-delivery-protocol`
+
+Scaffolds a new `IXmlDropTarget` implementation for a new delivery protocol.
+
+```
+/add-delivery-protocol <scheme> "<description>"
+```
+
+**Examples:**
+```
+/add-delivery-protocol as2 "Applicability Statement 2 inbound delivery"
+/add-delivery-protocol smb "SMB/CIFS network share delivery"
+/add-delivery-protocol httppost "HTTP POST multipart upload"
+```
+
+**What it does:**
+1. Confirms the endpoint shape works with `BravoEndpointResolver`
+2. Reads engine contracts (`IXmlDropTarget`, `SftpDropTarget`, `FtpDropTarget`, `DropTargetFactory`)
+3. Picks a NuGet package if needed
+4. Creates the drop-target class at `src/AiTestCrew.Agents/AseXmlAgent/Delivery/{Scheme}DropTarget.cs`
+5. Wires it into `DropTargetFactory` with scheme detection + dispatch
+6. Registers DI only if non-logger dependencies are needed
+7. Smoke-tests against a real endpoint
+8. Updates documentation
+
+**Rules:** Never log passwords, verify file landed, respect cancellation tokens, return `BytesWritten`.
+
+---
+
 ### `/review-agent`
 
 Reviews an agent implementation against a 15-point quality checklist.
@@ -152,6 +235,86 @@ Reviews an agent implementation against a 15-point quality checklist.
 - Logging conventions
 
 Automatically fixes any Critical issues found. Reports Important and Minor issues as recommendations.
+
+---
+
+### Reference Skills
+
+These are read-only reference guides. Consult them before modifying the relevant subsystem.
+
+### `/asexml-reference`
+
+End-to-end reference for the aseXML subsystem — the three-phase pipeline (Generate → Deliver → Verify), data model, extension points, and CLI cheat sheet.
+
+```
+/asexml-reference
+```
+
+**Key content:**
+- Phase 1 (Generate): renders XML from template + manifest via `AseXmlGenerationAgent`
+- Phase 2 (Deliver): uploads to Bravo inbound drop location via SFTP/FTP (`AseXmlDeliveryAgent`)
+- Phase 3 (Verify): runs post-delivery UI checks with `{{Token}}` substitution from render context
+- Manifest field sources: `auto` (generators), `user` (runtime), `const` (hardwired)
+- Built-in generators: `messageId`, `transactionId`, `nowOffset`, `today`
+- Invariants and skill mapping table
+
+---
+
+### `/bravo-web-reference`
+
+Reference guide for the Bravo Web (ASP.NET MVC + Kendo UI) application stack.
+
+```
+/bravo-web-reference
+```
+
+**Key content:**
+- Kendo UI widget structures (PanelBar, Window, Grid)
+- Selector rules for PanelBar headers, Grid hyperlinks, modal dismissal
+- Login page selectors
+- Lessons learned: `input` events (not `change`), `href*=` (contains match), Grid dynamic hrefs, overlay handling
+
+Consult before modifying Playwright recorder/replay logic or selector generation for MVC targets.
+
+---
+
+### `/blazor-cloud-reference`
+
+Reference guide for the Brave Cloud (Blazor/MudBlazor) application stack.
+
+```
+/blazor-cloud-reference
+```
+
+**Key content:**
+- MudBlazor component structures (NavGroup, NavLink, Button, DataGrid, Select, Dialog)
+- Selector rules (text-based preferred, avoid `type="button"`)
+- `click-icon` action for SVG icons with fingerprint + occurrence index
+- StorageState persistence for session reuse
+- SPA navigation timing: `WaitForLoadStateAsync(NetworkIdle)` resolves too early — use `wait-for-stable`
+- 1920×1080 viewport required
+
+Consult before modifying Playwright recorder/replay logic or selector generation for Blazor targets.
+
+---
+
+### `/desktop-winui-reference`
+
+Reference guide for the WinForms Desktop UI recording and replay engine (FlaUI/UI Automation).
+
+```
+/desktop-winui-reference
+```
+
+**Key content:**
+- Technology: FlaUI.UIA3, Windows hooks (`WH_MOUSE_LL`, `WH_KEYBOARD_LL`), message pump
+- Element selector model: five-field composite (AutomationId, Name, ClassName, ControlType, TreePath) with cascading priority
+- Recording architecture: hooks, message pump requirement (critical), element resolution, Ctrl+V paste handling
+- Replay architecture: three-strategy click (InvokePattern, element.Click(), Mouse.Click), window transition detection, assertion polling
+- Common issues and solutions
+- Adding new step actions and selector strategies
+
+Consult before modifying desktop recorder, replay, or element resolution logic.
 
 ---
 
@@ -254,6 +417,64 @@ Pick the test set ID, then:
 
 ---
 
+### Recording a desktop (WinForms) test case
+
+```
+dotnet run --project src/AiTestCrew.Runner -- --record --module desktop --testset calc --case-name "Basic Add" --target UI_Desktop_WinForms
+```
+
+Interact with the desktop app. FlaUI hooks capture clicks and keystrokes. Steps are saved with a five-field selector composite (AutomationId > Name > ClassName+ControlType > TreePath). Consult `/desktop-winui-reference` for element resolution rules.
+
+---
+
+### aseXML: Generating a B2B transaction
+
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --module aemo-b2b --testset mfn-tests "Generate an MFN for NMI 4103035611 ..."
+```
+
+Renders XML from a template + manifest to `output/asexml/`. Use `/add-asexml-template` to scaffold new transaction types. Consult `/asexml-reference` for the full pipeline overview.
+
+---
+
+### aseXML: Delivering to a Bravo endpoint
+
+```bash
+# List available endpoints
+dotnet run --project src/AiTestCrew.Runner -- --list-endpoints
+
+# Deliver
+dotnet run --project src/AiTestCrew.Runner -- --module aemo-b2b --testset mfn-delivery --endpoint GatewaySPARQ --obj-name "Deliver MFN" "Deliver MFN for NMI 4103035611 to GatewaySPARQ ..."
+```
+
+Renders the XML then uploads to the endpoint's inbound drop location via SFTP or FTP. Use `/add-delivery-protocol` to add new transport protocols.
+
+---
+
+### aseXML: Adding a post-delivery UI verification
+
+```bash
+# Ensure auth state is cached for the target UI
+dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_Blazor
+
+# Record the verification
+dotnet run --project src/AiTestCrew.Runner -- --record-verification --module aemo-b2b --testset mfn-delivery --objective "Deliver MFN" --target UI_Web_Blazor --verification-name "MFN Process Overview shows 'One In All In'" --wait 30
+```
+
+Records UI steps that verify the delivery was processed. Literals from the delivery context (NMI, MessageID, etc.) are auto-parameterised into `{{Token}}` placeholders so verifications work with fresh data. Use `/add-asexml-verification` for guided scaffolding.
+
+---
+
+### Legacy MVC auth setup
+
+For Legacy MVC targets, save forms auth state before recording:
+
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_MVC
+```
+
+---
+
 ### Reviewing code quality after manual edits
 
 ```
@@ -272,8 +493,13 @@ Pick the test set ID, then:
 | `.claude/commands/add-validation.md` | Slash command: add a validation rule |
 | `.claude/commands/implement-feature.md` | Slash command: implement any feature |
 | `.claude/commands/review-agent.md` | Slash command: quality review of an agent |
+| `.claude/commands/add-asexml-template.md` | Slash command: scaffold an aseXML transaction template |
+| `.claude/commands/add-asexml-verification.md` | Slash command: scaffold a post-delivery UI verification |
+| `.claude/commands/add-delivery-protocol.md` | Slash command: scaffold a new delivery protocol |
+| `.claude/commands/asexml-reference.md` | Reference: aseXML Generate → Deliver → Verify pipeline |
 | `.claude/commands/bravo-web-reference.md` | Reference: Kendo UI DOM patterns and selector rules |
 | `.claude/commands/blazor-cloud-reference.md` | Reference: MudBlazor DOM patterns, SPA timing, and selector rules |
+| `.claude/commands/desktop-winui-reference.md` | Reference: FlaUI desktop recording/replay and element resolution |
 | `src/AiTestCrew.WebApi/Program.cs` | WebApi DI wiring and endpoint registration |
 | `src/AiTestCrew.WebApi/Endpoints/` | REST API endpoint definitions |
 | `ui/src/App.tsx` | React Router route definitions |
