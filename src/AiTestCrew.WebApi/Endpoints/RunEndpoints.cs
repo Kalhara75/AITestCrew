@@ -17,13 +17,16 @@ public static class RunEndpoints
                 return Results.BadRequest(new { error = "mode is required" });
 
             if (!Enum.TryParse<RunMode>(request.Mode, true, out var mode) || mode == RunMode.List)
-                return Results.BadRequest(new { error = "mode must be Normal, Reuse, or Rebaseline" });
+                return Results.BadRequest(new { error = "mode must be Normal, Reuse, Rebaseline, or VerifyOnly" });
 
-            if (mode == RunMode.Reuse && string.IsNullOrWhiteSpace(request.TestSetId))
-                return Results.BadRequest(new { error = "testSetId is required for Reuse mode" });
+            if (mode is RunMode.Reuse or RunMode.VerifyOnly && string.IsNullOrWhiteSpace(request.TestSetId))
+                return Results.BadRequest(new { error = "testSetId is required for Reuse/VerifyOnly mode" });
 
-            if (mode != RunMode.Reuse && string.IsNullOrWhiteSpace(request.Objective))
+            if (mode is not RunMode.Reuse and not RunMode.VerifyOnly && string.IsNullOrWhiteSpace(request.Objective))
                 return Results.BadRequest(new { error = "objective is required for Normal/Rebaseline mode" });
+
+            if (mode == RunMode.VerifyOnly && string.IsNullOrWhiteSpace(request.ObjectiveId))
+                return Results.BadRequest(new { error = "objectiveId is required for VerifyOnly mode" });
 
             // Module-scoped Normal mode requires both moduleId and testSetId
             if (!string.IsNullOrWhiteSpace(request.ModuleId) && string.IsNullOrWhiteSpace(request.TestSetId))
@@ -34,8 +37,8 @@ public static class RunEndpoints
             {
                 if (string.IsNullOrWhiteSpace(request.TestSetId))
                     return Results.BadRequest(new { error = "testSetId is required when objectiveId is specified" });
-                if (mode != RunMode.Reuse && mode != RunMode.Rebaseline)
-                    return Results.BadRequest(new { error = "objectiveId is only supported in Reuse or Rebaseline mode" });
+                if (mode is not RunMode.Reuse and not RunMode.Rebaseline and not RunMode.VerifyOnly)
+                    return Results.BadRequest(new { error = "objectiveId is only supported in Reuse, Rebaseline, or VerifyOnly mode" });
             }
 
             // Recorded objectives cannot be rebaselined
@@ -58,7 +61,7 @@ public static class RunEndpoints
                 return Results.Conflict(new { error = "A test run is already in progress" });
 
             var runId = Guid.NewGuid().ToString("N")[..12];
-            var objective = mode == RunMode.Reuse ? "" : request.Objective!;
+            var objective = mode is RunMode.Reuse or RunMode.VerifyOnly ? "" : request.Objective!;
             tracker.Create(runId, objective, request.Mode, request.TestSetId);
 
             // Fire and forget — the orchestrator persists results via ExecutionHistoryRepository
@@ -66,7 +69,7 @@ public static class RunEndpoints
             {
                 try
                 {
-                    var reuseId = mode == RunMode.Reuse ? request.TestSetId : null;
+                    var reuseId = mode is RunMode.Reuse or RunMode.VerifyOnly ? request.TestSetId : null;
                     var result = await orchestrator.RunAsync(
                         objective, mode, reuseId,
                         externalRunId: runId,
@@ -75,8 +78,9 @@ public static class RunEndpoints
                         objectiveName: request.ObjectiveName,
                         objectiveId: request.ObjectiveId,
                         apiStackKey: request.ApiStackKey,
-                        apiModule: request.ApiModule);
-                    var testSetId = mode == RunMode.Reuse
+                        apiModule: request.ApiModule,
+                        verificationWaitOverride: request.VerificationWaitOverride);
+                    var testSetId = mode is RunMode.Reuse or RunMode.VerifyOnly
                         ? request.TestSetId!
                         : !string.IsNullOrWhiteSpace(request.TestSetId)
                             ? request.TestSetId!
@@ -123,4 +127,4 @@ public static class RunEndpoints
     }
 }
 
-public record RunRequest(string? Objective, string? ObjectiveName, string Mode, string? TestSetId, string? ModuleId, string? ObjectiveId, string? ApiStackKey = null, string? ApiModule = null);
+public record RunRequest(string? Objective, string? ObjectiveName, string Mode, string? TestSetId, string? ModuleId, string? ObjectiveId, string? ApiStackKey = null, string? ApiModule = null, int? VerificationWaitOverride = null);

@@ -65,4 +65,12 @@ public class WebUiStep
 
     /// <summary>Per-step timeout in milliseconds. Defaults to 5000 ms.</summary>
     public int TimeoutMs { get; set; } = 5000;
+
+    /// <summary>
+    /// When true, the replay engine wraps the locator with <c>.First</c> before asserting.
+    /// Useful for assertions against elements (e.g. grid rows) that may match multiple
+    /// elements at replay time — picks the first match (typically the newest row in a
+    /// date-sorted grid). Only applied to assert-* actions. Default: false (strict mode).
+    /// </summary>
+    public bool MatchFirst { get; set; } = false;
 }

@@ -2,19 +2,19 @@
 
 ## Overview
 
-AITestCrew is an AI-powered test automation tool that uses a large language model (LLM) to generate, execute, and validate API tests from plain English objectives. Instead of writing test scripts manually, you describe what you want to test in natural language and the tool does the rest.
+AITestCrew is an AI-powered test automation framework that uses LLMs (Claude via Anthropic SDK) to generate, execute, and validate tests across multiple surfaces — REST/GraphQL APIs, web UIs (Blazor and ASP.NET MVC via Playwright), Windows desktop applications (WinForms via FlaUI), and AEMO B2B aseXML transaction workflows (template-driven generation, SFTP/FTP delivery to Bravo endpoints, and post-delivery UI verification). Tests can be AI-generated from plain English objectives or human-recorded via interactive browser/desktop sessions, then saved and replayed deterministically without further LLM calls.
 
 ---
 
 ## What It Does
 
-1. **Understands your objective** — You provide a plain English description of what to test (e.g. *"Test the /api/products endpoint"*).
-2. **Decomposes the objective** — The LLM breaks it into specific, actionable test tasks.
-3. **Generates test steps** — The LLM interprets the objective literally and generates only the test steps it asks for. A specific objective (e.g. *"call X with params Y and validate Z"*) produces exactly one test. Vague objectives produce 3–5 steps; objectives that explicitly request comprehensive coverage produce up to 8. Assertions are grounded in values from the objective text and actual response field names discovered from a live pre-flight call.
-4. **Executes the tests** — Each test case is sent as a real HTTP request to the target API.
-5. **Validates responses** — A two-stage validation process (rule-based + LLM reasoning) checks status codes, response bodies, and data quality.
-6. **Reports results** — A summary table and an LLM-written narrative are printed to the console. Everything is also written to a timestamped log file.
-7. **Saves test sets** — Generated test cases are persisted to disk so they can be re-executed repeatedly without calling the LLM again.
+1. **Understands your objective** — You provide a plain English description of what to test. This can target any supported surface: an API endpoint, a web UI workflow, a desktop application flow, or an AEMO B2B aseXML transaction.
+2. **Routes to the right agent** — The orchestrator decomposes the objective and dispatches each task to a specialised agent based on the target type (API, Blazor, MVC, WinForms, aseXML generation, or aseXML delivery).
+3. **Generates or replays test steps** — AI-generated mode: the LLM produces test steps grounded in real application state (live API responses, actual DOM selectors from browser exploration, UI Automation tree snapshots). Recording mode: you interact with the application while the recorder captures your actions as replayable steps with auto-detected selectors.
+4. **Executes the tests** — Each agent runs its steps against the real target: HTTP requests for APIs, Playwright browser automation for web UIs, FlaUI automation for desktop apps, or template rendering + SFTP/FTP upload for aseXML deliveries.
+5. **Validates results** — APIs use a hybrid rule-based + LLM validation pipeline. Web and desktop UI agents execute Playwright/FlaUI assertions (text, visibility, URL). aseXML delivery agents optionally run post-delivery UI verifications — recorded UI steps that check the downstream processing in Bravo with `{{Token}}` substitution from each delivery's context (NMI, MessageID, TransactionID, etc.).
+6. **Reports results** — A summary table and an LLM-written narrative are printed to the console and shown in the React web dashboard. Per-step pass/fail detail, screenshots on failure, and execution history with run-over-run comparison are available.
+7. **Saves and reuses test sets** — Generated and recorded test cases are persisted to disk (organised into modules and test sets) so they can be re-executed repeatedly without calling the LLM again. Verify-only mode allows re-running just the UI verification steps of a delivery test case without re-delivering.
 
 ---
 
@@ -57,7 +57,7 @@ Templates live under `templates/asexml/{TransactionType}/{templateId}.xml`, each
 
 Adding a new transaction type is a content change, not a code change: drop a new `{template}.xml` + `{template}.manifest.json` pair under `templates/asexml/{TransactionType}/` and the registry picks it up at next startup. Adding a new auto-field generator is a one-method change in `src/AiTestCrew.Agents/AseXmlAgent/Templates/FieldGenerators.cs`.
 
-Rendered XML is written to `output/asexml/{timestamp}_{taskId}/{NN}-{caseName}.xml`. Delivery to a FTP/SFTP drop location and downstream UI validation are planned for Phase 2/3 via separate agents.
+Rendered XML is written to `output/asexml/{timestamp}_{taskId}/{NN}-{caseName}.xml`. The delivery agent (`AseXml_Deliver`) renders the XML, uploads it via SFTP/FTP to a Bravo endpoint, and optionally runs post-delivery UI verifications with `{{Token}}` substitution from each run's context.
 
 ---
 
@@ -304,6 +304,23 @@ verify[1.2] <child steps>   → second verification
 
 If a verification step fails, the overall test case is marked Failed. Use Playwright screenshots (`PlaywrightScreenshotDir`) or WinForms screenshots (`WinFormsScreenshotDir`) for post-mortem.
 
+**Verify-only mode** — re-run only the post-delivery UI verifications without re-rendering or re-uploading the XML. Useful when a verification fails due to a recording error, timeout, or selector issue and the delivery itself is fine:
+
+```bash
+# Re-run verifications with recorded wait times
+dotnet run --project src/AiTestCrew.Runner -- --verify-only \
+  --reuse mfn-delivery-tests --module aemo-b2b \
+  --objective "Deliver MFN One In All In to GatewaySPARQ"
+
+# Skip wait delays (file already processed on the server)
+dotnet run --project src/AiTestCrew.Runner -- --verify-only \
+  --reuse mfn-delivery-tests --module aemo-b2b \
+  --objective "Deliver MFN One In All In to GatewaySPARQ" \
+  --wait 0
+```
+
+The context (MessageID, TransactionID, NMI, etc.) is reconstructed from the latest successful delivery in execution history, combined with the test definition's `FieldValues`. Requires at least one prior successful delivery run. The React UI exposes a teal **Verify** button alongside Run/Rebaseline for delivery objectives that have verifications — it triggers verify-only with `--wait 0` by default.
+
 **Skip the login flow when recording MVC verifications**:
 
 The recorder opens with whatever cached auth state is configured for the target:
@@ -351,7 +368,7 @@ dotnet run --project src/AiTestCrew.Runner -- --record \
 - `--target` is `UI_Web_MVC` (uses `LegacyWebUiUrl`) or `UI_Web_Blazor` (uses `BraveCloudUiUrl`).
 - Module and test set are created automatically if they do not exist.
 - Module/test set names are slugified so they match the WebApi directory structure.
-- For Blazor targets, the recorder uses a 1920×1080 viewport (matching replay) and loads saved auth state if available.
+- Both MVC and Blazor targets replay at 1920×1080 viewport. The recorder uses `NoViewport` (maximized window) for MVC; Blazor uses 1920×1080 to match replay. Saved auth state is loaded if available.
 - The session ends when you click **Save & Stop** in the overlay, close the browser, or after 15 minutes.
 - After recording, the tool validates steps and warns about weak selectors, missing assertions, and SPA timing risks.
 
@@ -919,13 +936,21 @@ Changes are saved via `PUT /api/modules/{moduleId}/testsets/{tsId}/objectives/{o
 | `check` / `uncheck` | CSS selector | — | Tick/untick a checkbox |
 | `hover` | CSS selector | — | Hover over an element |
 | `press` | CSS selector | key name | Press a keyboard key |
-| `assert-text` | CSS selector | expected text | Assert element text contains a value |
-| `assert-visible` / `assert-hidden` | CSS selector | — | Assert element visibility |
+| `assert-text` | CSS selector | expected text | Assert element text contains a value. Set `matchFirst: true` to assert only against the first matching element (useful for grids with multiple rows). |
+| `assert-visible` / `assert-hidden` | CSS selector | — | Assert element visibility. Supports `matchFirst`. |
 | `assert-url-contains` | — | URL fragment | Assert the current URL contains a value |
 | `assert-title-contains` | — | title fragment | Assert the page title contains a value |
 | `wait` | CSS selector or — | ms (if no selector) | Wait for a selector or a fixed delay |
 | `wait-for-stable` | — | ms threshold (default 1000) | Wait until DOM stops changing for N ms (uses MutationObserver — ideal after SPA navigation) |
 | `click-icon` | — | SVG path prefix | Click an icon-only button by its SVG path fingerprint. Format: `svgPathPrefix\|N` where N is the 0-based occurrence index |
+
+### Match-First Assertions
+
+By default, assertion steps use Playwright's strict mode — the selector must resolve to exactly one element. When a selector matches multiple elements (e.g. grid rows accumulating over repeated test runs), the assertion fails with a strict-mode violation.
+
+Setting `matchFirst: true` on an assertion step wraps the locator with `.First`, so only the first matching element (typically the newest row in a date-sorted grid) is checked. This flag applies to `assert-text`, `assert-visible`, and `assert-hidden` actions.
+
+**Usage**: toggle the "first" checkbox in the Web UI edit dialog for the relevant assertion step. In JSON, set `"matchFirst": true` on the step object.
 
 ### Per-Step Execution Reporting
 

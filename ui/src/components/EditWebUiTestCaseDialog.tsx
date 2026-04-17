@@ -10,6 +10,9 @@ const ACTIONS = [
 // Actions where selector is not applicable
 const NO_SELECTOR = new Set(['navigate', 'assert-url-contains', 'assert-title-contains', 'wait']);
 
+// Actions where "match first" is applicable (assertions that target an element locator)
+const MATCH_FIRST_APPLICABLE = new Set(['assert-text', 'assert-visible', 'assert-hidden']);
+
 export interface EditWebUiSavePayload {
   /** The (possibly edited) display name / case name. */
   name: string;
@@ -198,6 +201,26 @@ export function EditWebUiTestCaseDialog({
                 style={{ ...inputStyle, width: 80, flexShrink: 0 }}
                 title="Timeout (ms)"
               />
+
+              {/* Match first (assertions only) */}
+              {MATCH_FIRST_APPLICABLE.has(step.action) && (
+                <label
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    fontSize: 11, color: '#64748b', flexShrink: 0, whiteSpace: 'nowrap',
+                    cursor: 'pointer',
+                  }}
+                  title="When the selector matches multiple elements (e.g. grid rows), assert only against the first match"
+                >
+                  <input
+                    type="checkbox"
+                    checked={!!step.matchFirst}
+                    onChange={e => setStep(i, { ...step, matchFirst: e.target.checked })}
+                    style={{ margin: 0 }}
+                  />
+                  first
+                </label>
+              )}
 
               {/* Reorder + Delete */}
               <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>

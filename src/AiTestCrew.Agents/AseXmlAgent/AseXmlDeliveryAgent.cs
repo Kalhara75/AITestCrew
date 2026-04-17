@@ -6,6 +6,7 @@ using Microsoft.SemanticKernel;
 using AiTestCrew.Agents.ApiAgent;
 using AiTestCrew.Agents.AseXmlAgent.Delivery;
 using AiTestCrew.Agents.AseXmlAgent.Templates;
+using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Agents.Base;
 using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Configuration;
@@ -112,6 +113,11 @@ public class AseXmlDeliveryAgent : BaseTestAgent
                     $"LLM produced {testCases.Count} delivery case(s)"));
             }
 
+            // ── Verify-only mode: skip render/upload, re-run verifications only ──
+            var verifyOnly = task.Parameters.TryGetValue("VerifyOnly", out var vo) && vo is true;
+            if (verifyOnly)
+                return await VerifyOnlyAsync(task, testCases!, steps, sw, ct);
+
             // ── Apply CLI / test-set-level endpoint override ──────────────
             var endpointOverride = task.Parameters.TryGetValue("EndpointCode", out var ec)
                 ? ec as string : null;
@@ -162,6 +168,112 @@ public class AseXmlDeliveryAgent : BaseTestAgent
             return BuildResult(task, steps, TestStatus.Error,
                 $"Agent error: {ex.Message}", sw, new List<AseXmlDeliveryTestDefinition>(), deliveries);
         }
+    }
+
+    // ─────────────────────────────────────────────────────
+    // Verify-only mode — skip render/upload, replay verifications
+    // ─────────────────────────────────────────────────────
+
+    private async Task<TestResult> VerifyOnlyAsync(
+        TestTask task,
+        List<AseXmlDeliveryTestCase> testCases,
+        List<TestStep> steps,
+        Stopwatch sw,
+        CancellationToken ct)
+    {
+        var deliveries = new List<Dictionary<string, object?>>();
+
+        var historyRepo = _services.GetRequiredService<ExecutionHistoryRepository>();
+        var testSetId = task.Parameters.TryGetValue("TestSetId", out var tsId) ? tsId as string : null;
+        var moduleId = task.Parameters.TryGetValue("ModuleId", out var mId) ? mId as string : null;
+        int? waitOverride = task.Parameters.TryGetValue("VerificationWaitOverride", out var wo) && wo is int w ? w : (int?)null;
+
+        if (string.IsNullOrEmpty(testSetId))
+        {
+            steps.Add(TestStep.Err("verify-only",
+                "VerifyOnly mode requires a testSetId in task parameters."));
+            return BuildResult(task, steps, TestStatus.Error,
+                "Missing testSetId for verify-only.", sw, [], deliveries);
+        }
+
+        var historyCtx = await historyRepo.GetLatestDeliveryContextAsync(testSetId, moduleId, task.Id);
+        if (historyCtx is null)
+        {
+            steps.Add(TestStep.Err("verify-only",
+                $"No prior successful delivery found for objective '{task.Id}'. " +
+                "Run the full delivery at least once before using --verify-only."));
+            return BuildResult(task, steps, TestStatus.Error,
+                "No delivery history available for verify-only mode.", sw, [], deliveries);
+        }
+
+        steps.Add(TestStep.Pass("verify-only-context",
+            $"Reconstructed delivery context from history — MessageID={historyCtx.GetValueOrDefault("MessageID")}, " +
+            $"EndpointCode={historyCtx.GetValueOrDefault("EndpointCode")}"));
+
+        var totalVerifications = 0;
+
+        for (var caseIndex = 0; caseIndex < testCases.Count; caseIndex++)
+        {
+            var tc = testCases[caseIndex];
+            ct.ThrowIfCancellationRequested();
+
+            if (tc.PostDeliveryVerifications.Count == 0)
+            {
+                steps.Add(TestStep.Pass($"verify-only[{caseIndex + 1}]",
+                    "No post-delivery verifications defined — nothing to re-run."));
+                continue;
+            }
+
+            // Build full verification context: user field values + delivery history
+            var context = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (k, v) in tc.FieldValues)
+                if (!string.IsNullOrEmpty(v)) context[k] = v;
+            foreach (var (k, v) in historyCtx)
+                if (!string.IsNullOrEmpty(v)) context[k] = v;
+
+            var remoteFileName = historyCtx.GetValueOrDefault("Filename") ?? "";
+
+            for (var vIdx = 0; vIdx < tc.PostDeliveryVerifications.Count; vIdx++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var verification = tc.PostDeliveryVerifications[vIdx];
+                totalVerifications++;
+
+                // Apply wait override if specified (e.g. --wait 0 to skip delays)
+                var originalWait = verification.WaitBeforeSeconds;
+                if (waitOverride.HasValue)
+                    verification.WaitBeforeSeconds = waitOverride.Value;
+
+                try
+                {
+                    await RunVerificationAsync(
+                        verification,
+                        caseIndex + 1, vIdx + 1,
+                        remoteFileName,
+                        context,
+                        steps,
+                        ct);
+                }
+                finally
+                {
+                    // Restore original wait (test case may be reused in-process)
+                    verification.WaitBeforeSeconds = originalWait;
+                }
+            }
+        }
+
+        var hasFails = steps.Any(s => s.Status == TestStatus.Failed);
+        var hasErrors = steps.Any(s => s.Status == TestStatus.Error);
+        var status = hasErrors ? TestStatus.Error
+                   : hasFails ? TestStatus.Failed
+                   : TestStatus.Passed;
+
+        var summary = status == TestStatus.Passed
+            ? $"Verify-only: all {totalVerifications} verification(s) passed."
+            : $"Verify-only: some verifications failed; see step detail.";
+
+        var definitions = testCases.Select(AseXmlDeliveryTestDefinition.FromTestCase).ToList();
+        return BuildResult(task, steps, status, summary, sw, definitions, deliveries);
     }
 
     // ─────────────────────────────────────────────────────

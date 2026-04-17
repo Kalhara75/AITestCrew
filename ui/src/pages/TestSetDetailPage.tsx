@@ -384,6 +384,7 @@ function ObjectiveListTable({
                     moduleId={moduleId}
                     apiStackKey={apiStackKey}
                     apiModule={apiModule}
+                    hasDeliveryVerifications={obj.aseXmlDeliverySteps?.some(s => s.postDeliveryVerifications?.length > 0)}
                   />
                 </td>
                 {onMove && (

@@ -292,7 +292,7 @@ Reference guide for the Brave Cloud (Blazor/MudBlazor) application stack.
 - `click-icon` action for SVG icons with fingerprint + occurrence index
 - StorageState persistence for session reuse
 - SPA navigation timing: `WaitForLoadStateAsync(NetworkIdle)` resolves too early — use `wait-for-stable`
-- 1920×1080 viewport required
+- 1920×1080 viewport required (both MVC and Blazor replay)
 
 Consult before modifying Playwright recorder/replay logic or selector generation for Blazor targets.
 

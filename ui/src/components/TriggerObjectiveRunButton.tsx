@@ -12,9 +12,10 @@ interface Props {
   apiStackKey?: string | null;
   apiModule?: string | null;
   disabled?: boolean;
+  hasDeliveryVerifications?: boolean;
 }
 
-export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObjective, source, moduleId, apiStackKey, apiModule, disabled }: Props) {
+export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObjective, source, moduleId, apiStackKey, apiModule, disabled, hasDeliveryVerifications }: Props) {
   const { individualRun, setIndividualRun } = useActiveRun();
   const [error, setError] = useState<string | null>(null);
   const [showRebaselineConfirm, setShowRebaselineConfirm] = useState(false);
@@ -26,7 +27,7 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObject
 
   const isRecorded = source === 'Recorded';
 
-  const fireRun = async (mode: 'Reuse' | 'Rebaseline') => {
+  const fireRun = async (mode: 'Reuse' | 'Rebaseline' | 'VerifyOnly') => {
     setError(null);
     try {
       const res = await triggerRun({
@@ -37,6 +38,7 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObject
         objective: mode === 'Rebaseline' ? parentObjective : undefined,
         apiStackKey: apiStackKey ?? undefined,
         apiModule: apiModule ?? undefined,
+        verificationWaitOverride: mode === 'VerifyOnly' ? 0 : undefined,
       });
       setIndividualRun({ runId: res.runId, testSetId, moduleId, objectiveId });
     } catch (err) {
@@ -47,6 +49,11 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObject
   const handleRun = (e: React.MouseEvent) => {
     e.stopPropagation();
     fireRun('Reuse');
+  };
+
+  const handleVerifyOnly = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    fireRun('VerifyOnly');
   };
 
   const handleRebaseline = (e: React.MouseEvent) => {
@@ -94,6 +101,26 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObject
       >
         Run
       </button>
+      {hasDeliveryVerifications && (
+        <button
+          onClick={handleVerifyOnly}
+          disabled={disabled || anyRunning}
+          style={{
+            background: 'none',
+            color: disabled || anyRunning ? '#94a3b8' : '#0d9488',
+            border: `1px solid ${disabled || anyRunning ? '#e2e8f0' : '#ccfbf1'}`,
+            padding: '1px 8px',
+            borderRadius: 4,
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: disabled || anyRunning ? 'not-allowed' : 'pointer',
+            lineHeight: '18px',
+          }}
+          title="Re-run post-delivery UI verifications only (skip delivery)"
+        >
+          Verify
+        </button>
+      )}
       {!isRecorded && (
         <button
           onClick={handleRebaseline}

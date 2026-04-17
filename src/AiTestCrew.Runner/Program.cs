@@ -935,7 +935,7 @@ AnsiConsole.MarkupLine($"[grey]Detailed log → {logFile}[/]\n");
 // ── Objective ──
 // In reuse mode the objective is loaded from the saved test set inside the orchestrator;
 // no prompt needed here.
-var objective = cli.Mode == RunMode.Reuse
+var objective = cli.Mode is RunMode.Reuse or RunMode.VerifyOnly
     ? string.Empty
     : cli.Objective ?? AnsiConsole.Ask<string>("[yellow]Enter test objective:[/]");
 
@@ -943,6 +943,7 @@ var objective = cli.Mode == RunMode.Reuse
 var modeLabel = cli.Mode switch
 {
     RunMode.Reuse      => $"[cyan]REUSE[/] (test set: [bold]{cli.ReuseId}[/])",
+    RunMode.VerifyOnly => $"[magenta]VERIFY-ONLY[/] (re-running verifications for: [bold]{cli.ReuseId ?? cli.TestSetId}[/])",
     RunMode.Rebaseline => "[yellow]REBASELINE[/] (regenerating test cases)",
     _                  => "[green]NORMAL[/] (generating new test cases)"
 };
@@ -950,7 +951,7 @@ var modeLabel = cli.Mode switch
 // the test set too (the common case). Auto-derive so users don't have to pass
 // the same slug twice.
 var effectiveTestSetId = cli.TestSetId;
-if (cli.Mode == RunMode.Reuse
+if (cli.Mode is RunMode.Reuse or RunMode.VerifyOnly
     && cli.ModuleId is not null
     && string.IsNullOrEmpty(effectiveTestSetId)
     && !string.IsNullOrEmpty(cli.ReuseId))
@@ -958,12 +959,27 @@ if (cli.Mode == RunMode.Reuse
     effectiveTestSetId = cli.ReuseId;
 }
 
+// ── VerifyOnly validation ──
+if (cli.Mode == RunMode.VerifyOnly)
+{
+    if (string.IsNullOrEmpty(cli.ReuseId) && string.IsNullOrEmpty(effectiveTestSetId))
+    {
+        AnsiConsole.MarkupLine("[red]--verify-only requires --reuse <testSetId> (or --module + --testset)[/]");
+        return;
+    }
+    if (string.IsNullOrEmpty(cli.ObjectiveId))
+    {
+        AnsiConsole.MarkupLine("[red]--verify-only requires --objective <idOrName> to identify the delivery test case[/]");
+        return;
+    }
+}
+
 AnsiConsole.MarkupLine($"[grey]Mode:[/] {modeLabel}");
 if (cli.ModuleId is not null)
     AnsiConsole.MarkupLine($"[grey]Module:[/] {cli.ModuleId}  [grey]Test set:[/] {effectiveTestSetId}");
 if (cli.ObjectiveId is not null)
     AnsiConsole.MarkupLine($"[grey]Objective filter:[/] {cli.ObjectiveId}");
-if (cli.Mode != RunMode.Reuse)
+if (cli.Mode is not RunMode.Reuse and not RunMode.VerifyOnly)
     AnsiConsole.MarkupLine($"[grey]Objective:[/] {objective}");
 AnsiConsole.WriteLine();
 
@@ -975,7 +991,9 @@ await AnsiConsole.Status()
     .Spinner(Spinner.Known.Dots)
     .StartAsync("Running test suite...", async ctx =>
     {
-        if (cli.Mode == RunMode.Reuse)
+        if (cli.Mode == RunMode.VerifyOnly)
+            ctx.Status($"Re-running verifications for '{cli.ObjectiveId}'...");
+        else if (cli.Mode == RunMode.Reuse)
             ctx.Status($"Loading saved test set '{cli.ReuseId}'...");
         else
             ctx.Status("Decomposing objective...");
@@ -983,9 +1001,10 @@ await AnsiConsole.Status()
         suiteResult = await orchestrator.RunAsync(objective, cli.Mode, cli.ReuseId,
             moduleId: cli.ModuleId, targetTestSetId: effectiveTestSetId,
             objectiveName: cli.ObjectiveName,
-            objectiveId: cli.ObjectiveId,  // reuse-mode filter to a single test case
+            objectiveId: cli.ObjectiveId,  // reuse-mode / verify-only filter to a single test case
             apiStackKey: cli.ApiStackKey, apiModule: cli.ApiModule,
-            endpointCode: cli.EndpointCode);
+            endpointCode: cli.EndpointCode,
+            verificationWaitOverride: cli.Mode == RunMode.VerifyOnly ? cli.VerificationWait : null);
     });
 
 // ── Results table ──
@@ -1082,6 +1101,9 @@ static CliArgs ParseArgs(string[] args)
                 throw new ArgumentException("--reuse requires a <id> argument.");
             case "--rebaseline":
                 mode = RunMode.Rebaseline;
+                break;
+            case "--verify-only":
+                mode = RunMode.VerifyOnly;
                 break;
             case "--module" when i + 1 < args.Length:
                 moduleId = args[++i];

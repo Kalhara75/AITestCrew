@@ -15,5 +15,8 @@ public enum RunMode
     Rebaseline,
 
     /// <summary>List all saved test sets and exit.</summary>
-    List
+    List,
+
+    /// <summary>Skip delivery (render/upload), reconstruct context from execution history, re-run post-delivery UI verifications only.</summary>
+    VerifyOnly
 }

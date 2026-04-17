@@ -749,20 +749,32 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                 break;
 
             case "assert-text":
-                await Assertions.Expect(page.Locator(step.Selector!))
+            {
+                var locator = page.Locator(step.Selector!);
+                if (step.MatchFirst) locator = locator.First;
+                await Assertions.Expect(locator)
                     .ToContainTextAsync(step.Value ?? "",
                         new LocatorAssertionsToContainTextOptions { Timeout = timeout });
                 break;
+            }
 
             case "assert-visible":
-                await Assertions.Expect(page.Locator(step.Selector!))
+            {
+                var locator = page.Locator(step.Selector!);
+                if (step.MatchFirst) locator = locator.First;
+                await Assertions.Expect(locator)
                     .ToBeVisibleAsync(new LocatorAssertionsToBeVisibleOptions { Timeout = timeout });
                 break;
+            }
 
             case "assert-hidden":
-                await Assertions.Expect(page.Locator(step.Selector!))
+            {
+                var locator = page.Locator(step.Selector!);
+                if (step.MatchFirst) locator = locator.First;
+                await Assertions.Expect(locator)
                     .ToBeHiddenAsync(new LocatorAssertionsToBeHiddenOptions { Timeout = timeout });
                 break;
+            }
 
             case "assert-url-contains":
                 await Assertions.Expect(page)

@@ -41,6 +41,7 @@ export interface WebUiStep {
   selector: string | null;
   value: string | null;
   timeoutMs: number;
+  matchFirst?: boolean;
 }
 
 export interface WebUiTestDefinition {
@@ -252,6 +253,7 @@ export interface TriggerRunRequest {
   objectiveId?: string;
   apiStackKey?: string;
   apiModule?: string;
+  verificationWaitOverride?: number;
 }
 
 export interface ApiModuleInfo {

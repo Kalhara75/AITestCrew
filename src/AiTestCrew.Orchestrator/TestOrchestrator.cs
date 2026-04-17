@@ -68,7 +68,8 @@ public class TestOrchestrator
         string? objectiveId = null,
         string? apiStackKey = null,
         string? apiModule = null,
-        string? endpointCode = null)
+        string? endpointCode = null,
+        int? verificationWaitOverride = null)
     {
         var sw = Stopwatch.StartNew();
         var startedAt = DateTime.UtcNow;
@@ -86,8 +87,8 @@ public class TestOrchestrator
 
         List<TestTask> tasks;
 
-        // ── Reuse mode: load saved test set, skip LLM decomposition ──
-        if (mode == RunMode.Reuse)
+        // ── Reuse / VerifyOnly mode: load saved test set, skip LLM decomposition ──
+        if (mode is RunMode.Reuse or RunMode.VerifyOnly)
         {
             PersistedTestSet? saved;
             if (isModuleScoped)
@@ -184,6 +185,20 @@ public class TestOrchestrator
                     Parameters = parameters
                 };
             }).ToList();
+
+            // ── VerifyOnly: inject extra parameters so the delivery agent skips phases 1-4 ──
+            if (mode == RunMode.VerifyOnly)
+            {
+                foreach (var t in tasks)
+                {
+                    t.Parameters["VerifyOnly"] = true;
+                    t.Parameters["TestSetId"] = targetTestSetId ?? reuseId ?? "";
+                    if (!string.IsNullOrEmpty(moduleId))
+                        t.Parameters["ModuleId"] = moduleId;
+                    if (verificationWaitOverride.HasValue)
+                        t.Parameters["VerificationWaitOverride"] = verificationWaitOverride.Value;
+                }
+            }
 
             // ── Single-objective filter: run only one objective from the set ──
             // Matches on Id (slug) first; falls back to Description (display name)
@@ -364,8 +379,8 @@ public class TestOrchestrator
                 await SaveTestSetAsync(objective, results, objectiveName, apiStackKey, apiModule, endpointCode);
         }
 
-        // ── Update run statistics (Reuse mode) ──
-        if (mode == RunMode.Reuse)
+        // ── Update run statistics (Reuse / VerifyOnly mode) ──
+        if (mode is RunMode.Reuse or RunMode.VerifyOnly)
         {
             if (isModuleScoped)
                 await _testSetRepo.UpdateRunStatsAsync(moduleId!, targetTestSetId!);
@@ -394,7 +409,7 @@ public class TestOrchestrator
         {
             var testSetId = isModuleScoped
                 ? targetTestSetId!
-                : mode == RunMode.Reuse && reuseId is not null
+                : (mode is RunMode.Reuse or RunMode.VerifyOnly) && reuseId is not null
                     ? reuseId
                     : TestSetRepository.SlugFromObjective(objective);
             var executionRun = PersistedExecutionRun.FromSuiteResult(

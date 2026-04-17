@@ -99,7 +99,10 @@ public class LegacyWebUiTestAgent : BaseWebUiTestAgent
 
     protected override BrowserNewContextOptions BuildContextOptions()
     {
-        var opts = new BrowserNewContextOptions();
+        var opts = new BrowserNewContextOptions
+        {
+            ViewportSize = new ViewportSize { Width = 1920, Height = 1080 }
+        };
         if (HasFreshStorageState())
             opts.StorageStatePath = ResolveStorageStatePath();
         return opts;

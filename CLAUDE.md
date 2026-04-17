@@ -130,6 +130,10 @@ dotnet run --project src/AiTestCrew.Runner -- --module aemo-b2b --testset mfn-de
 dotnet run --project src/AiTestCrew.Runner -- --record-verification --module aemo-b2b --testset mfn-delivery --objective <idOrName> --target UI_Web_Blazor --verification-name "MFN Process Overview shows 'One In All In'" --wait 30
 dotnet run --project src/AiTestCrew.Runner -- --record-verification --module aemo-b2b --testset mfn-delivery --objective <idOrName> --target UI_Web_MVC --verification-name "Legacy MFN Search grid row exists"
 # Tip: run --auth-setup --target UI_Web_MVC first so MVC recording starts authenticated (skips capturing the login flow).
+
+# ── Verify-only (re-run post-delivery verifications without re-delivering) ──
+dotnet run --project src/AiTestCrew.Runner -- --verify-only --reuse mfn-delivery --module aemo-b2b --objective "Deliver MFN One In All In to GatewaySPARQ"
+dotnet run --project src/AiTestCrew.Runner -- --verify-only --reuse mfn-delivery --module aemo-b2b --objective "Deliver MFN One In All In to GatewaySPARQ" --wait 0  # Skip wait (file already processed)
 ```
 
 ### Flag reference (alphabetical)
@@ -148,17 +152,18 @@ dotnet run --project src/AiTestCrew.Runner -- --record-verification --module aem
 | `--list-modules` | List | (none) | List modules. |
 | `--module <moduleId>` | All | slug | Module scope for the command. |
 | `--obj-name "<name>"` | Normal / Rebaseline | string | Short display name for the generated objective. |
-| `--objective <idOrName>` | Reuse / Record-verification | slug OR display name | Reuse: scope to a single test case. Record-verification: target delivery objective. Case-insensitive; matches `TestObjective.Id` first, then `Name`. |
+| `--objective <idOrName>` | Reuse / VerifyOnly / Record-verification | slug OR display name | Reuse: scope to a single test case. VerifyOnly: required, identifies the delivery objective. Record-verification: target delivery objective. Case-insensitive; matches `TestObjective.Id` first, then `Name`. |
 | `--rebaseline` | Rebaseline | flag | Regenerate test cases via LLM and overwrite. Only valid for AI-generated objectives. |
 | `--record` | Recording | flag | Record a standalone test case (combine with `--target`). |
 | `--record-setup` | Recording | flag | Record setup steps (e.g. login) at the test-set level. |
 | `--record-verification` | Recording | flag | Record a post-delivery UI verification attached to a delivery objective. |
-| `--reuse <testSetId>` | Reuse | slug | Replay a saved test set. Module-scoped: auto-derives `--testset` if omitted. |
+| `--reuse <testSetId>` | Reuse / VerifyOnly | slug | Replay a saved test set. Module-scoped: auto-derives `--testset` if omitted. Required for VerifyOnly. |
 | `--stack <key>` | Normal / Reuse | e.g. `bravecloud` | API stack key (`ApiStacks.<key>`). Persists on the test set. |
 | `--target <type>` | Recording | `UI_Web_MVC`, `UI_Web_Blazor`, `UI_Desktop_WinForms` | UI surface for recording. |
 | `--testset <testSetId>` | All | slug | Test set scope (auto-derived from `--reuse` if module-scoped). |
 | `--verification-name "<name>"` | Record-verification | string | Display label for the recorded verification. |
-| `--wait <seconds>` | Record-verification | int (default = `AseXml.DefaultVerificationWaitSeconds`, 30) | Delay between delivery and this verification at playback. |
+| `--verify-only` | VerifyOnly | flag | Skip delivery (render/upload), reconstruct context from execution history, re-run only the post-delivery UI verifications. Requires `--reuse` + `--objective`. |
+| `--wait <seconds>` | Record-verification / VerifyOnly | int (default = `AseXml.DefaultVerificationWaitSeconds`, 30) | Record-verification: delay between delivery and this verification at playback. VerifyOnly: overrides wait time on all verification steps (use `--wait 0` to skip delays). |
 
 ## Agent pattern
 
