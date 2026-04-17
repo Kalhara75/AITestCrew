@@ -6,7 +6,7 @@ namespace AiTestCrew.WebApi.Services;
 /// Tracks in-progress and recently completed module-level test runs.
 /// A module run sequentially executes all test sets within a module.
 /// </summary>
-public class ModuleRunTracker
+public class ModuleRunTracker : IModuleRunTracker
 {
     private readonly ConcurrentDictionary<string, ModuleRunStatus> _runs = new();
 
@@ -91,6 +91,9 @@ public class ModuleRunTracker
     }
 
     public bool HasActiveModuleRun() => _runs.Values.Any(r => r.Status == "Running");
+
+    public bool HasActiveModuleRunForModule(string moduleId) =>
+        _runs.Values.Any(r => r.Status == "Running" && r.ModuleId == moduleId);
 
     public ModuleRunStatus? GetActiveRun() => _runs.Values.FirstOrDefault(r => r.Status == "Running");
 }

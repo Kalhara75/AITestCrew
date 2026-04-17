@@ -6,7 +6,7 @@ public static class TestSetEndpoints
 {
     public static RouteGroupBuilder MapTestSetEndpoints(this RouteGroupBuilder group)
     {
-        group.MapGet("/", (TestSetRepository repo, ExecutionHistoryRepository historyRepo) =>
+        group.MapGet("/", (ITestSetRepository repo, IExecutionHistoryRepository historyRepo) =>
         {
             var testSets = repo.ListAll();
             var result = testSets.Select(ts =>
@@ -28,7 +28,7 @@ public static class TestSetEndpoints
             return Results.Ok(result);
         });
 
-        group.MapGet("/{id}", async (string id, TestSetRepository repo, ExecutionHistoryRepository historyRepo) =>
+        group.MapGet("/{id}", async (string id, ITestSetRepository repo, IExecutionHistoryRepository historyRepo) =>
         {
             var testSet = await repo.LoadAsync(id);
             if (testSet is null) return Results.NotFound(new { error = $"Test set '{id}' not found" });
@@ -58,7 +58,7 @@ public static class TestSetEndpoints
             });
         });
 
-        group.MapGet("/{id}/runs", (string id, ExecutionHistoryRepository historyRepo) =>
+        group.MapGet("/{id}/runs", (string id, IExecutionHistoryRepository historyRepo) =>
         {
             var runs = historyRepo.ListRuns(id);
             var result = runs.Select(r => new
@@ -77,7 +77,7 @@ public static class TestSetEndpoints
             return Results.Ok(result);
         });
 
-        group.MapGet("/{id}/runs/{runId}", async (string id, string runId, ExecutionHistoryRepository historyRepo) =>
+        group.MapGet("/{id}/runs/{runId}", async (string id, string runId, IExecutionHistoryRepository historyRepo) =>
         {
             var run = await historyRepo.GetRunAsync(id, runId);
             if (run is null) return Results.NotFound(new { error = $"Run '{runId}' not found" });

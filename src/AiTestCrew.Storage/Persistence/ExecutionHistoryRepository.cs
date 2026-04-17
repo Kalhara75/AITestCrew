@@ -6,7 +6,7 @@ namespace AiTestCrew.Agents.Persistence;
 /// Reads and writes execution run history as JSON files.
 /// Storage layout: executions/{testSetId}/{runId}.json
 /// </summary>
-public class ExecutionHistoryRepository
+public class ExecutionHistoryRepository : IExecutionHistoryRepository
 {
     private readonly string _baseDir;
     private readonly int _maxRunsPerTestSet;

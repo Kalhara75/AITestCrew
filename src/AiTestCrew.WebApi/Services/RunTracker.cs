@@ -7,7 +7,7 @@ namespace AiTestCrew.WebApi.Services;
 /// Singleton service — the Web API uses this to coordinate between
 /// POST /api/runs (fire) and GET /api/runs/{id}/status (poll).
 /// </summary>
-public class RunTracker
+public class RunTracker : IRunTracker
 {
     private readonly ConcurrentDictionary<string, RunStatus> _runs = new();
 
@@ -49,6 +49,9 @@ public class RunTracker
     }
 
     public bool HasActiveRun() => _runs.Values.Any(r => r.Status == "Running");
+
+    public bool HasActiveRunForTestSet(string testSetId) =>
+        _runs.Values.Any(r => r.Status == "Running" && r.TestSetId == testSetId);
 
     public RunStatus? GetActiveRun() => _runs.Values.FirstOrDefault(r => r.Status == "Running");
 }

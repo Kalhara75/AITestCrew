@@ -21,4 +21,10 @@ public class PersistedModule
 
     /// <summary>UTC timestamp when this module was last modified.</summary>
     public DateTime UpdatedAt { get; set; }
+
+    /// <summary>User ID who created this module. Null for modules created before user tracking.</summary>
+    public string? CreatedBy { get; set; }
+
+    /// <summary>User ID who last modified this module.</summary>
+    public string? LastModifiedBy { get; set; }
 }

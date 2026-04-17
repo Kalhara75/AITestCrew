@@ -41,6 +41,28 @@ public class TestEnvironmentConfig
     public string? AuthUsername { get; set; }
     public string? AuthPassword { get; set; }
 
+    // --- Server (WebApi hosting) ---
+    // ListenUrl: the URL(s) the WebApi binds to. Multiple URLs separated by semicolons.
+    // When empty, the WebApi defaults to "http://localhost:5050".
+    public string ListenUrl { get; set; } = "";
+    // CorsOrigins: allowed CORS origins. Empty = allow Vite dev defaults (localhost:5173, localhost:3000).
+    // Set to "*" to allow any origin, or provide a semicolon-separated list.
+    public string[] CorsOrigins { get; set; } = [];
+
+    // --- Remote server (Runner API client mode) ---
+    // When ServerUrl is set, the Runner CLI uses HTTP calls to the WebApi instead of
+    // accessing storage directly. Used for distributed recording.
+    public string ServerUrl { get; set; } = "";
+    // API key for authenticating with the remote server
+    public string ApiKey { get; set; } = "";
+
+    // --- Storage ---
+    // StorageProvider: "File" (default, backward compatible) or "Sqlite"
+    public string StorageProvider { get; set; } = "File";
+    // SqliteConnectionString: required when StorageProvider = "Sqlite"
+    // e.g. "Data Source=C:/data/aitestcrew.db"
+    public string SqliteConnectionString { get; set; } = "";
+
     // --- Execution settings ---
     public int MaxParallelAgents { get; set; } = 4;
     public int DefaultTimeoutSeconds { get; set; } = 300;

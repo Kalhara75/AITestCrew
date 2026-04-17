@@ -9,8 +9,8 @@ public static class RunEndpoints
 {
     public static RouteGroupBuilder MapRunEndpoints(this RouteGroupBuilder group)
     {
-        group.MapPost("/", async (RunRequest request, RunTracker tracker, ModuleRunTracker moduleRunTracker,
-            TestOrchestrator orchestrator, TestSetRepository tsRepo, ILogger<TestOrchestrator> logger) =>
+        group.MapPost("/", async (RunRequest request, IRunTracker tracker, IModuleRunTracker moduleRunTracker,
+            TestOrchestrator orchestrator, ITestSetRepository tsRepo, ILogger<TestOrchestrator> logger) =>
         {
             // Validate request
             if (string.IsNullOrWhiteSpace(request.Mode))
@@ -56,9 +56,11 @@ public static class RunEndpoints
                     return Results.BadRequest(new { error = "Recorded objectives cannot be rebaselined — only AI-generated objectives support rebaseline" });
             }
 
-            // Only one run at a time
-            if (tracker.HasActiveRun() || moduleRunTracker.HasActiveModuleRun())
-                return Results.Conflict(new { error = "A test run is already in progress" });
+            // Prevent running the same test set concurrently (different test sets can run in parallel)
+            if (request.TestSetId is not null && tracker.HasActiveRunForTestSet(request.TestSetId))
+                return Results.Conflict(new { error = $"Test set '{request.TestSetId}' already has an active run" });
+            if (request.ModuleId is not null && moduleRunTracker.HasActiveModuleRunForModule(request.ModuleId))
+                return Results.Conflict(new { error = $"Module '{request.ModuleId}' already has an active run" });
 
             var runId = Guid.NewGuid().ToString("N")[..12];
             var objective = mode is RunMode.Reuse or RunMode.VerifyOnly ? "" : request.Objective!;
@@ -84,7 +86,7 @@ public static class RunEndpoints
                         ? request.TestSetId!
                         : !string.IsNullOrWhiteSpace(request.TestSetId)
                             ? request.TestSetId!
-                            : TestSetRepository.SlugFromObjective(result.Objective);
+                            : SlugHelper.ToSlug(result.Objective);
                     tracker.Complete(runId, testSetId);
                 }
                 catch (Exception ex)
@@ -102,7 +104,7 @@ public static class RunEndpoints
             });
         });
 
-        group.MapGet("/{runId}/status", (string runId, RunTracker tracker) =>
+        group.MapGet("/{runId}/status", (string runId, IRunTracker tracker) =>
         {
             var status = tracker.Get(runId);
             if (status is null) return Results.NotFound(new { error = $"Run '{runId}' not found" });
@@ -110,7 +112,7 @@ public static class RunEndpoints
         });
 
         // GET /api/runs/active — check for any active run (module-level or individual)
-        group.MapGet("/active", (RunTracker tracker, ModuleRunTracker moduleRunTracker) =>
+        group.MapGet("/active", (IRunTracker tracker, IModuleRunTracker moduleRunTracker) =>
         {
             var moduleRun = moduleRunTracker.GetActiveRun();
             if (moduleRun is not null)

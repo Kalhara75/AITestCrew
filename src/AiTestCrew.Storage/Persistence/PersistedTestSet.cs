@@ -60,6 +60,12 @@ public class PersistedTestSet
     /// <summary>Total number of times this test set has been executed.</summary>
     public int RunCount { get; set; }
 
+    /// <summary>User ID who created this test set. Null for test sets created before user tracking.</summary>
+    public string? CreatedBy { get; set; }
+
+    /// <summary>User ID who last modified this test set.</summary>
+    public string? LastModifiedBy { get; set; }
+
     /// <summary>
     /// Maps full objective text → short display name.
     /// Old JSON files without this field deserialize to an empty dictionary.

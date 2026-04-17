@@ -6,7 +6,7 @@ namespace AiTestCrew.Agents.Persistence;
 /// Reads and writes module manifests (module.json) inside the modules/ directory.
 /// Each module is a subdirectory containing its manifest and zero or more test set JSON files.
 /// </summary>
-public class ModuleRepository
+public class ModuleRepository : IModuleRepository
 {
     private readonly string _modulesDir;
 

@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\AiTestCrew.Core\AiTestCrew.Core.csproj" />
+    <ProjectReference Include="..\AiTestCrew.Storage\AiTestCrew.Storage.csproj" />
     <ProjectReference Include="..\AiTestCrew.Agents\AiTestCrew.Agents.csproj" />
     <ProjectReference Include="..\AiTestCrew.Orchestrator\AiTestCrew.Orchestrator.csproj" />
   </ItemGroup>

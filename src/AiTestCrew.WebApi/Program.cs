@@ -24,6 +24,9 @@ var builder = WebApplication.CreateBuilder(args);
 var runnerDir = Path.Combine(builder.Environment.ContentRootPath, "..", "AiTestCrew.Runner");
 builder.Configuration.AddJsonFile(Path.Combine(runnerDir, "appsettings.json"), optional: true, reloadOnChange: false);
 
+// Environment variable overrides (e.g. AITESTCREW_TestEnvironment__LlmApiKey)
+builder.Configuration.AddEnvironmentVariables("AITESTCREW_");
+
 // ── TestEnvironmentConfig ──
 var envConfig = builder.Configuration
     .GetSection("TestEnvironment")
@@ -133,26 +136,43 @@ if (!string.IsNullOrEmpty(envConfig.LegacyWebUiStorageStatePath)
     envConfig.LegacyWebUiStorageStatePath = Path.Combine(dataDir, envConfig.LegacyWebUiStorageStatePath);
 }
 
-builder.Services.AddSingleton(new TestSetRepository(dataDir));
-builder.Services.AddSingleton(new ExecutionHistoryRepository(dataDir, envConfig.MaxExecutionRunsPerTestSet));
-builder.Services.AddSingleton(new ModuleRepository(dataDir));
+if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCase))
+{
+    var connFactory = new AiTestCrew.Agents.Persistence.Sqlite.SqliteConnectionFactory(envConfig.SqliteConnectionString);
+    builder.Services.AddSingleton(connFactory);
+    builder.Services.AddSingleton<ITestSetRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteTestSetRepository(connFactory));
+    builder.Services.AddSingleton<IExecutionHistoryRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteExecutionHistoryRepository(connFactory, envConfig.MaxExecutionRunsPerTestSet));
+    builder.Services.AddSingleton<IModuleRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteModuleRepository(connFactory));
+    builder.Services.AddSingleton<IUserRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteUserRepository(connFactory));
+}
+else
+{
+    builder.Services.AddSingleton<ITestSetRepository>(new TestSetRepository(dataDir));
+    builder.Services.AddSingleton<IExecutionHistoryRepository>(new ExecutionHistoryRepository(dataDir, envConfig.MaxExecutionRunsPerTestSet));
+    builder.Services.AddSingleton<IModuleRepository>(new ModuleRepository(dataDir));
+}
 
 // ── Orchestrator ──
 builder.Services.AddSingleton(new AgentConcurrencyLimiter(envConfig.MaxParallelAgents));
 builder.Services.AddSingleton<TestOrchestrator>();
 
 // ── Run tracker (in-memory active runs) ──
-builder.Services.AddSingleton<RunTracker>();
-builder.Services.AddSingleton<ModuleRunTracker>();
+builder.Services.AddSingleton<IRunTracker, RunTracker>();
+builder.Services.AddSingleton<IModuleRunTracker, ModuleRunTracker>();
 
-// ── CORS (allow Vite dev server) ──
+// ── CORS ──
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        policy.WithOrigins("http://localhost:5173", "http://localhost:3000")
-              .AllowAnyHeader()
-              .AllowAnyMethod();
+        var origins = envConfig.CorsOrigins is { Length: > 0 }
+            ? envConfig.CorsOrigins
+            : new[] { "http://localhost:5173", "http://localhost:3000" };
+
+        if (origins.Length == 1 && origins[0] == "*")
+            policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+        else
+            policy.WithOrigins(origins).AllowAnyHeader().AllowAnyMethod();
     });
 });
 
@@ -166,6 +186,11 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 var app = builder.Build();
 
 app.UseCors();
+app.UseMiddleware<AiTestCrew.WebApi.Middleware.ApiKeyAuthMiddleware>();
+
+// ── Serve the React SPA from wwwroot (production build) ──
+app.UseDefaultFiles();    // serves index.html for "/"
+app.UseStaticFiles();     // serves JS/CSS/assets from wwwroot
 
 // ── Migrate legacy test sets to module structure ──
 await MigrationHelper.MigrateToModulesAsync(dataDir);
@@ -189,9 +214,25 @@ if (!string.IsNullOrEmpty(envConfig.PlaywrightScreenshotDir))
 app.MapGroup("/api/modules").MapModuleEndpoints();
 app.MapGroup("/api/testsets").MapTestSetEndpoints();
 app.MapGroup("/api/runs").MapRunEndpoints();
+if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCase))
+    app.MapGroup("/api/users").MapUserEndpoints();
+
+// ── Execution history (Runner API client) ──
+app.MapPost("/api/executions", async (PersistedExecutionRun run, IExecutionHistoryRepository historyRepo) =>
+{
+    await historyRepo.SaveAsync(run);
+    return Results.Ok(new { saved = true, runId = run.RunId });
+});
 
 // ── Health check ──
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok", timestamp = DateTime.UtcNow }));
+
+// ── Auth status (always public — tells the frontend whether login is required) ──
+app.MapGet("/api/auth/status", (IServiceProvider sp) =>
+{
+    var authEnabled = sp.GetService<IUserRepository>() is not null;
+    return Results.Ok(new { authEnabled });
+});
 
 // ── API stack discovery — exposes configured stacks/modules to the UI ──
 app.MapGet("/api/config/api-stacks", (TestEnvironmentConfig cfg) =>
@@ -214,5 +255,12 @@ app.MapGet("/api/config/api-stacks", (TestEnvironmentConfig cfg) =>
     });
 });
 
-app.Urls.Add("http://localhost:5050");
+// ── SPA fallback — serve index.html for client-side routes ──
+app.MapFallbackToFile("index.html");
+
+var listenUrl = !string.IsNullOrWhiteSpace(envConfig.ListenUrl)
+    ? envConfig.ListenUrl
+    : "http://localhost:5050";
+foreach (var url in listenUrl.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    app.Urls.Add(url);
 app.Run();

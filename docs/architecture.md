@@ -2,13 +2,13 @@
 
 ## Solution Structure
 
-The solution (`AiTestCrew.slnx`) contains five .NET 8 projects with a strict layered dependency graph — each layer only references layers below it. A React frontend communicates with the WebApi over REST.
+The solution (`AiTestCrew.slnx`) contains six .NET 8 projects with a strict layered dependency graph. A React frontend communicates with the WebApi over REST. In production, the frontend is co-hosted inside WebApi (served from `wwwroot/`); in development, Vite proxies API calls.
 
 ```
 ┌──────────────┐     ┌──────────────────┐
 │  React UI    │────▶│  AiTestCrew      │
-│  (Vite+TS)   │ HTTP│  .WebApi (REST)  │──┐
-│  Port 5173   │◀────│  Port 5050       │  │
+│  (co-hosted  │ HTTP│  .WebApi (REST)  │──┐
+│  or Vite dev)│◀────│  Port 5050       │  │
 └──────────────┘     └──────────────────┘  │
                                            │
 ┌──────────────────┐                       │
@@ -16,14 +16,29 @@ The solution (`AiTestCrew.slnx`) contains five .NET 8 projects with a strict lay
 │  .Runner (CLI)   │  │                   │
 └──────────────────┘  │                   │
                       ▼                   ▼
-              AiTestCrew.Orchestrator
-                      │
-              AiTestCrew.Agents
+              AiTestCrew.Orchestrator ──────► AiTestCrew.Storage
+                                                     │
+              AiTestCrew.Agents ─────────────────────┘
                       │
               AiTestCrew.Core
 ```
 
-Both Runner (CLI) and WebApi reference the same Orchestrator/Agents/Core layers. They share the same `modules/`, `testsets/` (legacy), and `executions/` file storage.
+Full dependency graph:
+
+```
+Core (net8.0)           — no deps
+Storage (net8.0)        → Core
+Orchestrator (net8.0)   → Core, Storage
+Agents (net8.0-windows) → Core, Storage
+Runner (net8.0-windows) → Core, Storage, Agents, Orchestrator
+WebApi (net8.0-windows) → Core, Storage, Agents, Orchestrator
+```
+
+Key changes from the original five-project layout:
+- **Storage** was extracted from Agents so that Orchestrator no longer depends on Agents.
+- Core, Storage, and Orchestrator target `net8.0` (cross-platform). Agents, Runner, and WebApi target `net8.0-windows` (FlaUI / WindowsForms dependency).
+
+Both Runner (CLI) and WebApi reference the same Storage layer. Runner can operate in **remote mode** (calling WebApi over HTTP instead of local storage) when `ServerUrl` is configured.
 
 ---
 
@@ -44,20 +59,21 @@ Pure domain layer. No NuGet dependencies beyond the .NET BCL.
 | `Interfaces/ITestAgent.cs` | Contract all agents must implement |
 | `Interfaces/ITokenProvider.cs` | Token acquisition contract (JWT login or static token) |
 | `Interfaces/IApiTargetResolver.cs` | Resolves API base URLs and per-stack token providers from `ApiStacks` config |
-| `Configuration/TestEnvironmentConfig.cs` | Strongly-typed settings binding from `appsettings.json` (includes `ApiStacks`) |
+| `Models/User.cs` | User model (Id, Name, ApiKey, Role, timestamps) |
+| `Interfaces/IUserRepository.cs` | User CRUD + API key lookup contract |
+| `Configuration/TestEnvironmentConfig.cs` | Strongly-typed settings binding from `appsettings.json` (includes `ApiStacks`, `StorageProvider`, `SqliteConnectionString`, `ListenUrl`, `CorsOrigins`, `ServerUrl`, `ApiKey`) |
 | `Configuration/ApiStackConfig.cs` | Config models for API stacks (`ApiStackConfig`) and modules (`ApiModuleConfig`) |
 
 ---
 
 ### AiTestCrew.Agents
 
-Contains agent implementations and test set persistence. References Core only.
+Contains agent implementations only. References Core and Storage. Persistence and shared definition types moved to `AiTestCrew.Storage` (see below).
 
 ```
 Agents/
   ApiAgent/
     ApiTestAgent.cs               — REST/GraphQL test execution (multi-stack aware via IApiTargetResolver)
-    ApiTestDefinition.cs          — LLM-generated API test step model + validation verdict
   Auth/
     ApiTargetResolver.cs          — Resolves API base URLs and per-stack LoginTokenProviders from ApiStacks config
     LoginTokenProvider.cs         — Acquires JWTs by calling a stack's security module login endpoint
@@ -65,9 +81,6 @@ Agents/
   Base/
     BaseTestAgent.cs              — Shared LLM communication (delegates JSON utilities to LlmJsonHelper)
     LlmJsonHelper.cs              — Static JSON cleaning/parsing utilities (shared with WebApi endpoints)
-  Shared/
-    WebUiTestCase.cs              — WebUiTestCase + WebUiStep models (legacy, shared by both UI agents)
-    WebUiTestDefinition.cs        — WebUiTestDefinition model (v2 step definition for TestObjective.WebUiSteps)
   WebUiBase/
     BaseWebUiTestAgent.cs         — Shared Playwright logic: browser lifecycle, two-phase LLM generation,
                                     step execution (with JS click fallback), screenshot capture
@@ -90,26 +103,60 @@ Agents/
   AseXmlAgent/
     AseXmlGenerationAgent.cs      — AEMO B2B aseXML payload generation (AseXml_Generate target type)
                                     LLM picks a template + extracts user fields; renderer is deterministic
-    AseXmlTestDefinition.cs       — Step persistence model (templateId + user field values + case wrapper)
     Templates/
       TemplateManifest.cs         — POCO for the per-template manifest JSON (field specs: auto/user/const)
       TemplateRegistry.cs         — Scans templates/asexml/**/*.manifest.json at startup; singleton cache
       AseXmlRenderer.cs           — Pure-function renderer: applies generators, enforces required fields,
                                     substitutes {{tokens}}, validates well-formedness via XDocument.Parse
       FieldGenerators.cs          — Auto-field generators (messageId, transactionId, nowOffset, today)
+```
+
+---
+
+### AiTestCrew.Storage
+
+Persistence layer extracted from Agents. References Core only. All files retain their original namespaces (e.g. `AiTestCrew.Agents.Persistence`) for backward compatibility.
+
+```
+Storage/
   Persistence/
-    PersistedModule.cs            — Module manifest model (id, name, description, timestamps)
+    IModuleRepository.cs          — Module CRUD interface
+    ITestSetRepository.cs         — Test set CRUD + merge + move + stats interface
+    IExecutionHistoryRepository.cs — Execution run save/load/prune interface
+    PersistedModule.cs            — Module manifest model (id, name, description, timestamps, CreatedBy, LastModifiedBy)
     PersistedTestSet.cs           — JSON envelope model for saved test sets (contains List<TestObjective> TestObjectives, v2 schema)
                                     Includes SetupSteps (List<WebUiStep>) and SetupStartUrl for reusable
                                     pre-test-case setup (e.g. login) — runs before every test case in the set
                                     Includes ApiStackKey and ApiModule for multi-stack API targeting
     PersistedExecutionRun.cs      — Execution history models (run, objective results with PersistedObjectiveResult, step results)
-    ModuleRepository.cs           — File I/O for modules/{id}/module.json
-    TestSetRepository.cs          — File I/O for test sets (legacy flat + module-scoped, incl. move objective)
+                                    Includes StartedBy and StartedByName for audit trail
+    TestObjective.cs              — Test objective model with all step collections
+    ModuleRepository.cs           — File-based implementation of IModuleRepository (modules/{id}/module.json)
+    TestSetRepository.cs          — File-based implementation of ITestSetRepository (legacy flat + module-scoped)
                                     SaveAsync creates the module directory if it does not exist
-    ExecutionHistoryRepository.cs — File I/O for executions/{testSetId}/{runId}.json
+    ExecutionHistoryRepository.cs — File-based implementation of IExecutionHistoryRepository (executions/{testSetId}/{runId}.json)
     SlugHelper.cs                 — Shared slugification logic
     MigrationHelper.cs            — Auto-migrates legacy testsets/ to modules/default/
+  Shared/
+    WebUiTestCase.cs              — WebUiTestCase + WebUiStep models (legacy, shared by both UI agents)
+    WebUiTestDefinition.cs        — WebUiTestDefinition model (v2 step definition for TestObjective.WebUiSteps)
+    DesktopUiTestCase.cs          — Desktop UI test case model
+    DesktopUiTestDefinition.cs    — Desktop UI step definition model
+  ApiAgent/
+    ApiTestDefinition.cs          — LLM-generated API test step model + validation verdict
+    ApiTestCase.cs                — API test case wrapper
+  AseXmlAgent/
+    AseXmlTestDefinition.cs       — aseXML generation step persistence model (templateId + user field values)
+    AseXmlDeliveryTestDefinition.cs — aseXML delivery step persistence model (generation fields + EndpointCode)
+    VerificationStep.cs           — UI verification step attached to a delivery case
+  Sqlite/
+    SqliteConnectionFactory.cs    — Creates and configures SQLite connections (WAL mode)
+    DatabaseMigrator.cs           — Schema creation and versioned migrations
+    SqliteModuleRepository.cs     — IModuleRepository implementation backed by SQLite
+    SqliteTestSetRepository.cs    — ITestSetRepository implementation backed by SQLite
+    SqliteExecutionHistoryRepository.cs — IExecutionHistoryRepository implementation backed by SQLite
+    SqliteUserRepository.cs       — IUserRepository implementation backed by SQLite (atc_ prefixed API keys)
+    JsonOpts.cs                   — Shared JSON serialization options for SQLite data columns
 ```
 
 #### Web UI Agents
@@ -333,11 +380,11 @@ Adding a third consumer (e.g. a hypothetical "edit recorded setup step" flow) is
 
 ### AiTestCrew.Orchestrator
 
-Decomposes objectives, routes tasks to agents, aggregates results, manages run modes. References Core and Agents.
+Decomposes objectives, routes tasks to agents, aggregates results, manages run modes. References Core and Storage (no longer depends on Agents).
 
 ```
 Orchestrator/
-  TestOrchestrator.cs   — RunAsync, DecomposeObjectiveAsync, SaveTestSetAsync (308 lines)
+  TestOrchestrator.cs   — RunAsync, DecomposeObjectiveAsync, SaveTestSetAsync
 ```
 
 ---
@@ -354,6 +401,11 @@ Runner/
                                      creates module manifest if missing, saves WebUiTestDefinition to test set
   AnthropicChatCompletionService.cs — Bridges Anthropic.SDK to Semantic Kernel's IChatCompletionService
   FileLoggerProvider.cs            — Writes all log messages to a timestamped file in logs/
+  RemoteRepositories/
+    RemoteHttpClient.cs            — Shared HttpClient wrapper for WebApi calls (X-Api-Key header injection)
+    ApiClientModuleRepository.cs   — IModuleRepository over HTTP (remote mode)
+    ApiClientTestSetRepository.cs  — ITestSetRepository over HTTP (remote mode)
+    ApiClientExecutionHistoryRepository.cs — IExecutionHistoryRepository over HTTP (remote mode)
   appsettings.json                 — Runtime configuration (copied to output directory on build)
   appsettings.example.json         — Template with placeholder values for source control
 ```
@@ -362,25 +414,44 @@ Runner/
 
 **`--record-setup` mode** also runs before the DI host. It reuses `PlaywrightRecorder.RecordAsync` but saves the captured steps into `PersistedTestSet.SetupSteps` and `SetupStartUrl` instead of creating a new `TestObjective`. These setup steps (typically login) run before every test case in the test set during replay.
 
+**Remote mode** — When `ServerUrl` is configured in `TestEnvironmentConfig`, Runner registers `ApiClient*Repository` implementations instead of file-based or SQLite repositories. All persistence operations (module CRUD, test set load/save/merge, execution history) are proxied over HTTP to the WebApi. The `ApiKey` config field is injected as `X-Api-Key` on every request via `RemoteHttpClient`. This enables headless Runner instances on separate machines to share a central WebApi server.
+
+**`--migrate-to-sqlite`** — One-shot migration CLI command that reads all file-based modules, test sets, and execution runs, and inserts them into the SQLite database. The command exits after migration.
+
 ---
 
 ### AiTestCrew.WebApi
 
-REST API backend for the React UI. Mirrors Runner's DI wiring but exposes HTTP endpoints instead of a CLI.
+REST API backend for the React UI. Mirrors Runner's DI wiring but exposes HTTP endpoints instead of a CLI. In production, co-hosts the React SPA from `wwwroot/` via `UseDefaultFiles()` + `UseStaticFiles()` + `MapFallbackToFile("index.html")`.
 
 ```
 WebApi/
-  Program.cs                       — DI wiring, CORS, minimal API endpoints, migration, screenshot static files
+  Program.cs                       — DI wiring, CORS, minimal API endpoints, migration, screenshot static files,
+                                     frontend co-hosting, auth middleware registration, storage provider selection
   AnthropicChatCompletionService.cs — Copy of Runner's bridge (same layer, can't reference Runner)
+  Middleware/
+    ApiKeyAuthMiddleware.cs        — Validates X-Api-Key header against IUserRepository.
+                                     Only active when IUserRepository is registered (SQLite mode).
+                                     Skips auth for: GET /api/auth/status, POST /api/users (bootstrap),
+                                     static files, and health check.
   Endpoints/
     ModuleEndpoints.cs             — Module CRUD + nested test set and run access + per-objective status
     TestSetEndpoints.cs            — Legacy flat test set endpoints (backward compat)
     RunEndpoints.cs                — POST /api/runs (trigger with optional objectiveId, apiStackKey, apiModule), GET /api/runs/{id}/status (poll)
+    AuthEndpoints.cs               — GET /api/auth/status, user CRUD (GET/POST/DELETE /api/users/*)
   Services/
-    RunTracker.cs                  — ConcurrentDictionary tracking active/completed individual runs
-    ModuleRunTracker.cs            — ConcurrentDictionary tracking module-level composite runs (parallel test set execution)
+    IRunTracker.cs                 — Interface for individual run tracking (HasActiveRunForTestSet)
+    IModuleRunTracker.cs           — Interface for module-level composite run tracking (HasActiveModuleRunForModule)
+    RunTracker.cs                  — In-memory IRunTracker implementation (ConcurrentDictionary)
+    ModuleRunTracker.cs            — In-memory IModuleRunTracker implementation (ConcurrentDictionary)
   appsettings.example.json         — Template config
 ```
+
+**Frontend co-hosting** — WebApi serves the built React SPA from `wwwroot/` for single-binary deployment. `UseDefaultFiles()` maps `/` to `index.html`, `UseStaticFiles()` serves JS/CSS assets, and `MapFallbackToFile("index.html")` handles client-side routing. The frontend uses relative `/api` paths. During development, Vite's dev server proxy forwards `/api` requests to the WebApi.
+
+**Auth middleware** — `ApiKeyAuthMiddleware` validates the `X-Api-Key` header against `IUserRepository` on every request (except allowlisted paths). Auth is only active when `IUserRepository` is registered in DI — this happens only in SQLite storage mode. Bootstrap: the first user can be created via `POST /api/users` without auth when no users exist.
+
+**Concurrent runs** — The original global single-run lock was replaced with per-test-set/per-module locking. `IRunTracker.HasActiveRunForTestSet()` and `IModuleRunTracker.HasActiveModuleRunForModule()` prevent duplicate runs on the same target while allowing independent targets to run simultaneously.
 
 **REST API endpoints:**
 
@@ -416,6 +487,16 @@ WebApi/
 | `GET` | `/api/config/api-stacks` | List configured API stacks and modules (for UI dropdowns) |
 | `GET` | `/api/health` | Health check |
 | `GET` | `/screenshots/{filename}` | Serve Playwright failure screenshots (static files from `PlaywrightScreenshotDir`) |
+| `GET` | `/api/auth/status` | Check if auth is enabled (returns `{ enabled, hasUsers }`) |
+| `GET` | `/api/users` | List all users |
+| `POST` | `/api/users` | Create a user (bootstrap: no auth required when no users exist) |
+| `DELETE` | `/api/users/{id}` | Delete a user |
+| `POST` | `/api/executions` | Save execution run (Runner remote mode API client) |
+| `PUT` | `/api/modules/{id}/testsets/{tsId}/data` | Save full test set data (Runner remote mode) |
+| `POST` | `/api/modules/{id}/testsets/{tsId}/merge` | Merge objectives into test set (Runner remote mode) |
+| `POST` | `/api/modules/{id}/testsets/{tsId}/run-stats` | Update run stats (Runner remote mode) |
+| `GET` | `/api/modules/{id}/testsets/{tsId}/delivery-context/{objectiveId}` | Latest delivery context for verify-only (Runner remote mode) |
+| `GET` | `/api/modules/{id}/testsets/{tsId}/objective-statuses` | Latest objective statuses (Runner remote mode) |
 
 ---
 
@@ -425,10 +506,10 @@ Single-page application built with React 18, TypeScript, and Vite. Communicates 
 
 ```
 ui/src/
-  main.tsx                         — React root + QueryClientProvider + ActiveRunProvider + BrowserRouter
+  main.tsx                         — React root + QueryClientProvider + AuthProvider + ActiveRunProvider + BrowserRouter
   App.tsx                          — Route definitions with Layout wrapper
   api/
-    client.ts                      — fetch wrapper with base URL + error handling
+    client.ts                      — fetch wrapper with base URL + error handling + X-Api-Key header injection
     config.ts                      — API functions for config discovery (fetchApiStacks)
     modules.ts                     — API functions for modules and module-scoped test sets/runs (incl. triggerModuleRun, fetchModuleRunStatus)
     testSets.ts                    — API functions for legacy flat test sets and runs
@@ -436,14 +517,17 @@ ui/src/
   contexts/
     ActiveRunContext.tsx            — Global run state: tracks module-level and individual runs, polls status,
                                      recovers active run on page refresh via GET /api/runs/active
+    AuthContext.tsx                 — API key auth state: login, logout, current user name,
+                                     checks GET /api/auth/status on mount to determine if auth is enabled
   pages/
     ModuleListPage.tsx             — Module card grid (root page)
     ModuleDetailPage.tsx           — Test sets within a module + search/sort/status-filter toolbar,
                                      progressive card loading (IntersectionObserver), create/run dialogs
     TestSetDetailPage.tsx          — Test cases table + run history + trigger button (module-aware)
     ExecutionDetailPage.tsx        — Objective results with expandable step details (module-aware)
+    LoginPage.tsx                  — API key login form (shown when auth is enabled and no key stored)
   components/
-    Layout.tsx                     — Header, nav, content area
+    Layout.tsx                     — Header, nav, content area, user name display + logout button
     StatusBadge.tsx                — Color-coded Passed/Failed/Error/Running badge
     TestSetCard.tsx                — Test set summary card (module-scoped links)
     TestCaseTable.tsx              — API test cases: HTTP method, endpoint, expected status table; inline delete per step
@@ -480,6 +564,7 @@ ui/src/
 | `Anthropic.SDK` | 4.7.2 | Native Anthropic API client (Claude) |
 | `Microsoft.Extensions.Hosting` | 8.0.1 | .NET generic host, DI container, configuration |
 | `Microsoft.Extensions.Http` | 8.0.1 | `IHttpClientFactory` for `HttpClient` lifecycle management |
+| `Microsoft.Data.Sqlite` | 8.0.* | SQLite storage backend (Storage project) |
 | `Spectre.Console` | 0.49.1 | Rich console output (tables, spinners, markup) |
 
 ---
@@ -622,9 +707,18 @@ JSON cleaning handles the LLM wrapping responses in ` ```json ... ``` ` blocks: 
 
 ## Persistence Layer
 
+Two storage backends are available, selected by the `StorageProvider` config key:
+
+| Backend | Config value | Repositories | Notes |
+|---|---|---|---|
+| File-based (default) | `"File"` | `ModuleRepository`, `TestSetRepository`, `ExecutionHistoryRepository` | JSON files on disk; original backend |
+| SQLite | `"Sqlite"` | `SqliteModuleRepository`, `SqliteTestSetRepository`, `SqliteExecutionHistoryRepository`, `SqliteUserRepository` | Single DB file; WAL mode for concurrent reads; also enables user auth |
+
+All three repository interfaces (`IModuleRepository`, `ITestSetRepository`, `IExecutionHistoryRepository`) live in the `AiTestCrew.Agents.Persistence` namespace inside the Storage project. Agent and orchestrator code programs against the interfaces — the active backend is selected at DI registration time.
+
 ### Module and Test Set Storage
 
-Tests are organised in a **Module > Test Set > Test Objective > Steps** hierarchy. On disk:
+Tests are organised in a **Module > Test Set > Test Objective > Steps** hierarchy. On disk (file-based backend):
 
 ```
 {dataDir}/
@@ -847,19 +941,22 @@ Before the LLM generates test cases, `ApiTestAgent.DiscoverEndpointAsync` makes 
 All services are registered in `Program.cs` before the host is built:
 
 ```
-TestEnvironmentConfig       → Singleton (bound from appsettings.json)
-Kernel                      → Singleton (Semantic Kernel, with IChatCompletionService)
-IChatCompletionService      → Singleton (AnthropicChatCompletionService or OpenAI)
-IHttpClientFactory          → Managed by AddHttpClient()
-IApiTargetResolver          → Singleton (ApiTargetResolver — resolves stack+module URLs and per-stack token providers)
-ApiTestAgent                → Singleton (concrete + ITestAgent)
-TestSetRepository           → Singleton (new instance, baseDir = AppContext.BaseDirectory)
-ExecutionHistoryRepository  → Singleton (new instance, baseDir = AppContext.BaseDirectory)
-ModuleRepository            → Singleton (new instance, baseDir = AppContext.BaseDirectory)
-TestOrchestrator            → Singleton (receives IEnumerable<ITestAgent> + all repos)
-RunTracker                  → Singleton (WebApi only — tracks individual async run state)
-ModuleRunTracker            → Singleton (WebApi only — tracks module-level composite runs)
+TestEnvironmentConfig        → Singleton (bound from appsettings.json)
+Kernel                       → Singleton (Semantic Kernel, with IChatCompletionService)
+IChatCompletionService       → Singleton (AnthropicChatCompletionService or OpenAI)
+IHttpClientFactory           → Managed by AddHttpClient()
+IApiTargetResolver           → Singleton (ApiTargetResolver — resolves stack+module URLs and per-stack token providers)
+ApiTestAgent                 → Singleton (concrete + ITestAgent)
+IModuleRepository            → Singleton (File-based or Sqlite, selected by StorageProvider config)
+ITestSetRepository           → Singleton (File-based or Sqlite, selected by StorageProvider config)
+IExecutionHistoryRepository  → Singleton (File-based or Sqlite, selected by StorageProvider config)
+IUserRepository              → Singleton (SqliteUserRepository — only registered in Sqlite mode)
+TestOrchestrator             → Singleton (receives IEnumerable<ITestAgent> + repository interfaces)
+IRunTracker                  → Singleton (WebApi only — tracks individual async run state)
+IModuleRunTracker            → Singleton (WebApi only — tracks module-level composite runs)
 ```
+
+**Storage provider selection** — `Program.cs` reads `StorageProvider` from config. `"Sqlite"` registers `Sqlite*Repository` implementations and runs `DatabaseMigrator.MigrateAsync` at startup. `"File"` (default) registers the file-based implementations. Runner in remote mode (`ServerUrl` configured) registers `ApiClient*Repository` implementations instead, bypassing local storage entirely.
 
 ---
 
@@ -910,6 +1007,97 @@ TestOrchestrator.RunAsync(objective, Normal)
 
 ---
 
+## Multi-User Architecture
+
+### Storage backends
+
+The persistence layer supports two backends (see Persistence Layer section above). SQLite is required for multi-user features (auth, audit trail).
+
+**SQLite schema** — Seven tables:
+
+| Table | Purpose |
+|---|---|
+| `modules` | Module metadata + full JSON in `data TEXT` column |
+| `test_sets` | Test set metadata (module_id FK) + full JSON in `data TEXT` |
+| `execution_runs` | Run metadata (test_set_id, status, timestamps) + full JSON in `data TEXT` |
+| `users` | Id, Name, ApiKey (unique, `atc_` prefixed), Role, timestamps |
+| `active_runs` | In-progress individual runs (for crash recovery) |
+| `active_module_runs` | In-progress module-level runs (for crash recovery) |
+| `schema_version` | Single-row version tracker for migrations |
+
+Design: structured columns are used for queries and filtering; the `data TEXT` column holds the full serialized model as JSON for lossless round-tripping. WAL mode is enabled for concurrent read access.
+
+**Migration CLI** — `--migrate-to-sqlite` reads all file-based modules, test sets, and execution runs and inserts them into the SQLite database. One-shot operation.
+
+### User authentication
+
+- **User model** — `Core/Models/User.cs`: Id (GUID), Name, ApiKey (`atc_` prefix + random token), Role, CreatedAt, LastLoginAt.
+- **IUserRepository** — `Core/Interfaces/IUserRepository.cs`: CRUD + `GetByApiKeyAsync(key)` for auth lookup.
+- **SqliteUserRepository** — generates `atc_`-prefixed API keys on user creation. Only registered when `StorageProvider = "Sqlite"`.
+- **ApiKeyAuthMiddleware** — validates `X-Api-Key` header on every request. Allowlisted paths: `GET /api/auth/status`, `POST /api/users` (bootstrap only when zero users exist), static files, health check. When `IUserRepository` is not registered (file-based mode), auth is disabled — all requests pass through.
+- **Bootstrap** — First user can be created without auth via `POST /api/users` when the user table is empty.
+- **Frontend** — `AuthContext.tsx` checks `GET /api/auth/status` on mount. If auth is enabled and no API key is stored in `localStorage`, the user is redirected to `LoginPage.tsx`. The `client.ts` fetch wrapper injects `X-Api-Key` from `AuthContext` on every API call. `Layout.tsx` shows the current user name and a logout button.
+
+### Concurrent runs
+
+The original architecture used a global single-run lock — only one test set could execute at a time across the entire server. This was replaced with per-target locking:
+
+- `IRunTracker.HasActiveRunForTestSet(testSetId)` — prevents duplicate runs on the same test set.
+- `IModuleRunTracker.HasActiveModuleRunForModule(moduleId)` — prevents duplicate module-level runs.
+- Independent test sets and modules can run simultaneously.
+
+### Audit trail
+
+- `PersistedModule` gained `CreatedBy` and `LastModifiedBy` fields — populated from the authenticated user.
+- `PersistedTestSet` gained `CreatedBy` and `LastModifiedBy` fields.
+- `PersistedExecutionRun` gained `StartedBy` (user ID) and `StartedByName` (display name) fields.
+- File-based backend: fields are present but always null (no auth in file mode).
+
+### Config externalization
+
+New config fields on `TestEnvironmentConfig`:
+
+| Field | Default | Purpose |
+|---|---|---|
+| `StorageProvider` | `"File"` | `"File"` or `"Sqlite"` — selects persistence backend |
+| `SqliteConnectionString` | (none) | SQLite connection string (required when `StorageProvider = "Sqlite"`) |
+| `ListenUrl` | (empty = `http://localhost:5050`) | WebApi bind URL |
+| `CorsOrigins` | (empty = localhost dev defaults) | Allowed CORS origins (string array) |
+| `ServerUrl` | (empty) | Runner remote mode: WebApi base URL |
+| `ApiKey` | (empty) | Runner remote mode: API key for `X-Api-Key` header |
+
+All fields support environment variable overrides via `AITESTCREW_TestEnvironment__<PropertyName>` (standard .NET double-underscore convention).
+
+---
+
+## Deployment
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `Dockerfile` | Windows container image (multi-stage build) |
+| `docker-compose.yml` | Single-service compose with env var passthrough |
+| `.env.example` | Template for required environment variables |
+| `publish.ps1` | PowerShell script for self-contained publish |
+| `.dockerignore` | Excludes bin/, obj/, node_modules/, logs/, etc. |
+
+### Frontend co-hosting
+
+WebApi serves the built React SPA from `wwwroot/` for single-binary deployment:
+
+```
+UseDefaultFiles()              → maps / to index.html
+UseStaticFiles()               → serves JS/CSS/assets from wwwroot/
+MapFallbackToFile("index.html") → client-side routing fallback
+```
+
+The frontend build (`npm run build` in `ui/`) outputs to `wwwroot/`. The `publish.ps1` script builds both the .NET backend and the React frontend into a single deployable folder.
+
+During development, Vite's dev server (`npm run dev`) proxies `/api` requests to `http://localhost:5050`.
+
+---
+
 ## Extension map — where to reach when extending
 
 This section complements the "Where to extend" table in `CLAUDE.md` with architectural context. Each row describes one extension axis and where the seams live.
@@ -924,7 +1112,7 @@ This section complements the "Where to extend" table in `CLAUDE.md` with archite
 
 ### Adding a new auto-field generator
 
-- `src/AiTestCrew.Agents/AseXmlAgent/Templates/FieldGenerators.cs` — add a new static method.
+- `src/AiTestCrew.Agents/AseXmlAgent/Templates/FieldGenerators.cs` (or `src/AiTestCrew.Storage/AseXmlAgent/` if the generator is persistence-related) — add a new static method.
 - `Generate(FieldSpec spec)` — add a `switch` arm dispatching to the new method (case-insensitive match on `spec.Generator`).
 - Document the generator name + pattern syntax in the manifest schema docs.
 - Keep the set small: only add when a real manifest needs it.
@@ -982,7 +1170,7 @@ This section complements the "Where to extend" table in `CLAUDE.md` with archite
 
 ### Adding a new test case / step JSON field
 
-- Persistence model lives in `src/AiTestCrew.Agents/Persistence/` (TestObjective, PersistedTestSet, PersistedExecutionRun) or adjacent to the agent for step-definition models.
+- Persistence model lives in `src/AiTestCrew.Storage/Persistence/` (TestObjective, PersistedTestSet, PersistedExecutionRun) or adjacent definition types in `Storage/Shared/`, `Storage/ApiAgent/`, `Storage/AseXmlAgent/`.
 - Additive fields are backward-compatible: System.Text.Json's `PropertyNameCaseInsensitive` + default-value behaviour reads old JSON without migration.
 - Update the matching TS type in `ui/src/types/index.ts`.
 - Extend `FromTestCase` / `ToTestCase` if the field should survive the round-trip.

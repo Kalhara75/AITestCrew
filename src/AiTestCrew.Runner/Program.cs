@@ -31,17 +31,48 @@ AnsiConsole.Write(new FigletText("AI Test Crew").Color(Color.Cyan1));
 // ── Parse CLI arguments ──
 var cli = ParseArgs(args);
 
+// ── Resolve repos for short-circuit commands (before the DI host is built) ──
+var quickConfig = new ConfigurationBuilder()
+    .SetBasePath(AppContext.BaseDirectory)
+    .AddJsonFile("appsettings.json", optional: true)
+    .Build()
+    .GetSection("TestEnvironment")
+    .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
+
+IModuleRepository ResolveModuleRepo()
+{
+    if (!string.IsNullOrWhiteSpace(quickConfig.ServerUrl))
+        return new AiTestCrew.Runner.RemoteRepositories.ApiClientModuleRepository(
+            new AiTestCrew.Runner.RemoteRepositories.RemoteHttpClient(quickConfig.ServerUrl, quickConfig.ApiKey));
+    return new ModuleRepository(AppContext.BaseDirectory);
+}
+
+ITestSetRepository ResolveTsRepo()
+{
+    if (!string.IsNullOrWhiteSpace(quickConfig.ServerUrl))
+        return new AiTestCrew.Runner.RemoteRepositories.ApiClientTestSetRepository(
+            new AiTestCrew.Runner.RemoteRepositories.RemoteHttpClient(quickConfig.ServerUrl, quickConfig.ApiKey));
+    return new TestSetRepository(AppContext.BaseDirectory);
+}
+
+IExecutionHistoryRepository ResolveHistRepo()
+{
+    if (!string.IsNullOrWhiteSpace(quickConfig.ServerUrl))
+        return new AiTestCrew.Runner.RemoteRepositories.ApiClientExecutionHistoryRepository(
+            new AiTestCrew.Runner.RemoteRepositories.RemoteHttpClient(quickConfig.ServerUrl, quickConfig.ApiKey));
+    return new ExecutionHistoryRepository(AppContext.BaseDirectory);
+}
+
 // ── Short-circuit commands that don't need the LLM host ──
 if (cli.Mode == RunMode.List)
 {
-    var repo = new TestSetRepository(AppContext.BaseDirectory);
-    var histRepo = new ExecutionHistoryRepository(AppContext.BaseDirectory);
+    var repo = ResolveTsRepo();
+    var histRepo = ResolveHistRepo();
     var sets = repo.ListAll();
 
     if (sets.Count == 0)
     {
         AnsiConsole.MarkupLine("[grey]No saved test sets found.[/]");
-        AnsiConsole.MarkupLine($"[grey]Test sets directory: {repo.Directory}[/]");
         return;
     }
 
@@ -50,8 +81,7 @@ if (cli.Mode == RunMode.List)
         .AddColumn("[bold]ID[/]")
         .AddColumn("[bold]Module[/]")
         .AddColumn("[bold]Objective[/]")
-        .AddColumn("[bold]Tasks[/]")
-        .AddColumn("[bold]Cases[/]")
+        .AddColumn("[bold]Objectives[/]")
         .AddColumn("[bold]Created (UTC)[/]")
         .AddColumn("[bold]Last Run (UTC)[/]")
         .AddColumn("[bold]Runs[/]");
@@ -63,8 +93,7 @@ if (cli.Mode == RunMode.List)
             s.Id,
             s.ModuleId.Length > 0 ? s.ModuleId : "-",
             shortObjective,
-            s.Tasks.Count.ToString(),
-            s.Tasks.Sum(t => t.TestCases.Count).ToString(),
+            s.TestObjectives.Count.ToString(),
             s.CreatedAt.ToString("yyyy-MM-dd HH:mm"),
             s.LastRunAt == default ? "-" : s.LastRunAt.ToString("yyyy-MM-dd HH:mm"),
             histRepo.CountRuns(s.Id).ToString()
@@ -72,7 +101,6 @@ if (cli.Mode == RunMode.List)
     }
 
     AnsiConsole.Write(listTable);
-    AnsiConsole.MarkupLine($"\n[grey]Test sets directory: {repo.Directory}[/]");
     AnsiConsole.MarkupLine("[grey]Re-run a saved set:  dotnet run -- --reuse <id>[/]");
     AnsiConsole.MarkupLine("[grey]Regenerate & resave: dotnet run -- --rebaseline \"<objective>\"[/]");
     return;
@@ -80,8 +108,8 @@ if (cli.Mode == RunMode.List)
 
 if (cli.ListModules)
 {
-    var moduleRepo = new ModuleRepository(AppContext.BaseDirectory);
-    var tsRepo = new TestSetRepository(AppContext.BaseDirectory);
+    var moduleRepo = ResolveModuleRepo();
+    var tsRepo = ResolveTsRepo();
     var modules = await moduleRepo.ListAllAsync();
 
     if (modules.Count == 0)
@@ -106,7 +134,7 @@ if (cli.ListModules)
             m.Id,
             m.Name,
             testSets.Count.ToString(),
-            testSets.Sum(ts => ts.Tasks.Sum(t => t.TestCases.Count)).ToString(),
+            testSets.Sum(ts => ts.TestObjectives.Count).ToString(),
             m.CreatedAt.ToString("yyyy-MM-dd HH:mm")
         );
     }
@@ -117,7 +145,7 @@ if (cli.ListModules)
 
 if (cli.CreateModuleName is not null)
 {
-    var moduleRepo = new ModuleRepository(AppContext.BaseDirectory);
+    var moduleRepo = ResolveModuleRepo();
     var module = await moduleRepo.CreateAsync(cli.CreateModuleName);
     AnsiConsole.MarkupLine($"[green]Module created:[/] {module.Id} ({module.Name})");
     AnsiConsole.MarkupLine($"[grey]Create a test set: dotnet run -- --create-testset {module.Id} \"Test Set Name\"[/]");
@@ -126,16 +154,76 @@ if (cli.CreateModuleName is not null)
 
 if (cli.CreateTestSetModuleId is not null && cli.CreateTestSetName is not null)
 {
-    var moduleRepo = new ModuleRepository(AppContext.BaseDirectory);
+    var moduleRepo = ResolveModuleRepo();
     if (!moduleRepo.Exists(cli.CreateTestSetModuleId))
     {
         AnsiConsole.MarkupLine($"[red]Module '{cli.CreateTestSetModuleId}' not found.[/]");
         return;
     }
-    var tsRepo = new TestSetRepository(AppContext.BaseDirectory);
+    var tsRepo = ResolveTsRepo();
     var testSet = await tsRepo.CreateEmptyAsync(cli.CreateTestSetModuleId, cli.CreateTestSetName);
     AnsiConsole.MarkupLine($"[green]Test set created:[/] {cli.CreateTestSetModuleId}/{testSet.Id} ({testSet.Name})");
     AnsiConsole.MarkupLine($"[grey]Run objective: dotnet run -- --module {cli.CreateTestSetModuleId} --testset {testSet.Id} \"<objective>\"[/]");
+    return;
+}
+
+// ── Migrate existing JSON data to SQLite ──
+if (cli.MigrateToSqlite)
+{
+    var migrateConfig = new ConfigurationBuilder()
+        .SetBasePath(AppContext.BaseDirectory)
+        .AddJsonFile("appsettings.json", optional: true)
+        .Build()
+        .GetSection("TestEnvironment")
+        .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
+
+    if (string.IsNullOrWhiteSpace(migrateConfig.SqliteConnectionString))
+    {
+        AnsiConsole.MarkupLine("[red]SqliteConnectionString is not configured in appsettings.json → TestEnvironment.[/]");
+        AnsiConsole.MarkupLine("[grey]Set TestEnvironment.SqliteConnectionString, e.g. \"Data Source=C:/data/aitestcrew.db\"[/]");
+        return;
+    }
+
+    var connFactory = new AiTestCrew.Agents.Persistence.Sqlite.SqliteConnectionFactory(migrateConfig.SqliteConnectionString);
+    var sqliteModules = new AiTestCrew.Agents.Persistence.Sqlite.SqliteModuleRepository(connFactory);
+    var sqliteTestSets = new AiTestCrew.Agents.Persistence.Sqlite.SqliteTestSetRepository(connFactory);
+    var sqliteHistory = new AiTestCrew.Agents.Persistence.Sqlite.SqliteExecutionHistoryRepository(connFactory, migrateConfig.MaxExecutionRunsPerTestSet);
+
+    // Source: file-based repos in the current data directory
+    var fileModules = new ModuleRepository(AppContext.BaseDirectory);
+    var fileTestSets = new TestSetRepository(AppContext.BaseDirectory);
+    var fileHistory = new ExecutionHistoryRepository(AppContext.BaseDirectory);
+
+    int moduleCount = 0, tsCount = 0, runCount = 0;
+
+    // Migrate modules
+    foreach (var m in await fileModules.ListAllAsync())
+    {
+        if (!sqliteModules.Exists(m.Id))
+        {
+            await sqliteModules.CreateAsync(m.Name, m.Description);
+            moduleCount++;
+        }
+    }
+
+    // Migrate test sets (both legacy and module-scoped)
+    foreach (var ts in fileTestSets.ListAll())
+    {
+        var mid = string.IsNullOrEmpty(ts.ModuleId) ? "" : ts.ModuleId;
+        await sqliteTestSets.SaveAsync(ts, mid);
+        tsCount++;
+
+        // Migrate execution history for this test set
+        foreach (var run in fileHistory.ListRuns(ts.Id))
+        {
+            await sqliteHistory.SaveAsync(run);
+            runCount++;
+        }
+    }
+
+    AnsiConsole.MarkupLine($"[green]Migration complete:[/] {moduleCount} modules, {tsCount} test sets, {runCount} execution runs");
+    AnsiConsole.MarkupLine($"[grey]Database: {migrateConfig.SqliteConnectionString}[/]");
+    AnsiConsole.MarkupLine("[grey]Set TestEnvironment.StorageProvider = \"Sqlite\" to switch over.[/]");
     return;
 }
 
@@ -173,13 +261,13 @@ if (cli.RecordMode)
     var moduleId  = SlugHelper.ToSlug(cli.ModuleId);
     var testSetId = SlugHelper.ToSlug(cli.TestSetId);
 
-    // Ensure the module directory and manifest exist (idempotent)
-    var modRepo = new ModuleRepository(AppContext.BaseDirectory);
+    // Ensure the module and manifest exist (idempotent)
+    var modRepo = ResolveModuleRepo();
     if (!modRepo.Exists(moduleId))
         await modRepo.CreateAsync(cli.ModuleId);
 
     // Save into the test set
-    var tsRepo = new TestSetRepository(AppContext.BaseDirectory);
+    var tsRepo = ResolveTsRepo();
     var testSet = await tsRepo.LoadAsync(moduleId, testSetId)
                   ?? await tsRepo.CreateEmptyAsync(moduleId, cli.TestSetId);
 
@@ -391,8 +479,8 @@ if (cli.RecordVerification)
     var vModuleId  = SlugHelper.ToSlug(cli.ModuleId);
     var vTestSetId = SlugHelper.ToSlug(cli.TestSetId);
 
-    var vTsRepo = new TestSetRepository(AppContext.BaseDirectory);
-    var vHistRepo = new ExecutionHistoryRepository(AppContext.BaseDirectory);
+    var vTsRepo = ResolveTsRepo();
+    var vHistRepo = ResolveHistRepo();
     var vTestSet = await vTsRepo.LoadAsync(vModuleId, vTestSetId);
     if (vTestSet is null)
     {
@@ -705,12 +793,12 @@ if (cli.RecordSetupMode)
     var setupTestSetId = SlugHelper.ToSlug(cli.TestSetId);
 
     // Ensure module exists
-    var setupModRepo = new ModuleRepository(AppContext.BaseDirectory);
+    var setupModRepo = ResolveModuleRepo();
     if (!setupModRepo.Exists(setupModuleId))
         await setupModRepo.CreateAsync(cli.ModuleId);
 
     // Load or create the test set, then save setup steps into it
-    var setupTsRepo = new TestSetRepository(AppContext.BaseDirectory);
+    var setupTsRepo = ResolveTsRepo();
     var setupTestSet = await setupTsRepo.LoadAsync(setupModuleId, setupTestSetId)
                        ?? await setupTsRepo.CreateEmptyAsync(setupModuleId, cli.TestSetId);
 
@@ -862,11 +950,30 @@ builder.Services.AddSingleton<AseXmlDeliveryAgent>(sp => new AseXmlDeliveryAgent
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AseXmlDeliveryAgent>());
 
 // Test set persistence + execution history + modules
-builder.Services.AddSingleton(new TestSetRepository(AppContext.BaseDirectory));
-builder.Services.AddSingleton(new ExecutionHistoryRepository(AppContext.BaseDirectory, envConfig.MaxExecutionRunsPerTestSet));
-builder.Services.AddSingleton(new ModuleRepository(AppContext.BaseDirectory));
+if (!string.IsNullOrWhiteSpace(envConfig.ServerUrl))
+{
+    // Remote mode: call the WebApi over HTTP
+    var remoteHttp = new AiTestCrew.Runner.RemoteRepositories.RemoteHttpClient(envConfig.ServerUrl, envConfig.ApiKey);
+    builder.Services.AddSingleton<ITestSetRepository>(new AiTestCrew.Runner.RemoteRepositories.ApiClientTestSetRepository(remoteHttp));
+    builder.Services.AddSingleton<IExecutionHistoryRepository>(new AiTestCrew.Runner.RemoteRepositories.ApiClientExecutionHistoryRepository(remoteHttp));
+    builder.Services.AddSingleton<IModuleRepository>(new AiTestCrew.Runner.RemoteRepositories.ApiClientModuleRepository(remoteHttp));
+    AnsiConsole.MarkupLine($"[grey]Remote mode → {envConfig.ServerUrl}[/]");
+}
+else if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCase))
+{
+    var connFactory = new AiTestCrew.Agents.Persistence.Sqlite.SqliteConnectionFactory(envConfig.SqliteConnectionString);
+    builder.Services.AddSingleton<ITestSetRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteTestSetRepository(connFactory));
+    builder.Services.AddSingleton<IExecutionHistoryRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteExecutionHistoryRepository(connFactory, envConfig.MaxExecutionRunsPerTestSet));
+    builder.Services.AddSingleton<IModuleRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteModuleRepository(connFactory));
+}
+else
+{
+    builder.Services.AddSingleton<ITestSetRepository>(new TestSetRepository(AppContext.BaseDirectory));
+    builder.Services.AddSingleton<IExecutionHistoryRepository>(new ExecutionHistoryRepository(AppContext.BaseDirectory, envConfig.MaxExecutionRunsPerTestSet));
+    builder.Services.AddSingleton<IModuleRepository>(new ModuleRepository(AppContext.BaseDirectory));
+}
 
-// Orchestrator (receives IEnumerable<ITestAgent> and TestSetRepository from DI automatically)
+// Orchestrator (receives IEnumerable<ITestAgent> and ITestSetRepository from DI automatically)
 builder.Services.AddSingleton(new AgentConcurrencyLimiter(envConfig.MaxParallelAgents));
 builder.Services.AddSingleton<TestOrchestrator>();
 
@@ -1049,16 +1156,11 @@ AnsiConsole.MarkupLine($"\n[italic grey]{suiteResult.Summary}[/]");
 // ── Test set save notification ──
 if (cli.Mode is RunMode.Normal or RunMode.Rebaseline)
 {
-    var repoForDisplay = host.Services.GetRequiredService<TestSetRepository>();
-    var slug = TestSetRepository.SlugFromObjective(objective);
-    var savedPath = repoForDisplay.FilePath(slug);
-    if (File.Exists(savedPath))
-    {
-        var action = cli.Mode == RunMode.Rebaseline ? "Rebaselined" : "Saved";
-        AnsiConsole.MarkupLine($"\n[grey]{action} test set → {savedPath}[/]");
-        AnsiConsole.MarkupLine($"[grey]Re-run later:  dotnet run -- --reuse {slug}[/]");
-        AnsiConsole.MarkupLine($"[grey]Regenerate:    dotnet run -- --rebaseline \"{objective}\"[/]");
-    }
+    var slug = SlugHelper.ToSlug(objective);
+    var action = cli.Mode == RunMode.Rebaseline ? "Rebaselined" : "Saved";
+    AnsiConsole.MarkupLine($"\n[grey]{action} test set → {slug}[/]");
+    AnsiConsole.MarkupLine($"[grey]Re-run later:  dotnet run -- --reuse {slug}[/]");
+    AnsiConsole.MarkupLine($"[grey]Regenerate:    dotnet run -- --rebaseline \"{objective}\"[/]");
 }
 
 // ── Local functions ──
@@ -1076,7 +1178,7 @@ static CliArgs ParseArgs(string[] args)
     string? apiStackKey = null, apiModuleKey = null;
     string? endpointCode = null;
     bool listModules = false, recordMode = false, recordSetupMode = false, authSetupMode = false;
-    bool listEndpoints = false;
+    bool listEndpoints = false, migrateToSqlite = false;
     bool recordVerification = false;
     string? objectiveId = null, verificationName = null;
     int? verificationWait = null;
@@ -1168,6 +1270,9 @@ static CliArgs ParseArgs(string[] args)
             case "--list-endpoints":
                 listEndpoints = true;
                 break;
+            case "--migrate-to-sqlite":
+                migrateToSqlite = true;
+                break;
             case "--record-verification":
                 recordVerification = true;
                 break;
@@ -1227,6 +1332,7 @@ static CliArgs ParseArgs(string[] args)
         ApiModule = apiModuleKey,
         EndpointCode = endpointCode,
         ListEndpoints = listEndpoints,
+        MigrateToSqlite = migrateToSqlite,
         RecordVerification = recordVerification,
         ObjectiveId = objectiveId,
         VerificationName = verificationName,
@@ -1258,6 +1364,7 @@ class CliArgs
     public string? ApiModule { get; init; }
     public string? EndpointCode { get; init; }
     public bool ListEndpoints { get; init; }
+    public bool MigrateToSqlite { get; init; }
     public bool RecordVerification { get; init; }
 
     /// <summary>

@@ -19,6 +19,17 @@ Desktop.ini
 # Secrets — never commit
 appsettings.json
 !appsettings.example.json
+.env
+
+# Deployment output
+publish/
+**/wwwroot/
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+data/
 
 # Logs & runtime data
 logs/

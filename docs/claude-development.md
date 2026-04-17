@@ -332,13 +332,18 @@ cd ui && npm run dev
 
 Open `http://localhost:5173`. The WebApi runs on port 5050; the React dev server proxies API calls to it.
 
+The Vite dev server proxies `/api` and `/screenshots` requests to the WebApi (configured in `ui/vite.config.ts`), so no CORS configuration is needed during development.
+
+In production, run `.\build-all.ps1` to build the React app into `src/AiTestCrew.WebApi/wwwroot/` — the WebApi serves both API and UI from a single process.
+
 ### Adding a new REST API endpoint
 
 1. Create or edit a file in `src/AiTestCrew.WebApi/Endpoints/`
 2. Register the route group in `src/AiTestCrew.WebApi/Program.cs`
-3. Add corresponding TypeScript types in `ui/src/types/index.ts`
-4. Add API client functions in `ui/src/api/`
-5. Create or update React pages/components in `ui/src/pages/` and `ui/src/components/`
+3. If the endpoint should be accessible without authentication, add it to the exemption list in `src/AiTestCrew.WebApi/Middleware/ApiKeyAuthMiddleware.cs`
+4. Add corresponding TypeScript types in `ui/src/types/index.ts`
+5. Add API client functions in `ui/src/api/`
+6. Create or update React pages/components in `ui/src/pages/` and `ui/src/components/`
 
 ### Adding a new React page
 
@@ -405,6 +410,35 @@ Consult `/blazor-cloud-reference` for MudBlazor DOM patterns and selector rules.
 Pick the test set ID, then:
 ```
 /run-aitest --reuse test-the-api-products-endpoint
+```
+
+---
+
+### Deploying for multi-user access
+
+1. Configure `StorageProvider: "Sqlite"` and `SqliteConnectionString` in appsettings.json
+2. Migrate existing data: `dotnet run --project src/AiTestCrew.Runner -- --migrate-to-sqlite`
+3. Build and deploy:
+   - Docker: `docker compose up -d --build`
+   - Self-contained: `.\publish.ps1 -OutputDir C:\deploy` then run `AiTestCrew.WebApi.exe`
+4. Create the first user: `curl -X POST http://server:5050/api/users -H "Content-Type: application/json" -d '{"name": "Admin"}'`
+5. Share the API key with team members
+
+### Setting up a QA engineer's local Runner
+
+Configure the Runner's appsettings.json to point at the shared server:
+```json
+{
+  "TestEnvironment": {
+    "ServerUrl": "http://team-server:5050",
+    "ApiKey": "atc_..."
+  }
+}
+```
+
+Recording commands now sync to the shared server:
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --record --module sec --testset users --case-name "Search" --target UI_Web_Blazor
 ```
 
 ---
@@ -500,13 +534,23 @@ dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_MVC
 | `.claude/commands/bravo-web-reference.md` | Reference: Kendo UI DOM patterns and selector rules |
 | `.claude/commands/blazor-cloud-reference.md` | Reference: MudBlazor DOM patterns, SPA timing, and selector rules |
 | `.claude/commands/desktop-winui-reference.md` | Reference: FlaUI desktop recording/replay and element resolution |
+| `src/AiTestCrew.Storage/` | Persistence layer (repos, models, SQLite implementations) |
 | `src/AiTestCrew.WebApi/Program.cs` | WebApi DI wiring and endpoint registration |
+| `src/AiTestCrew.WebApi/Middleware/ApiKeyAuthMiddleware.cs` | API key authentication |
 | `src/AiTestCrew.WebApi/Endpoints/` | REST API endpoint definitions |
+| `src/AiTestCrew.WebApi/Endpoints/UserEndpoints.cs` | User management CRUD |
+| `src/AiTestCrew.Runner/RemoteRepositories/` | HTTP-based repo implementations for remote mode |
 | `ui/src/App.tsx` | React Router route definitions |
 | `ui/src/api/` | TypeScript API client functions |
 | `ui/src/pages/` | React page components |
 | `ui/src/components/` | Reusable React UI components (incl. ConfirmDialog, MoveObjectiveDialog) |
+| `ui/src/contexts/AuthContext.tsx` | API key auth state and login/logout |
+| `ui/src/pages/LoginPage.tsx` | API key login form |
 | `ui/src/types/index.ts` | TypeScript interfaces matching API responses |
+| `Dockerfile` | Multi-stage Windows container build |
+| `docker-compose.yml` | Docker Compose for deployment |
+| `publish.ps1` | Self-contained publish script |
+| `.env.example` | Environment variable template |
 
 ---
 

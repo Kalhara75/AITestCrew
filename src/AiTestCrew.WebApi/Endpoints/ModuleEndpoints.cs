@@ -17,8 +17,8 @@ public static class ModuleEndpoints
     public static RouteGroupBuilder MapModuleEndpoints(this RouteGroupBuilder group)
     {
         // GET /api/modules — list all modules with test set counts
-        group.MapGet("/", async (ModuleRepository moduleRepo, TestSetRepository tsRepo,
-            ExecutionHistoryRepository historyRepo) =>
+        group.MapGet("/", async (IModuleRepository moduleRepo, ITestSetRepository tsRepo,
+            IExecutionHistoryRepository historyRepo) =>
         {
             var modules = await moduleRepo.ListAllAsync();
             var result = modules.Select(m =>
@@ -39,7 +39,7 @@ public static class ModuleEndpoints
         });
 
         // POST /api/modules — create a module
-        group.MapPost("/", async (CreateModuleRequest request, ModuleRepository moduleRepo) =>
+        group.MapPost("/", async (CreateModuleRequest request, IModuleRepository moduleRepo) =>
         {
             if (string.IsNullOrWhiteSpace(request.Name))
                 return Results.BadRequest(new { error = "name is required" });
@@ -53,8 +53,8 @@ public static class ModuleEndpoints
         });
 
         // GET /api/modules/{moduleId} — module detail
-        group.MapGet("/{moduleId}", async (string moduleId, ModuleRepository moduleRepo,
-            TestSetRepository tsRepo) =>
+        group.MapGet("/{moduleId}", async (string moduleId, IModuleRepository moduleRepo,
+            ITestSetRepository tsRepo) =>
         {
             var module = await moduleRepo.GetAsync(moduleId);
             if (module is null) return Results.NotFound(new { error = $"Module '{moduleId}' not found" });
@@ -74,7 +74,7 @@ public static class ModuleEndpoints
 
         // PUT /api/modules/{moduleId} — update module
         group.MapPut("/{moduleId}", async (string moduleId, UpdateModuleRequest request,
-            ModuleRepository moduleRepo) =>
+            IModuleRepository moduleRepo) =>
         {
             var module = await moduleRepo.GetAsync(moduleId);
             if (module is null) return Results.NotFound(new { error = $"Module '{moduleId}' not found" });
@@ -87,7 +87,7 @@ public static class ModuleEndpoints
         });
 
         // DELETE /api/modules/{moduleId} — delete empty module
-        group.MapDelete("/{moduleId}", async (string moduleId, ModuleRepository moduleRepo) =>
+        group.MapDelete("/{moduleId}", async (string moduleId, IModuleRepository moduleRepo) =>
         {
             if (!moduleRepo.Exists(moduleId))
                 return Results.NotFound(new { error = $"Module '{moduleId}' not found" });
@@ -104,8 +104,8 @@ public static class ModuleEndpoints
         });
 
         // GET /api/modules/{moduleId}/testsets — list test sets in module
-        group.MapGet("/{moduleId}/testsets", (string moduleId, ModuleRepository moduleRepo,
-            TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+        group.MapGet("/{moduleId}/testsets", (string moduleId, IModuleRepository moduleRepo,
+            ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
         {
             if (!moduleRepo.Exists(moduleId))
                 return Results.NotFound(new { error = $"Module '{moduleId}' not found" });
@@ -135,7 +135,7 @@ public static class ModuleEndpoints
 
         // POST /api/modules/{moduleId}/testsets — create empty test set
         group.MapPost("/{moduleId}/testsets", async (string moduleId, CreateTestSetRequest request,
-            ModuleRepository moduleRepo, TestSetRepository tsRepo) =>
+            IModuleRepository moduleRepo, ITestSetRepository tsRepo) =>
         {
             if (!moduleRepo.Exists(moduleId))
                 return Results.NotFound(new { error = $"Module '{moduleId}' not found" });
@@ -154,7 +154,7 @@ public static class ModuleEndpoints
 
         // GET /api/modules/{moduleId}/testsets/{tsId} — test set detail
         group.MapGet("/{moduleId}/testsets/{tsId}", async (string moduleId, string tsId,
-            TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+            ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
         {
             var testSet = await tsRepo.LoadAsync(moduleId, tsId);
             if (testSet is null)
@@ -165,7 +165,7 @@ public static class ModuleEndpoints
 
         // DELETE /api/modules/{moduleId}/testsets/{tsId} — delete test set and all runs
         group.MapDelete("/{moduleId}/testsets/{tsId}", async (string moduleId, string tsId,
-            TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+            ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
         {
             var testSet = await tsRepo.LoadAsync(moduleId, tsId);
             if (testSet is null)
@@ -178,7 +178,7 @@ public static class ModuleEndpoints
 
         // GET /api/modules/{moduleId}/testsets/{tsId}/runs — run history
         group.MapGet("/{moduleId}/testsets/{tsId}/runs", (string moduleId, string tsId,
-            ExecutionHistoryRepository historyRepo) =>
+            IExecutionHistoryRepository historyRepo) =>
         {
             var runs = historyRepo.ListRuns(tsId);
             var result = runs.Select(r => new
@@ -200,7 +200,7 @@ public static class ModuleEndpoints
         // GET /api/modules/{moduleId}/testsets/{tsId}/runs/{runId} — run detail
         group.MapGet("/{moduleId}/testsets/{tsId}/runs/{runId}", async (
             string moduleId, string tsId, string runId,
-            ExecutionHistoryRepository historyRepo) =>
+            IExecutionHistoryRepository historyRepo) =>
         {
             var run = await historyRepo.GetRunAsync(tsId, runId);
             if (run is null) return Results.NotFound(new { error = $"Run '{runId}' not found" });
@@ -210,7 +210,7 @@ public static class ModuleEndpoints
         // POST /api/modules/{moduleId}/testsets/{tsId}/move-objective — move an objective to another test set
         group.MapPost("/{moduleId}/testsets/{tsId}/move-objective", async (
             string moduleId, string tsId, MoveObjectiveRequest request,
-            TestSetRepository tsRepo, ModuleRepository moduleRepo) =>
+            ITestSetRepository tsRepo, IModuleRepository moduleRepo) =>
         {
             if (string.IsNullOrWhiteSpace(request.Objective))
                 return Results.BadRequest(new { error = "objective is required" });
@@ -253,7 +253,7 @@ public static class ModuleEndpoints
         // PUT /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId} — update a test objective's definition
         group.MapPut("/{moduleId}/testsets/{tsId}/objectives/{objectiveId}",
             async (string moduleId, string tsId, string objectiveId,
-                TestObjective updated, TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+                TestObjective updated, ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
         {
             var testSet = await tsRepo.LoadAsync(moduleId, tsId);
             if (testSet is null)
@@ -277,7 +277,7 @@ public static class ModuleEndpoints
         // DELETE /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId} — delete a test objective
         group.MapDelete("/{moduleId}/testsets/{tsId}/objectives/{objectiveId}",
             async (string moduleId, string tsId, string objectiveId,
-                TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+                ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
         {
             var testSet = await tsRepo.LoadAsync(moduleId, tsId);
             if (testSet is null)
@@ -298,7 +298,7 @@ public static class ModuleEndpoints
         group.MapDelete("/{moduleId}/testsets/{tsId}/objectives/{objectiveId}/deliveries/{deliveryIndex:int}/verifications/{verificationIndex:int}",
             async (string moduleId, string tsId, string objectiveId,
                 int deliveryIndex, int verificationIndex,
-                TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+                ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
         {
             var testSet = await tsRepo.LoadAsync(moduleId, tsId);
             if (testSet is null)
@@ -327,7 +327,7 @@ public static class ModuleEndpoints
             async (string moduleId, string tsId, string objectiveId,
                 int deliveryIndex, int verificationIndex,
                 AiTestCrew.Agents.AseXmlAgent.VerificationStep updated,
-                TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+                ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
         {
             var testSet = await tsRepo.LoadAsync(moduleId, tsId);
             if (testSet is null)
@@ -353,7 +353,7 @@ public static class ModuleEndpoints
         // PUT /api/modules/{moduleId}/testsets/{tsId}/setup-steps — save/update setup steps
         group.MapPut("/{moduleId}/testsets/{tsId}/setup-steps",
             async (string moduleId, string tsId, SetupStepsRequest request,
-                TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+                ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
         {
             var testSet = await tsRepo.LoadAsync(moduleId, tsId);
             if (testSet is null)
@@ -368,7 +368,7 @@ public static class ModuleEndpoints
         // DELETE /api/modules/{moduleId}/testsets/{tsId}/setup-steps — clear setup steps
         group.MapDelete("/{moduleId}/testsets/{tsId}/setup-steps",
             async (string moduleId, string tsId,
-                TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+                ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
         {
             var testSet = await tsRepo.LoadAsync(moduleId, tsId);
             if (testSet is null)
@@ -382,8 +382,8 @@ public static class ModuleEndpoints
 
         // POST /api/modules/{moduleId}/run — run all test sets in a module (parallel)
         group.MapPost("/{moduleId}/run", async (string moduleId,
-            ModuleRepository moduleRepo, TestSetRepository tsRepo,
-            RunTracker runTracker, ModuleRunTracker moduleRunTracker,
+            IModuleRepository moduleRepo, ITestSetRepository tsRepo,
+            IRunTracker runTracker, IModuleRunTracker moduleRunTracker,
             TestOrchestrator orchestrator, TestEnvironmentConfig config,
             ILogger<TestOrchestrator> logger) =>
         {
@@ -400,8 +400,8 @@ public static class ModuleEndpoints
             if (runnableTestSets.Count == 0)
                 return Results.BadRequest(new { error = "Module has no test sets with objectives to run" });
 
-            if (runTracker.HasActiveRun() || moduleRunTracker.HasActiveModuleRun())
-                return Results.Conflict(new { error = "A test run is already in progress" });
+            if (moduleRunTracker.HasActiveModuleRunForModule(moduleId))
+                return Results.Conflict(new { error = $"Module '{moduleId}' already has an active run" });
 
             var moduleRunId = Guid.NewGuid().ToString("N")[..12];
             var tsProgress = runnableTestSets.Select(ts => new TestSetRunProgress
@@ -466,7 +466,7 @@ public static class ModuleEndpoints
         });
 
         // GET /api/modules/{moduleId}/run/status — poll module run progress
-        group.MapGet("/{moduleId}/run/status", (string moduleId, ModuleRunTracker moduleRunTracker) =>
+        group.MapGet("/{moduleId}/run/status", (string moduleId, IModuleRunTracker moduleRunTracker) =>
         {
             var status = moduleRunTracker.GetByModuleId(moduleId);
             if (status is null)
@@ -477,7 +477,7 @@ public static class ModuleEndpoints
         // POST /api/modules/{moduleId}/testsets/{tsId}/ai-patch — preview LLM-applied changes
         group.MapPost("/{moduleId}/testsets/{tsId}/ai-patch",
             async (string moduleId, string tsId, AiPatchRequest request,
-                TestSetRepository tsRepo, Kernel kernel, ILogger<TestOrchestrator> logger) =>
+                ITestSetRepository tsRepo, Kernel kernel, ILogger<TestOrchestrator> logger) =>
         {
             if (string.IsNullOrWhiteSpace(request.Instruction))
                 return Results.BadRequest(new { error = "instruction is required" });
@@ -557,7 +557,7 @@ public static class ModuleEndpoints
         // POST /api/modules/{moduleId}/testsets/{tsId}/ai-patch/apply — apply previewed patches
         group.MapPost("/{moduleId}/testsets/{tsId}/ai-patch/apply",
             async (string moduleId, string tsId, AiPatchApplyRequest request,
-                TestSetRepository tsRepo, ExecutionHistoryRepository historyRepo) =>
+                ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
         {
             if (request.Patches is null || request.Patches.Count == 0)
                 return Results.BadRequest(new { error = "patches array is required" });
@@ -581,10 +581,62 @@ public static class ModuleEndpoints
             return Results.Ok(TestSetResponse(testSet, historyRepo));
         });
 
+        // ── Runner API client endpoints (for distributed recording / remote execution) ──
+
+        // PUT /api/modules/{moduleId}/testsets/{tsId}/data — save full test set (used by Runner API client)
+        group.MapPut("/{moduleId}/testsets/{tsId}/data",
+            async (string moduleId, string tsId, PersistedTestSet testSet,
+                ITestSetRepository tsRepo) =>
+        {
+            testSet.Id = tsId;
+            testSet.ModuleId = moduleId;
+            await tsRepo.SaveAsync(testSet, moduleId);
+            return Results.Ok(new { saved = true });
+        });
+
+        // POST /api/modules/{moduleId}/testsets/{tsId}/merge — merge objectives (used by orchestrator via Runner)
+        group.MapPost("/{moduleId}/testsets/{tsId}/merge",
+            async (string moduleId, string tsId, MergeObjectivesRequest request,
+                ITestSetRepository tsRepo) =>
+        {
+            await tsRepo.MergeObjectivesAsync(moduleId, tsId,
+                request.Objectives, request.Objective,
+                request.ObjectiveName, request.ApiStackKey, request.ApiModule,
+                request.EndpointCode);
+            return Results.Ok(new { merged = true });
+        });
+
+        // POST /api/modules/{moduleId}/testsets/{tsId}/run-stats — increment run stats
+        group.MapPost("/{moduleId}/testsets/{tsId}/run-stats",
+            async (string moduleId, string tsId, ITestSetRepository tsRepo) =>
+        {
+            await tsRepo.UpdateRunStatsAsync(moduleId, tsId);
+            return Results.Ok(new { updated = true });
+        });
+
+        // GET /api/modules/{moduleId}/testsets/{tsId}/delivery-context/{objectiveId}
+        group.MapGet("/{moduleId}/testsets/{tsId}/delivery-context/{objectiveId}",
+            async (string moduleId, string tsId, string objectiveId,
+                IExecutionHistoryRepository historyRepo) =>
+        {
+            var ctx = await historyRepo.GetLatestDeliveryContextAsync(tsId, moduleId, objectiveId);
+            return ctx is not null ? Results.Ok(ctx) : Results.NotFound();
+        });
+
+        // GET /api/modules/{moduleId}/testsets/{tsId}/objective-statuses — latest status per objective
+        group.MapGet("/{moduleId}/testsets/{tsId}/objective-statuses",
+            (string moduleId, string tsId, IExecutionHistoryRepository historyRepo) =>
+        {
+            var statuses = historyRepo.GetLatestObjectiveStatuses(tsId);
+            return Results.Ok(statuses.ToDictionary(
+                kvp => kvp.Key,
+                kvp => new { kvp.Value.Result.Status, kvp.Value.Result.CompletedAt, kvp.Value.RunId }));
+        });
+
         return group;
     }
 
-    private static object TestSetResponse(PersistedTestSet testSet, ExecutionHistoryRepository historyRepo)
+    private static object TestSetResponse(PersistedTestSet testSet, IExecutionHistoryRepository historyRepo)
     {
         var objStatuses = historyRepo.GetLatestObjectiveStatuses(testSet.Id);
         var currentIds = testSet.TestObjectives.Select(o => o.Id).ToHashSet();
@@ -631,6 +683,10 @@ public record CreateModuleRequest(string Name, string? Description);
 public record UpdateModuleRequest(string? Name, string? Description);
 public record CreateTestSetRequest(string Name);
 public record MoveObjectiveRequest(string Objective, string DestinationModuleId, string DestinationTestSetId);
+public record MergeObjectivesRequest(
+    List<TestObjective> Objectives, string Objective,
+    string? ObjectiveName = null, string? ApiStackKey = null, string? ApiModule = null,
+    string? EndpointCode = null);
 
 // ── Test objective editing records ──
 public record AiPatchRequest(string Instruction, AiPatchScope? Scope);

@@ -14,7 +14,7 @@ AITestCrew is an AI-powered test automation framework that uses LLMs (Claude via
 4. **Executes the tests** — Each agent runs its steps against the real target: HTTP requests for APIs, Playwright browser automation for web UIs, FlaUI automation for desktop apps, or template rendering + SFTP/FTP upload for aseXML deliveries.
 5. **Validates results** — APIs use a hybrid rule-based + LLM validation pipeline. Web and desktop UI agents execute Playwright/FlaUI assertions (text, visibility, URL). aseXML delivery agents optionally run post-delivery UI verifications — recorded UI steps that check the downstream processing in Bravo with `{{Token}}` substitution from each delivery's context (NMI, MessageID, TransactionID, etc.).
 6. **Reports results** — A summary table and an LLM-written narrative are printed to the console and shown in the React web dashboard. Per-step pass/fail detail, screenshots on failure, and execution history with run-over-run comparison are available.
-7. **Saves and reuses test sets** — Generated and recorded test cases are persisted to disk (organised into modules and test sets) so they can be re-executed repeatedly without calling the LLM again. Verify-only mode allows re-running just the UI verification steps of a delivery test case without re-delivering.
+7. **Saves and reuses test sets** — Generated and recorded test cases are persisted to disk (JSON files) or a SQLite database, organised into modules and test sets, so they can be re-executed repeatedly without calling the LLM again. Verify-only mode allows re-running just the UI verification steps of a delivery test case without re-delivering.
 
 ---
 
@@ -90,6 +90,8 @@ dotnet run --project src/AiTestCrew.Runner -- --create-testset sdr "Controlled L
 3. Click into a module, then **+ Test Set** to create a test set.
 4. Click **Run Objective** to generate tests and add them to a test set.
 
+> **Note:** When running in SQLite mode, the web UI requires authentication. Enter your API key on the login page to access the dashboard.
+
 ### Editing Test Cases
 
 Test cases can be reviewed and modified after generation via two methods:
@@ -101,6 +103,93 @@ Test cases can be reviewed and modified after generation via two methods:
 **API endpoint:** `PUT /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId}` (full objective body in request).
 
 **AI edit (natural language patch)** — Click the **AI Edit Test Cases** button above the test case table. Describe the change in plain English (e.g., *"remove the /api/v1 prefix from all endpoints"* or *"change expectedStatus to 200 for the happy path test"*). The system uses the LLM to generate a preview of changes, which you can review field-by-field before applying. Scope can be set to all objectives or a specific objective.
+
+---
+
+## Multi-User Deployment
+
+AITestCrew supports single-user file-based usage out of the box and scales to multi-user team deployments with SQLite storage, API key authentication, and distributed recording.
+
+### Storage backends
+
+| Backend | Config | Description |
+|---|---|---|
+| **File** (default) | `StorageProvider: "File"` | JSON files in `modules/`, `testsets/`, `executions/` relative to `AppContext.BaseDirectory` |
+| **SQLite** | `StorageProvider: "Sqlite"` | Single database file. Set `SqliteConnectionString` (e.g. `"Data Source=C:/data/aitestcrew.db"`) |
+
+Migrate existing JSON data to SQLite:
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --migrate-to-sqlite
+```
+This reads all JSON files from the current data directory and inserts them into the configured SQLite database. Requires `SqliteConnectionString` to be set.
+
+### Configuration
+
+Key settings in `appsettings.json → TestEnvironment`:
+
+| Setting | Description | Default |
+|---|---|---|
+| `StorageProvider` | `"File"` or `"Sqlite"` | `"File"` |
+| `SqliteConnectionString` | SQLite database path | `null` |
+| `ListenUrl` | WebApi bind URL. Supports multiple URLs separated by semicolons | `""` (= `http://localhost:5050`) |
+| `CorsOrigins` | String array of allowed origins. `["*"]` = any origin | `[]` (= Vite dev defaults) |
+| `ServerUrl` | (Runner only) WebApi URL for remote mode | `null` |
+| `ApiKey` | (Runner only) API key for remote auth | `null` |
+
+**Environment variable overrides** — prefix with `AITESTCREW_`, use double underscores for nesting:
+```
+AITESTCREW_TestEnvironment__StorageProvider=Sqlite
+AITESTCREW_TestEnvironment__SqliteConnectionString=Data Source=C:/data/aitestcrew.db
+```
+
+### User management
+
+Users are identified by API keys (format: `atc_` + 48-char random hex). Auth is active only in SQLite mode (when `IUserRepository` is registered).
+
+**Bootstrap** — the first user is created without authentication:
+```bash
+curl -X POST http://server:5050/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"name": "YourName"}'
+```
+The response includes the generated API key. Store it securely — it cannot be retrieved later.
+
+**Subsequent users** require an existing user's API key in the `X-Api-Key` header:
+```bash
+curl -X POST http://server:5050/api/users \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: atc_<existing-key>" \
+  -d '{"name": "AnotherUser"}'
+```
+
+The web UI shows a login page when auth is active. After entering a valid API key, the user's name and a logout button appear in the header.
+
+### Distributed recording
+
+When `ServerUrl` is configured in the Runner's `appsettings.json`, all recording commands sync to the remote server automatically.
+
+- Each QA engineer runs the Runner CLI locally for recording (browser/desktop access is needed on the local machine).
+- Recorded test cases appear in the shared web dashboard immediately after save.
+- Test execution can happen centrally from the server via the WebApi `/api/runs` endpoint or from any Runner pointed at the same `ServerUrl`.
+
+### Concurrent runs
+
+- Multiple users can run different test sets simultaneously.
+- The same test set cannot be run concurrently — the API returns `409 Conflict`.
+- Module-level "Run All" runs are locked per module — only one module-level run at a time.
+
+### Deployment options
+
+**1. Docker Compose (Windows containers)**
+```bash
+docker compose up -d --build
+```
+
+**2. Self-contained publish**
+```powershell
+.\publish.ps1 -OutputDir C:\deploy
+```
+Run `AiTestCrew.WebApi.exe` directly or install as a Windows Service. The published output includes all dependencies — no .NET SDK required on the target machine.
 
 ---
 
@@ -1161,6 +1250,7 @@ Every flag the Runner CLI accepts, one row per flag. Scope column shows which ru
 | `--list` | List | (none) | List legacy-flat test sets. |
 | `--list-endpoints` | List | (none) | Query Bravo DB and print all `EndPointCode`s. Requires `AseXml.BravoDb.ConnectionString`. |
 | `--list-modules` | List | (none) | List all modules and their test-set counts. |
+| `--migrate-to-sqlite` | Migration | (none) | Reads all JSON files from the current data directory and inserts them into SQLite. Requires `SqliteConnectionString` to be configured. |
 | `--module <moduleId>` | Every run | slug | Module scope. Required for module-scoped runs and nearly all recording. |
 | `--obj-name "<name>"` | Normal, Rebaseline | string | Short display name for the objective (otherwise the full objective text is used). |
 | `--objective <idOrName>` | Reuse, Record-verification | slug OR display name | Reuse mode: scope run to a single test case. Record-verification: target delivery objective. Case-insensitive; matches `TestObjective.Id` first, falls back to `TestObjective.Name`. |

@@ -8,7 +8,7 @@ namespace AiTestCrew.Agents.Persistence;
 /// Supports both legacy flat layout (testsets/{id}.json) and
 /// module-scoped layout (modules/{moduleId}/{testSetId}.json).
 /// </summary>
-public class TestSetRepository
+public class TestSetRepository : ITestSetRepository
 {
     private readonly string _legacyDir;
     private readonly string _modulesDir;

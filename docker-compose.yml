@@ -1,0 +1,26 @@
+# AITestCrew — Docker Compose (Windows containers)
+#
+# Usage:
+#   1. Switch Docker Desktop to Windows containers
+#   2. Copy .env.example to .env and fill in secrets
+#   3. docker compose up -d --build
+#   4. Open http://localhost:5050 in your browser
+
+services:
+  webapi:
+    build: .
+    ports:
+      - "5050:5050"
+    volumes:
+      # Persist SQLite database outside the container
+      - aitestcrew-data:C:/data
+    env_file:
+      - .env
+    environment:
+      - AITESTCREW_TestEnvironment__ListenUrl=http://+:5050
+      - AITESTCREW_TestEnvironment__StorageProvider=Sqlite
+      - AITESTCREW_TestEnvironment__SqliteConnectionString=Data Source=C:/data/aitestcrew.db
+    restart: unless-stopped
+
+volumes:
+  aitestcrew-data:

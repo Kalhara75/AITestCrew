@@ -183,7 +183,7 @@ public class AseXmlDeliveryAgent : BaseTestAgent
     {
         var deliveries = new List<Dictionary<string, object?>>();
 
-        var historyRepo = _services.GetRequiredService<ExecutionHistoryRepository>();
+        var historyRepo = _services.GetRequiredService<IExecutionHistoryRepository>();
         var testSetId = task.Parameters.TryGetValue("TestSetId", out var tsId) ? tsId as string : null;
         var moduleId = task.Parameters.TryGetValue("ModuleId", out var mId) ? mId as string : null;
         int? waitOverride = task.Parameters.TryGetValue("VerificationWaitOverride", out var wo) && wo is int w ? w : (int?)null;

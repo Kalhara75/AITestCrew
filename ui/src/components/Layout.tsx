@@ -1,8 +1,10 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
 
 export function Layout() {
   const location = useLocation();
   const isHome = location.pathname === '/';
+  const { user, authRequired, logout } = useAuth();
 
   return (
     <div style={{ minHeight: '100vh', background: '#f8fafc' }}>
@@ -43,6 +45,25 @@ export function Layout() {
         <nav style={{ display: 'flex', gap: 8 }}>
           <NavLink to="/" label="Modules" active={isHome} />
         </nav>
+        {authRequired && user && (
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12, fontSize: 13 }}>
+            <span style={{ color: '#94a3b8' }}>{user.name}</span>
+            <button
+              onClick={logout}
+              style={{
+                background: 'rgba(255,255,255,0.1)',
+                border: '1px solid rgba(255,255,255,0.2)',
+                color: '#94a3b8',
+                padding: '4px 12px',
+                borderRadius: 4,
+                cursor: 'pointer',
+                fontSize: 12,
+              }}
+            >
+              Logout
+            </button>
+          </div>
+        )}
       </header>
       <main style={{ maxWidth: 1200, margin: '0 auto', padding: '28px 24px' }}>
         <Outlet />

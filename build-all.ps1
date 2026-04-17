@@ -22,4 +22,17 @@ try {
     Pop-Location
 }
 
+# Copy the built React app into the WebApi's wwwroot so the API serves the SPA.
+$uiDist   = "$root/ui/dist"
+$wwwroot  = "$root/src/AiTestCrew.WebApi/wwwroot"
+
+if (Test-Path $uiDist) {
+    Write-Host "`n=== Copying UI build to WebApi wwwroot ===" -ForegroundColor Cyan
+    if (Test-Path $wwwroot) { Remove-Item -Recurse -Force $wwwroot }
+    Copy-Item -Recurse $uiDist $wwwroot
+    Write-Host "Copied $(Get-ChildItem -Recurse $wwwroot -File | Measure-Object | Select-Object -Expand Count) files to wwwroot"
+} else {
+    Write-Host "WARNING: ui/dist not found — skipping wwwroot copy" -ForegroundColor Yellow
+}
+
 Write-Host "`nAll builds succeeded." -ForegroundColor Green

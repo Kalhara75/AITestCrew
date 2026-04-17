@@ -19,6 +19,12 @@ public class PersistedExecutionRun
     public TimeSpan TotalDuration { get; set; }
     public string Summary { get; set; } = "";
 
+    /// <summary>User ID who started this run. Null for runs started before user tracking.</summary>
+    public string? StartedBy { get; set; }
+
+    /// <summary>Display name of the user who started this run.</summary>
+    public string? StartedByName { get; set; }
+
     /// <summary>
     /// Schema version for migration detection.
     /// Version 1 (or absent): legacy format with TaskResults.

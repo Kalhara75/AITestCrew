@@ -27,9 +27,9 @@ public class TestOrchestrator
     private readonly List<ITestAgent> _agents;
     private readonly Kernel _kernel;
     private readonly TestEnvironmentConfig _config;
-    private readonly TestSetRepository _testSetRepo;
-    private readonly ExecutionHistoryRepository _historyRepo;
-    private readonly ModuleRepository _moduleRepo;
+    private readonly ITestSetRepository _testSetRepo;
+    private readonly IExecutionHistoryRepository _historyRepo;
+    private readonly IModuleRepository _moduleRepo;
     private readonly AgentConcurrencyLimiter _concurrencyLimiter;
     private readonly ILogger<TestOrchestrator> _logger;
 
@@ -37,9 +37,9 @@ public class TestOrchestrator
         IEnumerable<ITestAgent> agents,
         Kernel kernel,
         TestEnvironmentConfig config,
-        TestSetRepository testSetRepo,
-        ExecutionHistoryRepository historyRepo,
-        ModuleRepository moduleRepo,
+        ITestSetRepository testSetRepo,
+        IExecutionHistoryRepository historyRepo,
+        IModuleRepository moduleRepo,
         AgentConcurrencyLimiter concurrencyLimiter,
         ILogger<TestOrchestrator> logger)
     {
@@ -411,14 +411,13 @@ public class TestOrchestrator
                 ? targetTestSetId!
                 : (mode is RunMode.Reuse or RunMode.VerifyOnly) && reuseId is not null
                     ? reuseId
-                    : TestSetRepository.SlugFromObjective(objective);
+                    : SlugHelper.ToSlug(objective);
             var executionRun = PersistedExecutionRun.FromSuiteResult(
                 suiteResult, testSetId, mode, startedAt, isModuleScoped ? moduleId : null);
             if (externalRunId is not null)
                 executionRun.RunId = externalRunId;
             await _historyRepo.SaveAsync(executionRun);
-            _logger.LogInformation("Execution history saved: {RunId} → {Dir}",
-                executionRun.RunId, _historyRepo.Directory);
+            _logger.LogInformation("Execution history saved: {RunId}", executionRun.RunId);
         }
         catch (Exception ex)
         {
@@ -446,7 +445,7 @@ public class TestOrchestrator
             return;
         }
 
-        var slug = TestSetRepository.SlugFromObjective(objective);
+        var slug = SlugHelper.ToSlug(objective);
         var testSet = new PersistedTestSet
         {
             Id = slug,
@@ -467,7 +466,7 @@ public class TestOrchestrator
             testSet.ObjectiveNames[objective] = objectiveName;
 
         await _testSetRepo.SaveAsync(testSet);
-        _logger.LogInformation("Test set saved: {Id} ({Dir})", slug, _testSetRepo.Directory);
+        _logger.LogInformation("Test set saved: {Id}", slug);
     }
 
     /// <summary>Save/merge test set into a module directory.</summary>
