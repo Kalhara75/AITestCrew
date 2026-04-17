@@ -424,6 +424,12 @@ Runner/
 
 REST API backend for the React UI. Mirrors Runner's DI wiring but exposes HTTP endpoints instead of a CLI. In production, co-hosts the React SPA from `wwwroot/` via `UseDefaultFiles()` + `UseStaticFiles()` + `MapFallbackToFile("index.html")`.
 
+**Configuration source chain** (lowest to highest precedence):
+1. Built-in `appsettings.json` (shipped with the app, minimal)
+2. Runner's `appsettings.json` (for dev — `dotnet run --project src/AiTestCrew.WebApi` picks up the Runner's fuller config)
+3. `C:/config/appsettings.json` or `$AITESTCREW_CONFIG_PATH` (for Docker — volume-mounted, lets you edit config without rebuilding the image)
+4. Environment variables prefixed `AITESTCREW_` (e.g. `AITESTCREW_TestEnvironment__LlmApiKey`, `AITESTCREW_TestEnvironment__AseXml__BravoDb__ConnectionString`)
+
 ```
 WebApi/
   Program.cs                       — DI wiring, CORS, minimal API endpoints, migration, screenshot static files,

@@ -198,22 +198,77 @@ sc.exe start AITestCrew
 **Steps:**
 
 ```powershell
-# 1. Copy the environment template and configure secrets
+# 1. Pre-build the React UI on the host.
+#    (The Dockerfile skips the UI build because Windows Server Core containers
+#    can't load Vite's native rolldown bindings.)
+cd ui
+npm ci
+npx vite build
+cd ..
+
+# 2. Copy the environment template and configure secrets
 cp .env.example .env
 # Edit .env — set at minimum:
 #   AITESTCREW_TestEnvironment__LlmApiKey=sk-ant-...
 
-# 2. Build and start (first build ~5-10 minutes for Windows base images)
+# 3. Create the runtime config directory (mounted into the container).
+#    This holds the full appsettings.json — env vars alone can't express nested
+#    config like ApiStacks. Copy your Runner's appsettings.json as a starting point:
+mkdir docker-config
+cp src/AiTestCrew.Runner/appsettings.json docker-config/appsettings.json
+# Review docker-config/appsettings.json — set ApiStacks, auth credentials,
+# agent URLs (LegacyWebUiUrl, BraveCloudUiUrl, etc.)
+
+# 4. Create the auth state directory (for Playwright SSO sessions)
+mkdir docker-auth-state
+# Populate it from your local Runner (after running --auth-setup):
+.\refresh-auth-state.ps1
+
+# 5. Build and start (first build ~5-10 minutes for Windows base images)
 docker compose up -d --build
 
-# 3. Verify
+# 6. Verify
 docker compose logs -f
 # Should see: "Now listening on: http://[::]:5050"
 
-# 4. Open http://localhost:5050
+# 7. Open http://localhost:5050
 ```
 
-**Data persistence:** The SQLite database is stored in a Docker volume (`aitestcrew-data`) mapped to `C:/data/` inside the container. Data survives container restarts and rebuilds.
+**Data persistence:** Three directories are mounted into the container:
+
+| Host path | Container path | Purpose | Gitignored |
+|---|---|---|---|
+| `aitestcrew-data` (Docker volume) | `C:/data/` | SQLite database | — (Docker-managed) |
+| `./docker-config/` | `C:/config/` | `appsettings.json` — full config with ApiStacks, secrets | Yes |
+| `./docker-auth-state/` | `C:/auth-state/` | Playwright SSO storage state JSON files | Yes |
+
+The SQLite database survives container restarts and rebuilds. Config and auth state can be edited on the host and the container picks up changes without rebuild (config is read at startup, auth state is read per-test-run).
+
+**Refreshing auth state:** Playwright's SSO sessions expire after `StorageStateMaxAgeHours` (default 8h). To refresh:
+
+```powershell
+# 1. Re-run --auth-setup locally to capture a fresh session
+dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_Blazor
+dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_MVC
+
+# 2. Sync the captured state into the Docker volume mount
+.\refresh-auth-state.ps1
+# No container restart needed
+```
+
+**Copying an existing SQLite DB into the container:**
+
+```powershell
+docker compose stop
+
+# Clean volume and copy DB in one shot (Windows containers can't mount single files)
+docker run --rm -v aitestcrew_aitestcrew-data:C:/data `
+                -v ${PWD}/data:C:/src `
+                mcr.microsoft.com/windows/servercore:ltsc2022 `
+                powershell -Command "Remove-Item C:/data/aitestcrew.db* -EA SilentlyContinue; Copy-Item C:/src/aitestcrew.db C:/data/aitestcrew.db"
+
+docker compose start
+```
 
 **Updating:**
 ```powershell
@@ -546,3 +601,8 @@ Rebuild the Runner package and redistribute the zip/folder. The Runner is statel
 | Auth state expired | Re-run `--auth-setup --target <UI_Web_Blazor|UI_Web_MVC>`. Default expiry is 8 hours. |
 | Concurrent run conflict | Same test set is already running. Wait for it to finish or use a different test set. Different test sets can run in parallel. |
 | Port 5050 already in use | Change `ListenUrl` in appsettings.json or set `AITESTCREW_TestEnvironment__ListenUrl=http://+:8080` |
+| `ApiStacks must be configured` (in Docker) | The container's `appsettings.json` is minimal. Create `docker-config/appsettings.json` (copy from `src/AiTestCrew.Runner/`) and rebuild/restart. The compose file mounts this into `C:/config/`. |
+| Docker build: `Cannot find module '@rolldown/binding-win32-x64-msvc'` | Vite's native bindings don't load in Server Core. Build the UI on the host first: `cd ui && npx vite build`. The Dockerfile copies `ui/dist/` in. |
+| Web UI test in Docker: `Target page, context or browser has been closed` | Server Core lacks Media Foundation (Chromium dependency). Cannot be fixed reliably — run web UI tests from the local Runner CLI instead. See "Test Execution Model" above. |
+| `Missing X-Api-Key header` when creating first user | Bootstrap mode allows POST `/api/users` without auth only when zero users exist. If you already have users, get an existing admin's API key and send it as `X-Api-Key`. |
+| Copied DB shows as empty after container restart | A stale WAL file was applied on top. Use the helper container sequence in "Copying an existing SQLite DB into the container" above — it removes the `.db-wal` / `.db-shm` files before copying. |
