@@ -24,6 +24,11 @@ var builder = WebApplication.CreateBuilder(args);
 var runnerDir = Path.Combine(builder.Environment.ContentRootPath, "..", "AiTestCrew.Runner");
 builder.Configuration.AddJsonFile(Path.Combine(runnerDir, "appsettings.json"), optional: true, reloadOnChange: false);
 
+// External config directory (e.g. Docker volume-mounted /config)
+// Allows overriding config without rebuilding the image.
+var externalConfig = Environment.GetEnvironmentVariable("AITESTCREW_CONFIG_PATH") ?? "C:/config/appsettings.json";
+builder.Configuration.AddJsonFile(externalConfig, optional: true, reloadOnChange: false);
+
 // Environment variable overrides (e.g. AITESTCREW_TestEnvironment__LlmApiKey)
 builder.Configuration.AddEnvironmentVariables("AITESTCREW_");
 

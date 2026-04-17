@@ -21,7 +21,8 @@
       "Bash(./AiTestCrew.Runner.exe --record-verification --module nonexistent --testset nonexistent --objective foo --target UI_Web_Blazor --verification-name \"smoke\")",
       "Bash(timeout 15 ./AiTestCrew.Runner.exe --reuse bogus --module bogus --objective bogus-obj)",
       "Bash(ls -t C:/MyCode/github/AITestCrew/src/AiTestCrew.Runner/bin/Debug/net8.0-windows/logs/testrun_*.log)",
-      "Bash(cmd //c \"taskkill /F /IM AiTestCrew.Runner.exe\")"
+      "Bash(cmd //c \"taskkill /F /IM AiTestCrew.Runner.exe\")",
+      "Bash(docker exec aitestcrew-webapi-1 *)"
     ]
   }
 }

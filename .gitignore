@@ -31,6 +31,15 @@ publish/
 *.db-wal
 data/
 
+# Docker config (contains secrets — same structure as appsettings.json)
+docker-config/
+
+# Docker auth state (Playwright SSO sessions — refreshed via refresh-auth-state.ps1)
+docker-auth-state/
+
+# Media Foundation DLLs copied from the host for the Windows container build
+docker-mf-dlls/
+
 # Logs & runtime data
 logs/
 screenshots/

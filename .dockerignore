@@ -1,7 +1,7 @@
 **/bin/
 **/obj/
 **/node_modules/
-**/dist/
+# Note: ui/dist/ is INCLUDED — the Dockerfile expects the UI to be pre-built on the host
 **/.git/
 **/.vs/
 **/.vscode/

@@ -42,13 +42,15 @@ Not all test types can execute on the server. Understanding this is critical for
 
 ### Execution matrix
 
-| Test Type | Triggered from Dashboard | Triggered from Runner CLI | Requirements |
+| Test Type | Triggered from Dashboard (Docker / Server Core) | Triggered from Runner CLI | Requirements |
 |---|---|---|---|
 | **API** (REST/GraphQL) | Server executes | Local executes | HTTP access to the target API only |
 | **aseXML** (generate/deliver) | Server executes | Local executes | Network access to Bravo SFTP/FTP endpoints |
-| **Web UI — Playwright** (Blazor/MVC) | Server executes (headless) | Local executes (visible browser) | Chromium binary installed. Headless works on servers. |
+| **Web UI — Playwright** (Blazor/MVC) | **Cannot execute on Server Core containers** — see note below | Local executes (visible or headless) | Chromium + full Windows (Media Foundation) |
 | **Desktop UI — FlaUI** (WinForms) | **Cannot execute on server** | **Must execute locally** | Interactive Windows desktop + target app installed |
 | **Post-delivery UI verifications** | Depends on target (see above) | Depends on target | Same as the verification's target type |
+
+> **Web UI tests + Windows Server Core containers:** Chromium requires the Windows Media Foundation subsystem (`mf.dll`) which Windows Server Core omits. Enabling it via `DISM` fails inside containers (no package source), and copying the DLLs manually fails signature verification. For a server deployment using Windows Server Core (the default for `.NET 8` Windows containers), web UI tests must be run from a local Runner CLI on a machine with full Windows. If you need web UI tests to run centrally, host the WebApi on a full Windows Server VM (not Server Core) using `publish.ps1` + install as a Windows Service, not Docker.
 
 ### Why desktop tests can't run on the server
 
