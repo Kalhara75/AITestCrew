@@ -34,6 +34,13 @@ public class PersistedTestSet
     /// </summary>
     public string? EndpointCode { get; set; }
 
+    /// <summary>
+    /// Customer environment this test set runs against by default
+    /// (e.g. "sumo-retail", "ams-metering"). CLI --environment overrides this.
+    /// Null = use TestEnvironmentConfig.DefaultEnvironment.
+    /// </summary>
+    public string? EnvironmentKey { get; set; }
+
     /// <summary>All user objectives that have contributed test objectives to this test set.</summary>
     public List<string> Objectives { get; set; } = [];
 

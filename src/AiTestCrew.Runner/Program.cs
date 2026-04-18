@@ -248,6 +248,8 @@ if (cli.RecordMode)
         .Build()
         .GetSection("TestEnvironment")
         .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
+    var recordEnvResolver = new AiTestCrew.Agents.Environment.EnvironmentResolver(recordConfig);
+    var recordEnvKey = recordEnvResolver.ResolveKey(cli.EnvironmentKey);
 
     var targetType = cli.RecordTarget ?? "UI_Web_MVC";
     var isDesktop = targetType.Equals("UI_Desktop_WinForms", StringComparison.OrdinalIgnoreCase);
@@ -276,17 +278,20 @@ if (cli.RecordMode)
     if (isDesktop)
     {
         // ── Desktop recording path ──
-        if (string.IsNullOrWhiteSpace(recordConfig.WinFormsAppPath))
+        var desktopAppPath = recordEnvResolver.ResolveWinFormsAppPath(recordEnvKey);
+        var desktopAppArgs = recordEnvResolver.ResolveWinFormsAppArgs(recordEnvKey);
+        if (string.IsNullOrWhiteSpace(desktopAppPath))
         {
-            AnsiConsole.MarkupLine("[red]Application path not configured. Set 'WinFormsAppPath' in appsettings.json.[/]");
+            AnsiConsole.MarkupLine($"[red]Application path not configured for environment '{recordEnvKey}' (or at the top level). Set 'WinFormsAppPath' in appsettings.json.[/]");
             return;
         }
 
         AnsiConsole.MarkupLine($"[cyan]Recording[/] → {cli.ModuleId}/{cli.TestSetId}  case: [bold]{cli.CaseName}[/]");
-        AnsiConsole.MarkupLine($"[grey]Target: {targetType}  App: {recordConfig.WinFormsAppPath}[/]\n");
+        AnsiConsole.MarkupLine($"[grey]Environment: {recordEnvResolver.ResolveDisplayName(recordEnvKey)} ({recordEnvKey})[/]");
+        AnsiConsole.MarkupLine($"[grey]Target: {targetType}  App: {desktopAppPath}[/]\n");
 
         var desktopRecorded = await DesktopRecorder.RecordAsync(
-            recordConfig.WinFormsAppPath, recordConfig.WinFormsAppArgs,
+            desktopAppPath, desktopAppArgs,
             cli.CaseName, recordConfig, recLogger);
 
         if (desktopRecorded.Steps.Count == 0)
@@ -351,23 +356,24 @@ if (cli.RecordMode)
 
     // ── Web recording path (existing) ──
     var baseUrl = targetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
-        ? recordConfig.BraveCloudUiUrl
-        : recordConfig.LegacyWebUiUrl;
+        ? recordEnvResolver.ResolveBraveCloudUiUrl(recordEnvKey)
+        : recordEnvResolver.ResolveLegacyWebUiUrl(recordEnvKey);
 
     if (string.IsNullOrWhiteSpace(baseUrl))
     {
         var key = targetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
             ? "BraveCloudUiUrl" : "LegacyWebUiUrl";
-        AnsiConsole.MarkupLine($"[red]Base URL not configured. Set '{key}' in appsettings.json.[/]");
+        AnsiConsole.MarkupLine($"[red]Base URL not configured for environment '{recordEnvKey}'. Set '{key}' in the env block (or at the top level).[/]");
         return;
     }
 
     AnsiConsole.MarkupLine($"[cyan]Recording[/] → {cli.ModuleId}/{cli.TestSetId}  case: [bold]{cli.CaseName}[/]");
+    AnsiConsole.MarkupLine($"[grey]Environment: {recordEnvResolver.ResolveDisplayName(recordEnvKey)} ({recordEnvKey})[/]");
     AnsiConsole.MarkupLine($"[grey]Target: {targetType}  Base URL: {baseUrl}[/]\n");
 
     // For Blazor targets, pass the saved auth state so the recorder starts authenticated
     var recordStorageState = targetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
-        ? recordConfig.BraveCloudUiStorageStatePath : null;
+        ? recordEnvResolver.ResolveBraveCloudUiStorageStatePath(recordEnvKey) : null;
     if (!string.IsNullOrEmpty(recordStorageState) && !Path.IsPathRooted(recordStorageState))
         recordStorageState = Path.Combine(AppContext.BaseDirectory, recordStorageState);
     var recorded = await PlaywrightRecorder.RecordAsync(baseUrl, cli.CaseName, recordConfig, recLogger, recordStorageState, targetType);
@@ -460,16 +466,8 @@ if (cli.RecordVerification)
         .Build()
         .GetSection("TestEnvironment")
         .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
-
-    // Resolve storage-state paths (same logic as main DI path) so the recorder
-    // starts authenticated against either Blazor (Azure SSO) or Legacy MVC
-    // (forms auth) — captured verifications then skip the login flow.
-    if (!string.IsNullOrEmpty(verifyConfig.BraveCloudUiStorageStatePath)
-        && !Path.IsPathRooted(verifyConfig.BraveCloudUiStorageStatePath))
-        verifyConfig.BraveCloudUiStorageStatePath = Path.Combine(AppContext.BaseDirectory, verifyConfig.BraveCloudUiStorageStatePath);
-    if (!string.IsNullOrEmpty(verifyConfig.LegacyWebUiStorageStatePath)
-        && !Path.IsPathRooted(verifyConfig.LegacyWebUiStorageStatePath))
-        verifyConfig.LegacyWebUiStorageStatePath = Path.Combine(AppContext.BaseDirectory, verifyConfig.LegacyWebUiStorageStatePath);
+    var verifyEnvResolver = new AiTestCrew.Agents.Environment.EnvironmentResolver(verifyConfig);
+    var verifyEnvKey = verifyEnvResolver.ResolveKey(cli.EnvironmentKey);
 
     using var verifyLoggerFactory = LoggerFactory.Create(b =>
         b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss "; })
@@ -553,13 +551,15 @@ if (cli.RecordVerification)
 
     if (verifyTarget == "UI_Desktop_WinForms")
     {
-        if (string.IsNullOrWhiteSpace(verifyConfig.WinFormsAppPath))
+        var verifyAppPath = verifyEnvResolver.ResolveWinFormsAppPath(verifyEnvKey);
+        var verifyAppArgs = verifyEnvResolver.ResolveWinFormsAppArgs(verifyEnvKey);
+        if (string.IsNullOrWhiteSpace(verifyAppPath))
         {
-            AnsiConsole.MarkupLine("[red]WinFormsAppPath not configured.[/]");
+            AnsiConsole.MarkupLine($"[red]WinFormsAppPath not configured for environment '{verifyEnvKey}'.[/]");
             return;
         }
         var dtRecorded = await DesktopRecorder.RecordAsync(
-            verifyConfig.WinFormsAppPath, verifyConfig.WinFormsAppArgs,
+            verifyAppPath, verifyAppArgs,
             cli.VerificationName!, verifyConfig, verifyLogger);
         if (dtRecorded.Steps.Count == 0)
         {
@@ -572,25 +572,27 @@ if (cli.RecordVerification)
     else
     {
         var verifyBaseUrl = verifyTarget == "UI_Web_Blazor"
-            ? verifyConfig.BraveCloudUiUrl
-            : verifyConfig.LegacyWebUiUrl;
+            ? verifyEnvResolver.ResolveBraveCloudUiUrl(verifyEnvKey)
+            : verifyEnvResolver.ResolveLegacyWebUiUrl(verifyEnvKey);
         if (string.IsNullOrWhiteSpace(verifyBaseUrl))
         {
             var key = verifyTarget == "UI_Web_Blazor" ? "BraveCloudUiUrl" : "LegacyWebUiUrl";
-            AnsiConsole.MarkupLine($"[red]Base URL not configured. Set '{key}' in appsettings.json.[/]");
+            AnsiConsole.MarkupLine($"[red]Base URL not configured for environment '{verifyEnvKey}'. Set '{key}' in the env block (or at the top level).[/]");
             return;
         }
         // Pass the matching cached auth state so the recorder starts authenticated.
         // Run --auth-setup --target UI_Web_MVC|UI_Web_Blazor first to populate these.
         var verifyStorageState = verifyTarget == "UI_Web_Blazor"
-            ? verifyConfig.BraveCloudUiStorageStatePath
-            : verifyConfig.LegacyWebUiStorageStatePath;
+            ? verifyEnvResolver.ResolveBraveCloudUiStorageStatePath(verifyEnvKey)
+            : verifyEnvResolver.ResolveLegacyWebUiStorageStatePath(verifyEnvKey);
+        if (!string.IsNullOrEmpty(verifyStorageState) && !Path.IsPathRooted(verifyStorageState))
+            verifyStorageState = Path.Combine(AppContext.BaseDirectory, verifyStorageState);
         if (string.IsNullOrEmpty(verifyStorageState))
         {
             var setupKey = verifyTarget == "UI_Web_Blazor" ? "BraveCloudUiStorageStatePath" : "LegacyWebUiStorageStatePath";
             AnsiConsole.MarkupLine(
-                $"[grey]No '{setupKey}' configured — recorder will start unauthenticated. " +
-                $"Run --auth-setup --target {verifyTarget} first to skip the login flow during recording.[/]");
+                $"[grey]No '{setupKey}' configured for env '{verifyEnvKey}' — recorder will start unauthenticated. " +
+                $"Run --auth-setup --target {verifyTarget} --environment {verifyEnvKey} first to skip the login flow during recording.[/]");
         }
         var webRecorded = await PlaywrightRecorder.RecordAsync(
             verifyBaseUrl, cli.VerificationName!, verifyConfig, verifyLogger,
@@ -625,11 +627,19 @@ if (cli.AuthSetupMode)
         .GetSection("TestEnvironment")
         .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
 
+    var authEnvResolver = new AiTestCrew.Agents.Environment.EnvironmentResolver(authConfig);
+    var authEnvKey = authEnvResolver.ResolveKey(cli.EnvironmentKey);
+    var authEnvDisplay = authEnvResolver.ResolveDisplayName(authEnvKey);
+
     var authTargetType = cli.RecordTarget ?? "UI_Web_Blazor";
     var isLegacy = authTargetType.Equals("UI_Web_MVC", StringComparison.OrdinalIgnoreCase);
-    var authBaseUrl = isLegacy ? authConfig.LegacyWebUiUrl : authConfig.BraveCloudUiUrl;
+    var authBaseUrl = isLegacy
+        ? authEnvResolver.ResolveLegacyWebUiUrl(authEnvKey)
+        : authEnvResolver.ResolveBraveCloudUiUrl(authEnvKey);
     // Resolve relative path against bin dir so the file lands where the agent looks for it
-    var authStatePath = isLegacy ? authConfig.LegacyWebUiStorageStatePath : authConfig.BraveCloudUiStorageStatePath;
+    var authStatePath = isLegacy
+        ? authEnvResolver.ResolveLegacyWebUiStorageStatePath(authEnvKey)
+        : authEnvResolver.ResolveBraveCloudUiStorageStatePath(authEnvKey);
     var authMaxAgeHours = isLegacy ? authConfig.LegacyWebUiStorageStateMaxAgeHours : authConfig.BraveCloudUiStorageStateMaxAgeHours;
     if (!string.IsNullOrEmpty(authStatePath) && !Path.IsPathRooted(authStatePath))
         authStatePath = Path.Combine(AppContext.BaseDirectory, authStatePath);
@@ -638,18 +648,20 @@ if (cli.AuthSetupMode)
     var pathConfigKey = isLegacy ? "LegacyWebUiStorageStatePath" : "BraveCloudUiStorageStatePath";
     if (string.IsNullOrWhiteSpace(authBaseUrl))
     {
-        AnsiConsole.MarkupLine($"[red]{urlConfigKey} not configured in appsettings.json.[/]");
+        AnsiConsole.MarkupLine($"[red]{urlConfigKey} not configured for environment '{authEnvKey}' (or at the top level).[/]");
         return;
     }
     if (string.IsNullOrWhiteSpace(authStatePath))
     {
-        AnsiConsole.MarkupLine($"[red]{pathConfigKey} not configured in appsettings.json.[/]");
+        AnsiConsole.MarkupLine($"[red]{pathConfigKey} not configured for environment '{authEnvKey}' (or at the top level).[/]");
         return;
     }
 
     var loginTarget = isLegacy ? "forms login" : "SSO login";
     AnsiConsole.MarkupLine($"[cyan]Auth setup[/] — opening browser for {loginTarget}");
+    AnsiConsole.MarkupLine($"[grey]Environment: {authEnvDisplay} ({authEnvKey})[/]");
     AnsiConsole.MarkupLine($"[grey]URL: {authBaseUrl}[/]");
+    AnsiConsole.MarkupLine($"[grey]Storage state → {Markup.Escape(authStatePath)}[/]");
     AnsiConsole.MarkupLine("[grey]Complete the login (including 2FA if required), then the session will be saved automatically.[/]\n");
 
     using var pw = await Microsoft.Playwright.Playwright.CreateAsync();
@@ -752,21 +764,24 @@ if (cli.RecordSetupMode)
         .Build()
         .GetSection("TestEnvironment")
         .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
+    var setupEnvResolver = new AiTestCrew.Agents.Environment.EnvironmentResolver(setupConfig);
+    var setupEnvKey = setupEnvResolver.ResolveKey(cli.EnvironmentKey);
 
     var setupTargetType = cli.RecordTarget ?? "UI_Web_MVC";
     var setupBaseUrl = setupTargetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
-        ? setupConfig.BraveCloudUiUrl
-        : setupConfig.LegacyWebUiUrl;
+        ? setupEnvResolver.ResolveBraveCloudUiUrl(setupEnvKey)
+        : setupEnvResolver.ResolveLegacyWebUiUrl(setupEnvKey);
 
     if (string.IsNullOrWhiteSpace(setupBaseUrl))
     {
         var key = setupTargetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
             ? "BraveCloudUiUrl" : "LegacyWebUiUrl";
-        AnsiConsole.MarkupLine($"[red]Base URL not configured. Set '{key}' in appsettings.json.[/]");
+        AnsiConsole.MarkupLine($"[red]Base URL not configured for environment '{setupEnvKey}'. Set '{key}' in the env block (or at the top level).[/]");
         return;
     }
 
     AnsiConsole.MarkupLine($"[cyan]Recording setup steps[/] → {cli.ModuleId}/{cli.TestSetId}");
+    AnsiConsole.MarkupLine($"[grey]Environment: {setupEnvResolver.ResolveDisplayName(setupEnvKey)} ({setupEnvKey})[/]");
     AnsiConsole.MarkupLine($"[grey]Target: {setupTargetType}  Base URL: {setupBaseUrl}[/]");
     AnsiConsole.MarkupLine("[grey]Perform your login/setup steps in the browser, then click Save & Stop.[/]\n");
 
@@ -777,7 +792,7 @@ if (cli.RecordSetupMode)
 
     // For Blazor targets, pass the saved auth state so the recorder starts authenticated
     var setupStorageState = setupTargetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
-        ? setupConfig.BraveCloudUiStorageStatePath : null;
+        ? setupEnvResolver.ResolveBraveCloudUiStorageStatePath(setupEnvKey) : null;
     if (!string.IsNullOrEmpty(setupStorageState) && !Path.IsPathRooted(setupStorageState))
         setupStorageState = Path.Combine(AppContext.BaseDirectory, setupStorageState);
     var setupRecorded = await PlaywrightRecorder.RecordAsync(setupBaseUrl, "setup", setupConfig, setupRecLogger, setupStorageState, setupTargetType);
@@ -882,12 +897,15 @@ else // OpenAI (default)
 var kernel = kernelBuilder.Build();
 builder.Services.AddSingleton(kernel);
 
-// HttpClient factory + API target resolver + ApiTestAgent
+// HttpClient factory + environment resolver + API target resolver + ApiTestAgent
 builder.Services.AddHttpClient();
+builder.Services.AddSingleton<IEnvironmentResolver>(sp =>
+    new AiTestCrew.Agents.Environment.EnvironmentResolver(sp.GetRequiredService<TestEnvironmentConfig>()));
 builder.Services.AddSingleton<IApiTargetResolver>(sp => new ApiTargetResolver(
     sp.GetRequiredService<TestEnvironmentConfig>(),
     sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
-    sp.GetRequiredService<ILoggerFactory>()
+    sp.GetRequiredService<ILoggerFactory>(),
+    sp.GetRequiredService<IEnvironmentResolver>()
 ));
 builder.Services.AddSingleton<ApiTestAgent>(sp => new ApiTestAgent(
     sp.GetRequiredService<Kernel>(),
@@ -901,21 +919,24 @@ builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<ApiTestAge
 builder.Services.AddSingleton<LegacyWebUiTestAgent>(sp => new LegacyWebUiTestAgent(
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<LegacyWebUiTestAgent>>(),
-    sp.GetRequiredService<TestEnvironmentConfig>()
+    sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<IEnvironmentResolver>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<LegacyWebUiTestAgent>());
 
 builder.Services.AddSingleton<BraveCloudUiTestAgent>(sp => new BraveCloudUiTestAgent(
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<BraveCloudUiTestAgent>>(),
-    sp.GetRequiredService<TestEnvironmentConfig>()
+    sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<IEnvironmentResolver>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<BraveCloudUiTestAgent>());
 
 builder.Services.AddSingleton<WinFormsUiTestAgent>(sp => new WinFormsUiTestAgent(
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<WinFormsUiTestAgent>>(),
-    sp.GetRequiredService<TestEnvironmentConfig>()
+    sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<IEnvironmentResolver>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<WinFormsUiTestAgent>());
 
@@ -935,6 +956,7 @@ builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AseXmlGene
 // aseXML delivery agent — resolves endpoint from Bravo DB and uploads via SFTP/FTP
 builder.Services.AddSingleton<IEndpointResolver>(sp => new BravoEndpointResolver(
     sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<IEnvironmentResolver>(),
     sp.GetRequiredService<ILogger<BravoEndpointResolver>>()
 ));
 builder.Services.AddSingleton<DropTargetFactory>();
@@ -1004,6 +1026,28 @@ builder.Logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProv
     "AiTestCrew",   envConfig.VerboseLogging ? LogLevel.Information : LogLevel.Warning);
 
 var host = builder.Build();
+
+// ── --list-environments: print configured customer environments and exit ──
+if (cli.ListEnvironments)
+{
+    var envResolver = host.Services.GetRequiredService<IEnvironmentResolver>();
+    var defaultKey = envResolver.ResolveKey(null);
+    var keys = envResolver.ListKeys();
+
+    var envTable = new Table()
+        .Border(TableBorder.Rounded)
+        .AddColumn("[bold]Key[/]")
+        .AddColumn("[bold]Display Name[/]")
+        .AddColumn("[bold]Default[/]");
+    foreach (var k in keys)
+    {
+        var isDefault = string.Equals(k, defaultKey, StringComparison.OrdinalIgnoreCase);
+        envTable.AddRow(k, envResolver.ResolveDisplayName(k), isDefault ? "✓" : "");
+    }
+    AnsiConsole.Write(envTable);
+    AnsiConsole.MarkupLine($"[grey]{keys.Count} environment(s). Use --environment <key> to target one.[/]");
+    return;
+}
 
 // ── --list-endpoints: print Bravo delivery endpoints and exit ──
 if (cli.ListEndpoints)
@@ -1152,7 +1196,8 @@ await AnsiConsole.Status()
             objectiveId: cli.ObjectiveId,  // reuse-mode / verify-only filter to a single test case
             apiStackKey: cli.ApiStackKey, apiModule: cli.ApiModule,
             endpointCode: cli.EndpointCode,
-            verificationWaitOverride: cli.Mode == RunMode.VerifyOnly ? cli.VerificationWait : null);
+            verificationWaitOverride: cli.Mode == RunMode.VerifyOnly ? cli.VerificationWait : null,
+            environmentKey: cli.EnvironmentKey);
     });
 
 // ── Results table ──
@@ -1218,8 +1263,9 @@ static CliArgs ParseArgs(string[] args)
     string? objectiveName = null, caseName = null, recordTarget = null;
     string? apiStackKey = null, apiModuleKey = null;
     string? endpointCode = null;
+    string? environmentKey = null;
     bool listModules = false, recordMode = false, recordSetupMode = false, authSetupMode = false;
-    bool listEndpoints = false, migrateToSqlite = false;
+    bool listEndpoints = false, listEnvironments = false, migrateToSqlite = false;
     bool recordVerification = false;
     string? objectiveId = null, verificationName = null;
     int? verificationWait = null;
@@ -1313,6 +1359,14 @@ static CliArgs ParseArgs(string[] args)
             case "--list-endpoints":
                 listEndpoints = true;
                 break;
+            case "--list-environments":
+                listEnvironments = true;
+                break;
+            case "--environment" when i + 1 < args.Length:
+                environmentKey = args[++i];
+                break;
+            case "--environment":
+                throw new ArgumentException("--environment requires a <customerKey> argument (e.g. sumo-retail, ams-metering).");
             case "--migrate-to-sqlite":
                 migrateToSqlite = true;
                 break;
@@ -1387,7 +1441,9 @@ static CliArgs ParseArgs(string[] args)
         ApiStackKey = apiStackKey,
         ApiModule = apiModuleKey,
         EndpointCode = endpointCode,
+        EnvironmentKey = environmentKey,
         ListEndpoints = listEndpoints,
+        ListEnvironments = listEnvironments,
         MigrateToSqlite = migrateToSqlite,
         RecordVerification = recordVerification,
         ObjectiveId = objectiveId,
@@ -1422,7 +1478,9 @@ class CliArgs
     public string? ApiStackKey { get; init; }
     public string? ApiModule { get; init; }
     public string? EndpointCode { get; init; }
+    public string? EnvironmentKey { get; init; }
     public bool ListEndpoints { get; init; }
+    public bool ListEnvironments { get; init; }
     public bool MigrateToSqlite { get; init; }
     public bool RecordVerification { get; init; }
 

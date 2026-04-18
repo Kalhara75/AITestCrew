@@ -97,7 +97,8 @@ public sealed class SqliteTestSetRepository : ITestSetRepository
         List<TestObjective> newObjectives, string objective,
         string? objectiveName = null,
         string? apiStackKey = null, string? apiModule = null,
-        string? endpointCode = null)
+        string? endpointCode = null,
+        string? environmentKey = null)
     {
         using var conn = _factory.CreateConnection();
         using var tx = conn.BeginTransaction();
@@ -133,6 +134,7 @@ public sealed class SqliteTestSetRepository : ITestSetRepository
         if (apiStackKey is not null) testSet.ApiStackKey = apiStackKey;
         if (apiModule is not null) testSet.ApiModule = apiModule;
         if (!string.IsNullOrWhiteSpace(endpointCode)) testSet.EndpointCode = endpointCode;
+        if (!string.IsNullOrWhiteSpace(environmentKey)) testSet.EnvironmentKey = environmentKey;
 
         testSet.LastRunAt = DateTime.UtcNow;
         testSet.RunCount++;

@@ -16,6 +16,7 @@ import { MoveObjectiveDialog } from '../components/MoveObjectiveDialog';
 import { TriggerObjectiveRunButton } from '../components/TriggerObjectiveRunButton';
 import { AiPatchPanel } from '../components/AiPatchPanel';
 import { SetupStepsPanel } from '../components/SetupStepsPanel';
+import { EnvironmentParametersEditor } from '../components/EnvironmentParametersEditor';
 import type { TestObjective, ObjectiveStatus } from '../types';
 
 export function TestSetDetailPage() {
@@ -135,7 +136,7 @@ export function TestSetDetailPage() {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexDirection: 'column' }}>
-            <TriggerRunButton testSetId={testSet.id} moduleId={moduleId} apiStackKey={testSet.apiStackKey} apiModule={testSet.apiModule} />
+            <TriggerRunButton testSetId={testSet.id} moduleId={moduleId} apiStackKey={testSet.apiStackKey} apiModule={testSet.apiModule} environmentKey={testSet.environmentKey} />
             {isModuleScoped && (
               <button onClick={() => setShowDeleteConfirm(true)} style={deleteBtnStyle}>
                 Delete Test Set
@@ -169,6 +170,7 @@ export function TestSetDetailPage() {
             moduleId={moduleId}
             apiStackKey={testSet.apiStackKey}
             apiModule={testSet.apiModule}
+            environmentKey={testSet.environmentKey}
             selectedId={selectedObjectiveId}
             onSelect={(objId) => setSelectedObjectiveId(objId === selectedObjectiveId ? null : objId)}
             onMove={isModuleScoped ? (obj) => setMoveObjective(obj) : undefined}
@@ -195,6 +197,16 @@ export function TestSetDetailPage() {
               title="Close"
             >&times;</button>
           </div>
+
+          {/* Environment scope & per-env parameter overrides */}
+          {isModuleScoped && (
+            <EnvironmentParametersEditor
+              moduleId={moduleId!}
+              testSetId={id!}
+              objective={selectedObjective}
+              onSaved={() => queryClient.invalidateQueries({ queryKey: ['testSet', moduleId, id] })}
+            />
+          )}
 
           {/* Steps */}
           <SectionHeader title="Steps" count={selectedObjective.stepCount} />
@@ -299,6 +311,7 @@ function ObjectiveListTable({
   moduleId,
   apiStackKey,
   apiModule,
+  environmentKey,
   selectedId,
   onSelect,
   onMove,
@@ -310,6 +323,7 @@ function ObjectiveListTable({
   moduleId?: string;
   apiStackKey?: string | null;
   apiModule?: string | null;
+  environmentKey?: string | null;
   selectedId: string | null;
   onSelect: (id: string) => void;
   onMove?: (parentObjective: string) => void;
@@ -381,6 +395,7 @@ function ObjectiveListTable({
                     moduleId={moduleId}
                     apiStackKey={apiStackKey}
                     apiModule={apiModule}
+                    environmentKey={environmentKey}
                     hasDeliveryVerifications={obj.aseXmlDeliverySteps?.some(s => s.postDeliveryVerifications?.length > 0)}
                   />
                 </td>

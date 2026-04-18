@@ -7,8 +7,10 @@ using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using AiTestCrew.Agents.Base;
+using AiTestCrew.Agents.Environment;
 using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Configuration;
+using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
 
 namespace AiTestCrew.Agents.DesktopUiBase;
@@ -27,6 +29,14 @@ namespace AiTestCrew.Agents.DesktopUiBase;
 public abstract class BaseDesktopUiTestAgent : BaseTestAgent
 {
     protected readonly TestEnvironmentConfig _config;
+    protected readonly IEnvironmentResolver _envResolver;
+
+    /// <summary>
+    /// Active environment key for the current task (set at the top of
+    /// <see cref="ExecuteAsync"/>). Subclasses read <see cref="TargetAppPath"/>
+    /// via <see cref="_envResolver"/> so per-customer WinForms builds are launched.
+    /// </summary>
+    protected string? CurrentEnvironmentKey { get; private set; }
 
     /// <summary>Path to the executable under test.</summary>
     protected abstract string TargetAppPath { get; }
@@ -37,10 +47,11 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
     /// <summary>Config key name shown in error messages when TargetAppPath is empty.</summary>
     protected abstract string TargetAppPathConfigKey { get; }
 
-    protected BaseDesktopUiTestAgent(Kernel kernel, ILogger logger, TestEnvironmentConfig config)
+    protected BaseDesktopUiTestAgent(Kernel kernel, ILogger logger, TestEnvironmentConfig config, IEnvironmentResolver envResolver)
         : base(kernel, logger)
     {
         _config = config;
+        _envResolver = envResolver;
     }
 
     /// <summary>Extension point: override to customize app launch.</summary>
@@ -69,7 +80,12 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
         var sw = Stopwatch.StartNew();
         var steps = new List<TestStep>();
 
-        Logger.LogInformation("[{Agent}] Starting desktop UI task: {Desc}", Name, task.Description);
+        task.Parameters.TryGetValue("EnvironmentKey", out var rawEnvKey);
+        CurrentEnvironmentKey = rawEnvKey as string;
+        var envParams = StepParameterSubstituter.ReadEnvironmentParameters(task.Parameters);
+
+        Logger.LogInformation("[{Agent}] Starting desktop UI task: {Desc} (env: {Env})",
+            Name, task.Description, CurrentEnvironmentKey ?? "default");
 
         Application? app = null;
         UIA3Automation? automation = null;
@@ -81,7 +97,11 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
             if (task.Parameters.TryGetValue("PreloadedTestCases", out var preloaded)
                 && preloaded is List<DesktopUiTestCase> saved)
             {
-                testCases = saved;
+                // Per-environment {{Token}} substitution so recorded selectors / values
+                // adapt to the active customer's app variant.
+                testCases = envParams.Count > 0
+                    ? saved.Select(tc => StepParameterSubstituter.Apply(tc, envParams)).ToList()
+                    : saved;
                 steps.Add(TestStep.Pass("load-cases",
                     $"Loaded {testCases.Count} saved desktop UI test cases (reuse mode)"));
                 Logger.LogInformation("[{Agent}] Reuse mode: {Count} saved test cases", Name, testCases.Count);

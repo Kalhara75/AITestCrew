@@ -21,7 +21,8 @@ public interface ITestSetRepository
         List<TestObjective> newObjectives, string objective,
         string? objectiveName = null,
         string? apiStackKey = null, string? apiModule = null,
-        string? endpointCode = null);
+        string? endpointCode = null,
+        string? environmentKey = null);
     Task UpdateRunStatsAsync(string moduleId, string testSetId);
     Task DeleteAsync(string moduleId, string testSetId);
     Task MoveObjectiveAsync(

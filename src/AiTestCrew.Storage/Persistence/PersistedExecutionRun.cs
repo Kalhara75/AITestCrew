@@ -26,6 +26,12 @@ public class PersistedExecutionRun
     public string? StartedByName { get; set; }
 
     /// <summary>
+    /// Customer environment this run executed against (e.g. "sumo-retail").
+    /// Recorded for audit / filtering. Null on runs that predate the multi-env feature.
+    /// </summary>
+    public string? EnvironmentKey { get; set; }
+
+    /// <summary>
     /// Schema version for migration detection.
     /// Version 1 (or absent): legacy format with TaskResults.
     /// Version 2: new format with ObjectiveResults.
@@ -89,7 +95,7 @@ public class PersistedExecutionRun
     /// </summary>
     public static PersistedExecutionRun FromSuiteResult(
         TestSuiteResult suite, string testSetId, RunMode mode, DateTime startedAt,
-        string? moduleId = null)
+        string? moduleId = null, string? environmentKey = null)
     {
         return new PersistedExecutionRun
         {
@@ -106,6 +112,7 @@ public class PersistedExecutionRun
             TotalDuration = suite.TotalDuration,
             Summary = suite.Summary,
             SchemaVersion = 2,
+            EnvironmentKey = environmentKey,
             TotalObjectives = suite.TotalObjectives,
             PassedObjectives = suite.Passed,
             FailedObjectives = suite.Failed,

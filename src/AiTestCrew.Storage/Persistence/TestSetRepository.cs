@@ -228,7 +228,8 @@ public class TestSetRepository : ITestSetRepository
         List<TestObjective> newObjectives, string objective,
         string? objectiveName = null,
         string? apiStackKey = null, string? apiModule = null,
-        string? endpointCode = null)
+        string? endpointCode = null,
+        string? environmentKey = null)
     {
         var path = ModuleFilePath(moduleId, testSetId);
         var fileLock = GetLock(path);
@@ -269,6 +270,9 @@ public class TestSetRepository : ITestSetRepository
 
             // Persist aseXML delivery endpoint (new value overrides existing if provided)
             if (!string.IsNullOrWhiteSpace(endpointCode)) testSet.EndpointCode = endpointCode;
+
+            // Persist environment default (new value overrides existing if provided)
+            if (!string.IsNullOrWhiteSpace(environmentKey)) testSet.EnvironmentKey = environmentKey;
 
             testSet.LastRunAt = DateTime.UtcNow;
             testSet.RunCount++;

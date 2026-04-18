@@ -73,11 +73,14 @@ Contains agent implementations only. References Core and Storage. Persistence an
 ```
 Agents/
   ApiAgent/
-    ApiTestAgent.cs               — REST/GraphQL test execution (multi-stack aware via IApiTargetResolver)
+    ApiTestAgent.cs               — REST/GraphQL test execution (multi-stack + multi-environment aware via IApiTargetResolver + IEnvironmentResolver)
   Auth/
-    ApiTargetResolver.cs          — Resolves API base URLs and per-stack LoginTokenProviders from ApiStacks config
+    ApiTargetResolver.cs          — Resolves API base URLs and per-(env,stack) LoginTokenProviders from ApiStacks + Environments config
     LoginTokenProvider.cs         — Acquires JWTs by calling a stack's security module login endpoint
     StaticTokenProvider.cs        — Returns a pre-configured static token
+  Environment/
+    EnvironmentResolver.cs        — Per-env override resolver (UI URLs, creds, WinForms path, Bravo DB, per-stack BaseUrls); falls back to top-level fields when a field isn't present in the active env block
+    StepParameterSubstituter.cs   — Walks every step-definition / test-case type and applies {{Token}} substitution using TokenSubstituter (lenient); returns cloned objects so persisted state is never mutated
   Base/
     BaseTestAgent.cs              — Shared LLM communication (delegates JSON utilities to LlmJsonHelper)
     LlmJsonHelper.cs              — Static JSON cleaning/parsing utilities (shared with WebApi endpoints)
@@ -621,8 +624,12 @@ ParseArgs()  ──── --list ───────────────�
     │       ▼
     │   TestOrchestrator.RunAsync()
     │       │
+    │       ├─ effectiveEnv = IEnvironmentResolver.ResolveKey(envArg)
+    │       │       Precedence: CLI → persisted testset.EnvironmentKey → DefaultEnvironment
+    │       │
     │       ├─ DecomposeObjectiveAsync()
     │       │       LLM decomposes objective → TestTask (one per objective)
+    │       │       Each task.Parameters["EnvironmentKey"] = effectiveEnv
     │       │
     │       ├─ For each objective (TestTask):
     │       │       FindAgentAsync() → routes to ApiTestAgent (if API_REST/GraphQL)
@@ -631,9 +638,10 @@ ParseArgs()  ──── --list ───────────────�
     │       │           ├─ DiscoverEndpointAsync()         [live GET, captures real fields]
     │       │           ├─ GenerateTestCasesAsync()        [LLM → List<ApiTestDefinition>]
     │       │           └─ For each ApiTestDefinition (step):
+    │       │                   StepParameterSubstituter.Apply(step, envParams)   [clones + substitutes {{Tokens}}]
     │       │                   ExecuteTestCaseAsync()
-    │       │                       ├─ Build HttpRequestMessage (URL from IApiTargetResolver)
-    │       │                       ├─ InjectAuthAsync() → IApiTargetResolver.GetTokenProvider(stackKey)
+    │       │                       ├─ Build HttpRequestMessage (URL from IApiTargetResolver(stack, module, env))
+    │       │                       ├─ InjectAuthAsync() → IApiTargetResolver.GetTokenProvider(stack, env)
     │       │                       ├─ HttpClient.SendAsync()
     │       │                       └─ ValidateResponseAsync()
     │       │                               ├─ Rule checks (status, contains)
@@ -641,6 +649,8 @@ ParseArgs()  ──── --list ───────────────�
     │       │       Metadata["generatedTestCases"] = list of ApiTestDefinition
     │       │
     │       ├─ SaveTestSetAsync()   [persists TestObjectives to modules/{moduleId}/{testSetId}.json]
+    │       │                         New objectives stamped AllowedEnvironments=[effectiveEnv]
+    │       │                         Test set EnvironmentKey set if not already persisted
     │       └─ GenerateSummaryAsync()  [LLM narrative]
     │
     └── RunMode.Reuse
@@ -652,23 +662,30 @@ ParseArgs()  ──── --list ───────────────�
             │       Deserialises modules/{moduleId}/{id}.json → PersistedTestSet
             │       Restores TestObjectives from saved data
             │
+            ├─ effectiveEnv = IEnvironmentResolver.ResolveKey(envArg ?? saved.EnvironmentKey)
+            │
+            ├─ Environment filter:
+            │       For each TestObjective, if AllowedEnvironments is set and doesn't
+            │       include effectiveEnv, synthesize a Skipped TestResult and drop it.
+            │       Empty AllowedEnvironments = "default-only" (legacy-safe default).
+            │
             ├─ (Optional) Single-objective filter:
             │       If objectiveId is provided, filters tasks to only the matching objective.
-            │       Other objectives are not executed. The resulting execution run contains
-            │       only the single objective's results.
             │
-            ├─ For each TestObjective (or single filtered objective):
+            ├─ For each surviving TestObjective:
             │       Injects ApiSteps/WebUiSteps into TestTask.Parameters["PreloadedTestCases"]
+            │       Injects EnvironmentParameters[effectiveEnv] into task.Parameters["EnvironmentParameters"]
             │       If test set has SetupSteps, also injects SetupSteps + SetupStartUrl
             │       agent.ExecuteAsync(task) → returns ONE TestResult with ObjectiveId
-            │           ├─ Detects "PreloadedTestCases" in Parameters
+            │           ├─ Detects "PreloadedTestCases" + "EnvironmentParameters" in Parameters
+            │           ├─ StepParameterSubstituter.Apply(case, envParams)  [per test case, before execution]
             │           ├─ Skips spec load, discovery, and LLM generation
-            │           ├─ (Web UI) For each test case:
-            │           │       Run SetupSteps first (navigate SetupStartUrl → execute setup)
-            │           │       Then navigate to test case StartUrl → execute test steps
+            │           ├─ (Web UI) Subclass TargetBaseUrl reads via IEnvironmentResolver(envKey)
+            │           │       so URLs, creds, and storage-state paths come from the active env block
             │           └─ Executes saved ApiTestDefinition/WebUiTestCase steps directly
             │
             ├─ TestSetRepository.UpdateRunStatsAsync()  [bumps RunCount, LastRunAt]
+            ├─ ExecutionHistoryRepository.SaveAsync()    [PersistedExecutionRun.EnvironmentKey = effectiveEnv]
             └─ GenerateSummaryAsync()  [LLM narrative]
 ```
 
@@ -776,6 +793,9 @@ On first startup, `MigrationHelper` runs two migrations automatically:
   "id": "controlled-load-decodes",
   "name": "Controlled Load Decodes",
   "moduleId": "sdr",
+  "apiStackKey": "bravecloud",
+  "apiModule": "sdr",
+  "environmentKey": "sumo-retail",
   "createdAt": "2026-04-04T14:30:00Z",
   "lastRunAt": "2026-04-04T15:45:00Z",
   "runCount": 3,
@@ -785,16 +805,21 @@ On first startup, `MigrationHelper` runs two migrations automatically:
       "objectiveText": "Test GET /api/ControlledLoadDecodes endpoint",
       "objectiveName": "Ctrl Load GET",
       "targetType": "API_REST",
+      "allowedEnvironments": ["sumo-retail"],
+      "environmentParameters": {
+        "sumo-retail":  { "NMI": "4103035611" },
+        "ams-metering": { "NMI": "9999999999" }
+      },
       "apiSteps": [
         {
-          "name": "Get all products - happy path",
+          "name": "Get meter - happy path",
           "method": "GET",
-          "endpoint": "/api/products",
+          "endpoint": "/api/Meters/{{NMI}}",
           "headers": {},
           "queryParams": {},
           "body": null,
           "expectedStatus": 200,
-          "expectedBodyContains": ["id", "name", "price"],
+          "expectedBodyContains": ["id", "name"],
           "expectedBodyNotContains": [],
           "isFuzzTest": false
         }
@@ -806,12 +831,23 @@ On first startup, `MigrationHelper` runs two migrations automatically:
       "objectiveText": "Test POST /api/ControlledLoadDecodes endpoint",
       "objectiveName": "Ctrl Load POST",
       "targetType": "API_REST",
+      "allowedEnvironments": ["sumo-retail"],
+      "environmentParameters": {},
       "apiSteps": [ ... ],
       "webUiSteps": []
     }
   ]
 }
 ```
+
+**Per-testset fields:**
+- `apiStackKey` / `apiModule` — persisted multi-stack target (see [Multi-Stack API Configuration](functional.md#multi-stack-api-configuration)).
+- `endpointCode` — Bravo delivery endpoint for aseXML delivery test sets.
+- `environmentKey` — default customer environment when `--environment` is omitted. Resolved at run time via `IEnvironmentResolver`; falls back to `TestEnvironmentConfig.DefaultEnvironment` when the test set has no persisted value.
+
+**Per-objective multi-environment fields:**
+- `allowedEnvironments` — list of env keys this objective runs on. Empty = "default environment only" (legacy semantics — objectives created before the feature keep running only against the default). The orchestrator skips excluded objectives as `Skipped` (not `Failed`). New/rebaselined objectives are auto-stamped with the active env.
+- `environmentParameters` — per-environment `{{Token}} → value` maps. At playback, `StepParameterSubstituter.Apply(step, params)` clones every step definition with tokens resolved for the active env. Unknown tokens stay literal and log a WARN (lenient mode, shared with post-delivery verification playback via `TokenSubstituter`).
 
 > **v1 schema (deprecated):** Older test set files use `"tasks"` with `PersistedTaskEntry` objects. On first load, `MigrationHelper` automatically migrates v1 files to v2, converting each task entry into a `TestObjective` and renaming `testCases` → `apiSteps` / `webUiTestCases` → `webUiSteps`.
 
@@ -1076,6 +1112,83 @@ All fields support environment variable overrides via `AITESTCREW_TestEnvironmen
 
 ---
 
+## Multi-Environment Architecture (customer-based)
+
+A parallel axis to the existing `ApiStacks` / modules axes. Lets one test set run against multiple customer deployments (`sumo-retail`, `ams-metering`, `tasn-networks`, ...) with per-customer URLs, credentials, DB connection strings, and data values — without duplicating the tests.
+
+### Three orthogonal axes
+
+| Axis | Configured under | CLI flag | Selects |
+|---|---|---|---|
+| **Environment** | `TestEnvironment.Environments.<key>` | `--environment` | Customer deployment — UI URLs, creds, Bravo DB, WinForms app path, per-stack BaseUrls |
+| **ApiStack** | `TestEnvironment.ApiStacks.<key>` | `--stack` | API platform (BraveCloud vs Legacy) — SecurityModule + LoginPath |
+| **ApiModule** | `TestEnvironment.ApiStacks.<stack>.Modules.<key>` | `--api-module` | API service — PathPrefix |
+
+The three axes compose: `--environment ams-metering --stack legacy --api-module sdr` hits AMS's `api-amsdev.braveenergy.com.au` legacy stack's SDR module. Effective URL = `Environments.ams.ApiStackBaseUrls.legacy` (if set, else `ApiStacks.legacy.BaseUrl`) + `/` + `ApiStacks.legacy.Modules.sdr.PathPrefix`.
+
+### Key types
+
+| Type | Purpose |
+|---|---|
+| `TestEnvironmentConfig.Environments: Dictionary<string, EnvironmentConfig>` | Map of env key → overrides. Empty dictionary = legacy single-env mode; all settings read from top-level fields. |
+| `TestEnvironmentConfig.DefaultEnvironment: string?` | Env used when neither CLI nor test set specifies one. |
+| `EnvironmentConfig` | Per-customer block. Every field is nullable/optional; the resolver falls back to the equivalent top-level field whenever an env field is null/empty. |
+| `IEnvironmentResolver` | Singleton service used by every agent + auth-setup + recording. Methods: `ResolveKey(requested)`, `Resolve(key)`, `ListKeys()`, `ResolveDisplayName(key)`, `ResolveLegacyWebUiUrl(key)`, `ResolveBraveCloudUiUrl(key)`, `ResolveWinFormsAppPath(key)`, `ResolveBravoDbConnectionString(key)`, `ResolveApiStackBaseUrl(key, stackKey)`, etc. |
+| `EnvironmentResolver` | Default implementation (in `AiTestCrew.Agents.Environment`). Holds the config, does the fallback resolution. |
+| `StepParameterSubstituter` | Clones each step-definition / test-case type and replaces `{{Tokens}}` using `TokenSubstituter.Substitute` (lenient). Handles `ApiTestDefinition`, `ApiTestCase`, `WebUiTestDefinition`, `WebUiTestCase`, `DesktopUiTestDefinition`, `DesktopUiTestCase`, `AseXmlTestDefinition`, `AseXmlTestCase`, `AseXmlDeliveryTestDefinition`, `AseXmlDeliveryTestCase`, `VerificationStep`. Substitutes string fields, dict keys/values, list items, and JSON bodies (via round-trip through `JsonSerializer`). |
+
+### Persistence
+
+- `PersistedTestSet.EnvironmentKey: string?` — persisted default env for the test set. Precedence at run time: `--environment` CLI arg → this field → `DefaultEnvironment`.
+- `TestObjective.AllowedEnvironments: List<string>` — env keys this objective may run on. Empty = "default env only" (legacy semantics for pre-feature objectives).
+- `TestObjective.EnvironmentParameters: Dictionary<string, Dictionary<string, string>>` — outer key = env, inner key = `{{Token}}` name, inner value = substituted literal.
+- `PersistedExecutionRun.EnvironmentKey: string?` — which env each historical run executed against, for audit / filtering.
+
+### Runtime wiring
+
+1. **Resolve effective env** (top of `TestOrchestrator.RunAsync`): CLI → `saved.EnvironmentKey` → `DefaultEnvironment`.
+2. **Skip disallowed objectives** in Reuse/VerifyOnly: if `AllowedEnvironments` is non-empty and doesn't contain the effective env, emit a `Skipped` TestResult and drop the task.
+3. **Auto-stamp new objectives** in Normal/Rebaseline: `BuildObjectiveFromResults(..., environmentKey)` sets `AllowedEnvironments = [effectiveEnv]` when saving.
+4. **Inject into TestTask**: every surviving task gets `Parameters["EnvironmentKey"] = effectiveEnv` + `Parameters["EnvironmentParameters"] = envParams` (the per-env dict if the objective defines one).
+5. **Agents read env from parameters**:
+    - `ApiTestAgent` → `IApiTargetResolver.ResolveApiBaseUrl(stack, module, env)` for URL; `GetTokenProvider(stack, env)` for per-(env,stack) cached token.
+    - `BaseWebUiTestAgent` — subclass `TargetBaseUrl` getter reads `_envResolver.ResolveBraveCloudUiUrl(CurrentEnvironmentKey)` / `.ResolveLegacyWebUiUrl(...)`. Same for credentials + storage-state paths.
+    - `BaseDesktopUiTestAgent` — `TargetAppPath` and `TargetAppArgs` read from resolver.
+    - `BravoEndpointResolver` — env key threads through `ResolveAsync(code, env)` and `ListCodesAsync(env)`; connection strings cached per env.
+6. **Substitute `{{Tokens}}`**: each agent calls `StepParameterSubstituter.Apply(caseOrDef, envParams)` before executing the step. Cloned objects only — persisted definitions are never mutated.
+7. **Record on history**: `PersistedExecutionRun.FromSuiteResult(..., environmentKey)` captures the active env on the run record.
+
+### `ApiTargetResolver` changes
+
+- Added `ResolveApiBaseUrl(stack, module, env)` overload. The env's `ApiStackBaseUrls.<stack>` overrides `ApiStacks.<stack>.BaseUrl`. The module's `PathPrefix` is appended as before.
+- `GetTokenProvider(stack, env)` caches per `$"{envKey}|{stackKey}"` composite key so two environments sharing the same stack name authenticate independently against their own login URLs.
+- `BuildLoginUrl` now takes the effective base URL (env-overridden) rather than reading it off the `ApiStackConfig`.
+
+### `--auth-setup` / `--record` / `--record-setup` / `--record-verification`
+
+All four CLI paths construct a local `EnvironmentResolver` from config, resolve `envKey = resolver.ResolveKey(cli.EnvironmentKey)`, and read URLs / storage-state paths / WinForms app path through resolver methods. Each command prints the resolved env + storage-state path up front so the operator can confirm which customer they're authenticating / recording against before the browser window opens.
+
+### Backwards compatibility
+
+- Configs with no `Environments` section still work. The resolver synthesises a virtual `"default"` env that reads exclusively from top-level flat fields — same behaviour as before the feature.
+- Objectives with empty `AllowedEnvironments` are treated as "runs on default env only". No migration step — the orchestrator applies this interpretation on the fly. New/rebaselined objectives get stamped on save so the list grows naturally.
+- Existing `--stack` / `--api-module` / `--endpoint` flags are unchanged; `--environment` is additive.
+
+### WebApi surface
+
+- `GET /api/config/environments` → `{ environments: [{ key, displayName, isDefault }], defaultEnvironment }`.
+- `RunRequest.EnvironmentKey` + `MergeObjectivesRequest.EnvironmentKey` flow into the orchestrator and test-set merge respectively.
+- Test-set list + detail responses include `apiStackKey`, `apiModule`, `endpointCode`, `environmentKey` so the UI can show + edit them.
+
+### React UI surface
+
+- `fetchEnvironments()` (`ui/src/api/config.ts`) calls `/api/config/environments`.
+- `RunObjectiveDialog` — environment dropdown above the API stack/module dropdowns.
+- `TriggerRunButton` + `TriggerObjectiveRunButton` accept an `environmentKey` prop (sourced from the test-set detail) and include it in `triggerRun` payloads.
+- `EnvironmentParametersEditor` — attached to the selected objective's detail panel. Two sections: `AllowedEnvironments` checkbox list and a per-env `{{Token}} → value` grid with add/rename/delete rows. Saves via the existing objective PUT endpoint.
+
+---
+
 ## Distributed Execution (Phase 4)
 
 The server cannot execute Web UI (Playwright) or Desktop UI (FlaUI) tests because Windows Server Core containers lack Media Foundation and non-interactive sessions have no desktop. Phase 4 introduces a **local-agent model**: QA engineers run the Runner CLI in a long-running `--agent` mode that polls the server for queued jobs and executes them on their own machine.
@@ -1221,6 +1334,21 @@ This section complements the "Where to extend" table in `CLAUDE.md` with archite
   - `"sftp-pickup"` — poll the remote path for file disappearance via the same `IXmlDropTarget`'s underlying client.
   - `"db-status"` — poll a Bravo DB table for a status transition (requires schema discovery + a new query in `BravoEndpointResolver` or a new `IWaitStrategyResolver`).
 - Keep `WaitBeforeSeconds` as a fallback / minimum wait to avoid hammering on polling loops.
+
+### Adding a new customer environment
+
+- Add a new entry under `TestEnvironment.Environments.<key>` in `appsettings.json` with the customer's URLs, credentials, Bravo DB connection string, and per-stack BaseUrl overrides. Every field is optional — omitted fields fall back to the top-level flat fields.
+- Run `--list-environments` to confirm the new env appears, then `--auth-setup --environment <key> --target UI_Web_Blazor` (and `UI_Web_MVC` if using legacy auth) to populate that env's cached auth-state file.
+- No code change. The resolver, CLI, WebApi, and UI all enumerate environments from config at startup / request time.
+- **Widening existing tests**: open each objective in the UI, tick the new env under "Allowed environments", and supply any per-env `{{Token}}` values that differ. Step definitions already using `{{Tokens}}` automatically pick up the new env's values; steps with literal values need a pass of manual tokenisation.
+
+### Adding a new per-environment setting
+
+- Example: say a customer-specific reporting service URL.
+- Add the field to `EnvironmentConfig` (and optionally to the top-level `TestEnvironmentConfig` as a legacy fallback default).
+- Add a `ResolveXxx(envKey)` method to `IEnvironmentResolver` + `EnvironmentResolver` that returns the env value (or falls back to the top-level field if null/empty).
+- Inject `IEnvironmentResolver` into whatever agent/service consumes the setting and call `ResolveXxx(CurrentEnvironmentKey)` at execution time.
+- No persistence schema change — `EnvironmentConfig` is a plain POCO; new nullable fields deserialize as `null` on older configs.
 
 ### Adding orchestration chaining (activating `TestTask.DependsOn`)
 

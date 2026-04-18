@@ -54,12 +54,15 @@ else
 var kernel = kernelBuilder.Build();
 builder.Services.AddSingleton(kernel);
 
-// ── HttpClient + API target resolver + API Agent ──
+// ── HttpClient + environment resolver + API target resolver + API Agent ──
 builder.Services.AddHttpClient();
+builder.Services.AddSingleton<IEnvironmentResolver>(sp =>
+    new AiTestCrew.Agents.Environment.EnvironmentResolver(sp.GetRequiredService<TestEnvironmentConfig>()));
 builder.Services.AddSingleton<IApiTargetResolver>(sp => new ApiTargetResolver(
     sp.GetRequiredService<TestEnvironmentConfig>(),
     sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
-    sp.GetRequiredService<ILoggerFactory>()
+    sp.GetRequiredService<ILoggerFactory>(),
+    sp.GetRequiredService<IEnvironmentResolver>()
 ));
 builder.Services.AddSingleton<ApiTestAgent>(sp => new ApiTestAgent(
     sp.GetRequiredService<Kernel>(),
@@ -73,21 +76,24 @@ builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<ApiTestAge
 builder.Services.AddSingleton<LegacyWebUiTestAgent>(sp => new LegacyWebUiTestAgent(
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<LegacyWebUiTestAgent>>(),
-    sp.GetRequiredService<TestEnvironmentConfig>()
+    sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<IEnvironmentResolver>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<LegacyWebUiTestAgent>());
 
 builder.Services.AddSingleton<BraveCloudUiTestAgent>(sp => new BraveCloudUiTestAgent(
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<BraveCloudUiTestAgent>>(),
-    sp.GetRequiredService<TestEnvironmentConfig>()
+    sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<IEnvironmentResolver>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<BraveCloudUiTestAgent>());
 
 builder.Services.AddSingleton<WinFormsUiTestAgent>(sp => new WinFormsUiTestAgent(
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<WinFormsUiTestAgent>>(),
-    sp.GetRequiredService<TestEnvironmentConfig>()
+    sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<IEnvironmentResolver>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<WinFormsUiTestAgent>());
 
@@ -107,6 +113,7 @@ builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AseXmlGene
 // aseXML delivery agent — resolves endpoint from Bravo DB and uploads via SFTP/FTP
 builder.Services.AddSingleton<IEndpointResolver>(sp => new BravoEndpointResolver(
     sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<IEnvironmentResolver>(),
     sp.GetRequiredService<ILogger<BravoEndpointResolver>>()
 ));
 builder.Services.AddSingleton<DropTargetFactory>();
@@ -273,6 +280,20 @@ app.MapGet("/api/auth/status", (IServiceProvider sp) =>
 {
     var authEnabled = sp.GetService<IUserRepository>() is not null;
     return Results.Ok(new { authEnabled });
+});
+
+// ── Environment discovery — exposes configured customer environments to the UI ──
+app.MapGet("/api/config/environments", (IEnvironmentResolver envResolver) =>
+{
+    var defaultKey = envResolver.ResolveKey(null);
+    var keys = envResolver.ListKeys();
+    var environments = keys.Select(k => new
+    {
+        key = k,
+        displayName = envResolver.ResolveDisplayName(k),
+        isDefault = string.Equals(k, defaultKey, StringComparison.OrdinalIgnoreCase)
+    }).ToList();
+    return Results.Ok(new { environments, defaultEnvironment = defaultKey });
 });
 
 // ── API stack discovery — exposes configured stacks/modules to the UI ──

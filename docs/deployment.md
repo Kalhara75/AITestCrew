@@ -273,11 +273,12 @@ cp .env.example .env
 
 # 3. Create the runtime config directory (mounted into the container).
 #    This holds the full appsettings.json — env vars alone can't express nested
-#    config like ApiStacks. Copy your Runner's appsettings.json as a starting point:
+#    config like ApiStacks or Environments. Copy your Runner's appsettings.json:
 mkdir docker-config
 cp src/AiTestCrew.Runner/appsettings.json docker-config/appsettings.json
 # Review docker-config/appsettings.json — set ApiStacks, auth credentials,
-# agent URLs (LegacyWebUiUrl, BraveCloudUiUrl, etc.)
+# per-customer Environments (with LegacyWebUiUrl, BraveCloudUiUrl, BravoDbConnectionString,
+# ApiStackBaseUrls per env), and DefaultEnvironment.
 
 # 4. Create the auth state directory (for Playwright SSO sessions)
 mkdir docker-auth-state
@@ -299,17 +300,18 @@ docker compose logs -f
 | Host path | Container path | Purpose | Gitignored |
 |---|---|---|---|
 | `aitestcrew-data` (Docker volume) | `C:/data/` | SQLite database | — (Docker-managed) |
-| `./docker-config/` | `C:/config/` | `appsettings.json` — full config with ApiStacks, secrets | Yes |
+| `./docker-config/` | `C:/config/` | `appsettings.json` — full config with ApiStacks, Environments, secrets | Yes |
 | `./docker-auth-state/` | `C:/auth-state/` | Playwright SSO storage state JSON files | Yes |
 
 The SQLite database survives container restarts and rebuilds. Config and auth state can be edited on the host and the container picks up changes without rebuild (config is read at startup, auth state is read per-test-run).
 
-**Refreshing auth state:** Playwright's SSO sessions expire after `StorageStateMaxAgeHours` (default 8h). To refresh:
+**Refreshing auth state:** Playwright's SSO sessions expire after `StorageStateMaxAgeHours` (default 8h). To refresh, repeat per environment — each one writes to its own storage-state filename:
 
 ```powershell
-# 1. Re-run --auth-setup locally to capture a fresh session
-dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_Blazor
-dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_MVC
+# 1. Re-run --auth-setup locally to capture a fresh session per customer env
+dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_Blazor --environment sumo-retail
+dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_MVC    --environment sumo-retail
+# ...repeat for each configured customer env (ams-metering, tasn-networks, etc.)
 
 # 2. Sync the captured state into the Docker volume mount
 .\refresh-auth-state.ps1
@@ -455,14 +457,31 @@ This produces a `runner-dist/` folder (~80-100 MB) containing `AiTestCrew.Runner
        "PlaywrightBrowser": "chromium",
        "PlaywrightHeadless": false,
 
-       "LegacyWebUiUrl": "https://your-mvc-app.com",
-       "BraveCloudUiUrl": "https://your-blazor-app.com",
-       "BraveCloudUiUsername": "user@company.com",
-       "BraveCloudUiPassword": "<password>",
-       "BraveCloudUiTotpSecret": "<base32-totp-secret>"
+       "DefaultEnvironment": "sumo-retail",
+       "Environments": {
+         "sumo-retail": {
+           "DisplayName": "Sumo Retail",
+           "LegacyWebUiUrl":              "https://legacy-sumo.company.com",
+           "BraveCloudUiUrl":             "https://sumo.company.com",
+           "BraveCloudUiUsername":        "user@company.com",
+           "BraveCloudUiPassword":        "<password>",
+           "BraveCloudUiTotpSecret":      "<base32-totp-secret>",
+           "BraveCloudUiStorageStatePath": "bravecloud-auth-state.sumo.json",
+           "LegacyWebUiStorageStatePath":  "legacy-auth-state.sumo.json"
+         },
+         "ams-metering": {
+           "DisplayName": "AMS Metering",
+           "LegacyWebUiUrl":              "https://legacy-ams.company.com",
+           "BraveCloudUiUrl":             "https://ams.company.com",
+           "BraveCloudUiStorageStatePath": "bravecloud-auth-state.ams.json",
+           "LegacyWebUiStorageStatePath":  "legacy-auth-state.ams.json"
+         }
+       }
      }
    }
    ```
+
+   Single-environment deployments can keep URLs at the top level and omit `Environments` entirely — the resolver falls back to top-level fields. Add the `Environments` section only when you need to target multiple customer deployments from the same Runner.
 
 3. Install Playwright browsers (one-time):
    ```powershell
@@ -522,17 +541,24 @@ After receiving the Runner CLI and an API key from the admin:
 # Should show modules from the shared server
 ```
 
-### 2. Save auth state (one-time per target)
+### 2. Save auth state (one-time per target **and per environment**)
 
 ```powershell
-# For Blazor apps (Azure AD SSO + 2FA)
-.\AiTestCrew.Runner.exe --auth-setup --target UI_Web_Blazor
+# List the customer environments configured on your Runner
+.\AiTestCrew.Runner.exe --list-environments
+
+# For Blazor apps (Azure AD SSO + 2FA) — against a specific customer env
+.\AiTestCrew.Runner.exe --auth-setup --target UI_Web_Blazor --environment sumo-retail
 # Complete the SSO + 2FA flow in the browser that opens
+.\AiTestCrew.Runner.exe --auth-setup --target UI_Web_Blazor --environment ams-metering
+# Again, with the matching customer credentials
 
 # For Legacy MVC apps (forms auth)
-.\AiTestCrew.Runner.exe --auth-setup --target UI_Web_MVC
+.\AiTestCrew.Runner.exe --auth-setup --target UI_Web_MVC --environment sumo-retail
 # Log in with your credentials
 ```
+
+Each environment writes to its own storage-state file (e.g. `bravecloud-auth-state.sumo.json` vs `bravecloud-auth-state.ams.json`) so they don't clobber each other. Omit `--environment` to fall back to `DefaultEnvironment`.
 
 Auth state is saved locally and reused for 8 hours (configurable).
 
@@ -543,14 +569,18 @@ Auth state is saved locally and reused for 8 hours (configurable).
 .\AiTestCrew.Runner.exe --record `
   --module security --testset user-management `
   --case-name "Search users by name" `
-  --target UI_Web_Blazor
+  --target UI_Web_Blazor `
+  --environment sumo-retail
 
 # Desktop recording (app launches, interact, press S to save)
 .\AiTestCrew.Runner.exe --record `
   --module desktop --testset calc `
   --case-name "Basic Addition" `
-  --target UI_Desktop_WinForms
+  --target UI_Desktop_WinForms `
+  --environment sumo-retail
 ```
+
+`--environment` is optional — defaults to `DefaultEnvironment`. Specify it when the same module/test set will be recorded against multiple customer deployments.
 
 The recorded test case syncs to the shared server automatically. It appears in the web dashboard immediately.
 
@@ -599,16 +629,41 @@ All server settings above, plus:
 |---|---|---|---|
 | `ServerUrl` | string | `""` | WebApi URL for remote mode. Empty = use local storage. |
 | `ApiKey` | string | `""` | API key for authenticating with the remote server |
-| `LegacyWebUiUrl` | string | `""` | Base URL of the Legacy MVC application |
-| `LegacyWebUiUsername` | string | `""` | Forms auth username |
-| `LegacyWebUiPassword` | string | `""` | Forms auth password |
-| `LegacyWebUiStorageStatePath` | string | `null` | Path to cached auth state (relative to exe) |
-| `BraveCloudUiUrl` | string | `""` | Base URL of the Blazor application |
-| `BraveCloudUiUsername` | string | `""` | Azure AD email |
-| `BraveCloudUiPassword` | string | `""` | Azure AD password |
-| `BraveCloudUiTotpSecret` | string | `null` | Base32 TOTP secret for automated 2FA |
-| `BraveCloudUiStorageStatePath` | string | `null` | Path to cached SSO auth state |
-| `WinFormsAppPath` | string | `""` | Full path to the desktop app exe |
+| `DefaultEnvironment` | string | `null` | Customer env used when `--environment` is omitted. Falls back to the first key in `Environments`, then to a synthesised `"default"` env for legacy single-env configs. |
+| `Environments` | dict | `{}` | Map of customer key → `EnvironmentConfig` block. See [Multi-Environment Setup](#multi-environment-setup) below. |
+| `LegacyWebUiUrl` | string | `""` | Base URL of the Legacy MVC application (top-level fallback; prefer `Environments.<key>.LegacyWebUiUrl` for multi-customer deployments) |
+| `LegacyWebUiUsername` | string | `""` | Forms auth username (top-level fallback) |
+| `LegacyWebUiPassword` | string | `""` | Forms auth password (top-level fallback) |
+| `LegacyWebUiStorageStatePath` | string | `null` | Path to cached auth state, relative to exe (top-level fallback) |
+| `BraveCloudUiUrl` | string | `""` | Base URL of the Blazor application (top-level fallback) |
+| `BraveCloudUiUsername` | string | `""` | Azure AD email (top-level fallback) |
+| `BraveCloudUiPassword` | string | `""` | Azure AD password (top-level fallback) |
+| `BraveCloudUiTotpSecret` | string | `null` | Base32 TOTP secret for automated 2FA (top-level fallback) |
+| `BraveCloudUiStorageStatePath` | string | `null` | Path to cached SSO auth state (top-level fallback) |
+| `WinFormsAppPath` | string | `""` | Full path to the desktop app exe (top-level fallback) |
+
+### Multi-Environment Setup
+
+Each customer deployment has its own URLs, credentials, auth-state files, and (for aseXML) Bravo DB connection string. Configure them under `TestEnvironment.Environments.<key>`:
+
+| Setting (inside an env block) | Purpose |
+|---|---|
+| `DisplayName` | Human-readable label shown in `--list-environments` and the UI dropdown |
+| `LegacyWebUiUrl` / `LegacyWebUiUsername` / `LegacyWebUiPassword` / `LegacyWebUiStorageStatePath` | Per-env legacy MVC overrides |
+| `BraveCloudUiUrl` / `BraveCloudUiUsername` / `BraveCloudUiPassword` / `BraveCloudUiTotpSecret` / `BraveCloudUiStorageStatePath` | Per-env Blazor + Azure SSO overrides |
+| `WinFormsAppPath` / `WinFormsAppArgs` | Per-env desktop app path (different customer builds install to different paths / accept different launch args) |
+| `BravoDbConnectionString` | Per-env Bravo application DB for aseXML endpoint resolution |
+| `ApiStackBaseUrls` | Map of ApiStacks key → BaseUrl override. The shared `ApiStacks.<stack>.Modules.*` definitions are reused; only the `BaseUrl` differs per customer. |
+
+Any field omitted from an env block falls back to the top-level field of the same name. This lets you migrate gradually: add one env at a time while leaving top-level fields in place as sane defaults.
+
+Select the active env at run time:
+
+- CLI: `--environment <key>` on any run / auth / recording command
+- UI: environment dropdown in the **Run Objective** dialog
+- Persisted: the chosen env is saved on each test set; omitting `--environment` uses the persisted value
+
+See the **Multi-Environment Support** section of `docs/functional.md` for the per-objective `AllowedEnvironments` + `EnvironmentParameters` authoring model.
 
 ### Environment Variable Overrides
 
@@ -658,7 +713,9 @@ Rebuild the Runner package and redistribute the zip/folder. The Runner is statel
 | Docker build fails | Ensure Docker Desktop is in Windows container mode. Linux containers cannot build `net8.0-windows` projects. |
 | Runner can't connect to server | Check `ServerUrl` in appsettings.json. Verify the server is reachable: `curl http://<server>:5050/api/health` |
 | Playwright browser not found | Run `npx playwright install chromium` in the Runner directory. |
-| Auth state expired | Re-run `--auth-setup --target <UI_Web_Blazor|UI_Web_MVC>`. Default expiry is 8 hours. |
+| Auth state expired | Re-run `--auth-setup --target <UI_Web_Blazor\|UI_Web_MVC> --environment <envKey>`. Default expiry is 8 hours. Repeat per customer env — each writes to its own storage-state filename. |
+| Web UI test fails immediately with unauth redirect after adding `Environments` | The env block specifies a different `BraveCloudUiStorageStatePath` / `LegacyWebUiStorageStatePath` than the one your existing auth state was saved to. Either point the env's path at the existing filename, omit the path from the env block (falls back to top-level), or re-run `--auth-setup --environment <key>` to save state to the env-specific filename. |
+| `--auth-setup` wrote to a different filename than agents expected | Verify the "Storage state →" line the command prints at launch. It shows the exact path being written. If it differs from what the agents read, reconcile by editing the env's `*StorageStatePath` or omitting it so it falls back to the top-level field. |
 | Concurrent run conflict | Same test set is already running. Wait for it to finish or use a different test set. Different test sets can run in parallel. |
 | Port 5050 already in use | Change `ListenUrl` in appsettings.json or set `AITESTCREW_TestEnvironment__ListenUrl=http://+:8080` |
 | `ApiStacks must be configured` (in Docker) | The container's `appsettings.json` is minimal. Create `docker-config/appsettings.json` (copy from `src/AiTestCrew.Runner/`) and rebuild/restart. The compose file mounts this into `C:/config/`. |

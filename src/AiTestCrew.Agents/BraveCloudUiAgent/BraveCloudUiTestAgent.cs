@@ -4,6 +4,7 @@ using Microsoft.SemanticKernel;
 using OtpNet;
 using AiTestCrew.Agents.WebUiBase;
 using AiTestCrew.Core.Configuration;
+using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
 
 namespace AiTestCrew.Agents.BraveCloudUiAgent;
@@ -44,24 +45,28 @@ public class BraveCloudUiTestAgent : BaseWebUiTestAgent
         "You write thorough Playwright-based UI tests covering happy path, error handling, " +
         "and boundary conditions.";
 
-    protected override string TargetBaseUrl => _config.BraveCloudUiUrl;
+    protected override string TargetBaseUrl => _envResolver.ResolveBraveCloudUiUrl(CurrentEnvironmentKey);
     protected override string TargetBaseUrlConfigKey => "BraveCloudUiUrl";
 
     public BraveCloudUiTestAgent(
         Kernel kernel,
         ILogger<BraveCloudUiTestAgent> logger,
-        TestEnvironmentConfig config)
-        : base(kernel, logger, config)
+        TestEnvironmentConfig config,
+        IEnvironmentResolver envResolver)
+        : base(kernel, logger, config, envResolver)
     {
     }
 
     public override Task<bool> CanHandleAsync(TestTask task) =>
         Task.FromResult(task.Target == TestTargetType.UI_Web_Blazor);
 
-    protected override (string Username, string Password)? GetConfiguredCredentials() =>
-        string.IsNullOrEmpty(_config.BraveCloudUiUsername)
-            ? null
-            : (_config.BraveCloudUiUsername, _config.BraveCloudUiPassword);
+    protected override (string Username, string Password)? GetConfiguredCredentials()
+    {
+        var user = _envResolver.ResolveBraveCloudUiUsername(CurrentEnvironmentKey);
+        if (string.IsNullOrEmpty(user)) return null;
+        var pwd = _envResolver.ResolveBraveCloudUiPassword(CurrentEnvironmentKey);
+        return (user, pwd);
+    }
 
     /// <summary>
     /// Performs a full Azure SSO login once and saves the resulting storage state so that
@@ -101,10 +106,11 @@ public class BraveCloudUiTestAgent : BaseWebUiTestAgent
 
     private async Task PerformSsoLoginAsync(IPage page, IBrowserContext context)
     {
-        Logger.LogInformation("[{Agent}] Performing full SSO login for {Url}", Name, _config.BraveCloudUiUrl);
+        var appUrl = _envResolver.ResolveBraveCloudUiUrl(CurrentEnvironmentKey);
+        Logger.LogInformation("[{Agent}] Performing full SSO login for {Url}", Name, appUrl);
 
         // Navigate to the app — it will redirect to Azure AD
-        await page.GotoAsync(_config.BraveCloudUiUrl,
+        await page.GotoAsync(appUrl,
             new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
 
         // Wait for the Microsoft login page
@@ -116,12 +122,12 @@ public class BraveCloudUiTestAgent : BaseWebUiTestAgent
 
         // Enter email
         await page.WaitForSelectorAsync("input[type='email']", new PageWaitForSelectorOptions { Timeout = 15_000 });
-        await page.FillAsync("input[type='email']", _config.BraveCloudUiUsername);
+        await page.FillAsync("input[type='email']", _envResolver.ResolveBraveCloudUiUsername(CurrentEnvironmentKey));
         await page.ClickAsync("input[type='submit']");
 
         // Enter password
         await page.WaitForSelectorAsync("input[type='password']", new PageWaitForSelectorOptions { Timeout = 15_000 });
-        await page.FillAsync("input[type='password']", _config.BraveCloudUiPassword);
+        await page.FillAsync("input[type='password']", _envResolver.ResolveBraveCloudUiPassword(CurrentEnvironmentKey));
         await page.ClickAsync("input[type='submit']");
 
         // Handle TOTP / MFA challenge if presented (appears between password and KMSI prompt)
@@ -142,7 +148,7 @@ public class BraveCloudUiTestAgent : BaseWebUiTestAgent
 
         // Wait until redirected back to our application
         await page.WaitForURLAsync(
-            url => url.StartsWith(_config.BraveCloudUiUrl, StringComparison.OrdinalIgnoreCase),
+            url => url.StartsWith(appUrl, StringComparison.OrdinalIgnoreCase),
             new PageWaitForURLOptions { Timeout = 30_000 });
 
         Logger.LogInformation("[{Agent}] SSO login successful — now at: {Url}", Name, page.Url);
@@ -187,12 +193,13 @@ public class BraveCloudUiTestAgent : BaseWebUiTestAgent
 
         if (!totpPageDetected) return;
 
-        if (!string.IsNullOrEmpty(_config.BraveCloudUiTotpSecret))
+        var totpSecret = _envResolver.ResolveBraveCloudUiTotpSecret(CurrentEnvironmentKey);
+        if (!string.IsNullOrEmpty(totpSecret))
         {
             // Automated TOTP entry
             Logger.LogInformation("[{Agent}] TOTP prompt detected — computing code from secret", Name);
 
-            var secretBytes = Base32Encoding.ToBytes(_config.BraveCloudUiTotpSecret);
+            var secretBytes = Base32Encoding.ToBytes(totpSecret);
             var totp = new Totp(secretBytes);
             var code = totp.ComputeTotp();
 
@@ -246,10 +253,11 @@ public class BraveCloudUiTestAgent : BaseWebUiTestAgent
     /// consistent regardless of the current working directory.</summary>
     private string? ResolveStorageStatePath()
     {
-        if (string.IsNullOrEmpty(_config.BraveCloudUiStorageStatePath)) return null;
-        return Path.IsPathRooted(_config.BraveCloudUiStorageStatePath)
-            ? _config.BraveCloudUiStorageStatePath
-            : Path.Combine(AppContext.BaseDirectory, _config.BraveCloudUiStorageStatePath);
+        var path = _envResolver.ResolveBraveCloudUiStorageStatePath(CurrentEnvironmentKey);
+        if (string.IsNullOrEmpty(path)) return null;
+        return Path.IsPathRooted(path)
+            ? path
+            : Path.Combine(AppContext.BaseDirectory, path);
     }
 
     private bool HasFreshStorageState()

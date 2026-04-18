@@ -31,6 +31,7 @@ public class TestOrchestrator
     private readonly IExecutionHistoryRepository _historyRepo;
     private readonly IModuleRepository _moduleRepo;
     private readonly AgentConcurrencyLimiter _concurrencyLimiter;
+    private readonly IEnvironmentResolver _envResolver;
     private readonly ILogger<TestOrchestrator> _logger;
 
     public TestOrchestrator(
@@ -41,6 +42,7 @@ public class TestOrchestrator
         IExecutionHistoryRepository historyRepo,
         IModuleRepository moduleRepo,
         AgentConcurrencyLimiter concurrencyLimiter,
+        IEnvironmentResolver envResolver,
         ILogger<TestOrchestrator> logger)
     {
         _agents = agents.ToList();
@@ -50,7 +52,21 @@ public class TestOrchestrator
         _historyRepo = historyRepo;
         _moduleRepo = moduleRepo;
         _concurrencyLimiter = concurrencyLimiter;
+        _envResolver = envResolver;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Checks whether an objective is permitted to run in the active environment.
+    /// Empty <see cref="TestObjective.AllowedEnvironments"/> is interpreted as
+    /// "default environment only" — preserves legacy behaviour for objectives
+    /// that predate the multi-environment feature.
+    /// </summary>
+    private bool IsObjectiveAllowedIn(TestObjective obj, string activeEnv, string defaultEnv)
+    {
+        if (obj.AllowedEnvironments.Count == 0)
+            return string.Equals(activeEnv, defaultEnv, StringComparison.OrdinalIgnoreCase);
+        return obj.AllowedEnvironments.Contains(activeEnv, StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -69,11 +85,17 @@ public class TestOrchestrator
         string? apiStackKey = null,
         string? apiModule = null,
         string? endpointCode = null,
-        int? verificationWaitOverride = null)
+        int? verificationWaitOverride = null,
+        string? environmentKey = null)
     {
         var sw = Stopwatch.StartNew();
         var startedAt = DateTime.UtcNow;
         var isModuleScoped = !string.IsNullOrEmpty(moduleId) && !string.IsNullOrEmpty(targetTestSetId);
+        var defaultEnv = _envResolver.ResolveKey(null);
+        // Effective env: CLI/arg → (set later from persisted testset in Reuse) → default.
+        // Stored in local here so Normal mode can stamp new objectives immediately.
+        var effectiveEnv = _envResolver.ResolveKey(environmentKey);
+        var preSkippedResults = new List<TestResult>();
 
         _logger.LogInformation("╔══════════════════════════════════════════╗");
         _logger.LogInformation("║  AI TEST CREW - Starting Test Run        ║");
@@ -130,11 +152,39 @@ public class TestOrchestrator
 
             // Use the original objective stored in the test set
             objective = saved.Objective;
-            _logger.LogInformation("Reuse mode: loaded test set '{Id}' (run #{Run}, {Count} objectives)",
-                saved.Id, saved.RunCount + 1, saved.TestObjectives.Count);
 
-            // Build tasks from saved objectives — one task per objective, injecting its steps
-            tasks = saved.TestObjectives.Select(obj =>
+            // Refine the effective environment: CLI arg overrides persisted test-set default.
+            effectiveEnv = _envResolver.ResolveKey(environmentKey ?? saved.EnvironmentKey);
+
+            _logger.LogInformation("Reuse mode: loaded test set '{Id}' (run #{Run}, {Count} objectives, env={Env})",
+                saved.Id, saved.RunCount + 1, saved.TestObjectives.Count, effectiveEnv);
+
+            // Filter objectives: skip those not allowed on the active env.
+            var objectivesToRun = new List<TestObjective>();
+            foreach (var candidate in saved.TestObjectives)
+            {
+                if (IsObjectiveAllowedIn(candidate, effectiveEnv, defaultEnv))
+                {
+                    objectivesToRun.Add(candidate);
+                    continue;
+                }
+                var allowedList = candidate.AllowedEnvironments.Count == 0
+                    ? defaultEnv
+                    : string.Join(", ", candidate.AllowedEnvironments);
+                var skipReason = $"Skipped: not allowed in environment '{effectiveEnv}' (allowed: {allowedList})";
+                _logger.LogInformation("Skipping objective '{Name}' — {Reason}", candidate.Name, skipReason);
+                preSkippedResults.Add(new TestResult
+                {
+                    ObjectiveId = candidate.Id,
+                    ObjectiveName = candidate.Name,
+                    AgentName = candidate.AgentName,
+                    Status = TestStatus.Skipped,
+                    Summary = skipReason
+                });
+            }
+
+            // Build tasks from allowed objectives — one task per objective, injecting its steps
+            tasks = objectivesToRun.Select(obj =>
             {
                 var targetType = Enum.TryParse<TestTargetType>(obj.TargetType, out var t)
                     ? t : TestTargetType.API_REST;
@@ -176,6 +226,13 @@ public class TestOrchestrator
                     : saved.EndpointCode;
                 if (!string.IsNullOrWhiteSpace(effectiveEndpoint))
                     parameters["EndpointCode"] = effectiveEndpoint!;
+
+                // Inject environment: used by agents to resolve per-env URLs/creds and
+                // by StepParameterSubstituter to apply {{Token}} values at playback.
+                parameters["EnvironmentKey"] = effectiveEnv;
+                if (obj.EnvironmentParameters.TryGetValue(effectiveEnv, out var envParams)
+                    && envParams.Count > 0)
+                    parameters["EnvironmentParameters"] = envParams;
 
                 return new TestTask
                 {
@@ -265,6 +322,7 @@ public class TestOrchestrator
                 if (apiStackKey is not null) t.Parameters["ApiStackKey"] = apiStackKey;
                 if (apiModule is not null) t.Parameters["ApiModule"] = apiModule;
                 if (!string.IsNullOrWhiteSpace(endpointCode)) t.Parameters["EndpointCode"] = endpointCode;
+                t.Parameters["EnvironmentKey"] = effectiveEnv;
             }
 
             _logger.LogInformation("Decomposed into {Count} tasks:", tasks.Count);
@@ -377,13 +435,18 @@ public class TestOrchestrator
         // Reassemble results in original order for deterministic output
         var results = indexedResults.OrderBy(r => r.Index).Select(r => r.Result).ToList();
 
+        // Prepend any objectives that were pre-skipped due to environment filtering so
+        // the UI shows them as Skipped alongside the executed ones.
+        if (preSkippedResults.Count > 0)
+            results = preSkippedResults.Concat(results).ToList();
+
         // ── Persist test set ──
         if (mode is RunMode.Normal or RunMode.Rebaseline)
         {
             if (isModuleScoped)
-                await SaveTestSetToModuleAsync(objective, results, moduleId!, targetTestSetId!, mode, objectiveName, apiStackKey, apiModule, endpointCode);
+                await SaveTestSetToModuleAsync(objective, results, moduleId!, targetTestSetId!, mode, objectiveName, apiStackKey, apiModule, endpointCode, effectiveEnv);
             else
-                await SaveTestSetAsync(objective, results, objectiveName, apiStackKey, apiModule, endpointCode);
+                await SaveTestSetAsync(objective, results, objectiveName, apiStackKey, apiModule, endpointCode, effectiveEnv);
         }
 
         // ── Update run statistics (Reuse / VerifyOnly mode) ──
@@ -420,7 +483,9 @@ public class TestOrchestrator
                     ? reuseId
                     : SlugHelper.ToSlug(objective);
             var executionRun = PersistedExecutionRun.FromSuiteResult(
-                suiteResult, testSetId, mode, startedAt, isModuleScoped ? moduleId : null);
+                suiteResult, testSetId, mode, startedAt,
+                isModuleScoped ? moduleId : null,
+                effectiveEnv);
             if (externalRunId is not null)
                 executionRun.RunId = externalRunId;
             await _historyRepo.SaveAsync(executionRun);
@@ -443,9 +508,10 @@ public class TestOrchestrator
         string objective, List<TestResult> results,
         string? objectiveName = null,
         string? apiStackKey = null, string? apiModule = null,
-        string? endpointCode = null)
+        string? endpointCode = null,
+        string? environmentKey = null)
     {
-        var testObjective = BuildObjectiveFromResults(objective, results, objectiveName);
+        var testObjective = BuildObjectiveFromResults(objective, results, objectiveName, environmentKey);
         if (testObjective is null)
         {
             _logger.LogWarning("No test cases were generated — test set will not be saved.");
@@ -466,7 +532,8 @@ public class TestOrchestrator
             TestObjectives = [testObjective],
             ApiStackKey = apiStackKey,
             ApiModule = apiModule,
-            EndpointCode = string.IsNullOrWhiteSpace(endpointCode) ? null : endpointCode
+            EndpointCode = string.IsNullOrWhiteSpace(endpointCode) ? null : endpointCode,
+            EnvironmentKey = environmentKey
         };
 
         if (!string.IsNullOrWhiteSpace(objectiveName))
@@ -482,9 +549,10 @@ public class TestOrchestrator
         string moduleId, string testSetId, RunMode mode,
         string? objectiveName = null,
         string? apiStackKey = null, string? apiModule = null,
-        string? endpointCode = null)
+        string? endpointCode = null,
+        string? environmentKey = null)
     {
-        var testObjective = BuildObjectiveFromResults(objective, results, objectiveName);
+        var testObjective = BuildObjectiveFromResults(objective, results, objectiveName, environmentKey);
         if (testObjective is null)
         {
             _logger.LogWarning("No test cases were generated — test set will not be updated.");
@@ -522,7 +590,8 @@ public class TestOrchestrator
                 TestObjectives = [..objectivesFromOthers, testObjective],
                 ApiStackKey = apiStackKey ?? existing?.ApiStackKey,
                 ApiModule = apiModule ?? existing?.ApiModule,
-                EndpointCode = !string.IsNullOrWhiteSpace(endpointCode) ? endpointCode : existing?.EndpointCode
+                EndpointCode = !string.IsNullOrWhiteSpace(endpointCode) ? endpointCode : existing?.EndpointCode,
+                EnvironmentKey = environmentKey ?? existing?.EnvironmentKey
             };
             await _testSetRepo.SaveAsync(testSet, moduleId);
             _logger.LogInformation("Test set rebaselined (objective: {Obj}): {Module}/{Id}",
@@ -531,7 +600,7 @@ public class TestOrchestrator
         else
         {
             // Normal: merge into existing test set
-            await _testSetRepo.MergeObjectivesAsync(moduleId, testSetId, [testObjective], objective, objectiveName, apiStackKey, apiModule, endpointCode);
+            await _testSetRepo.MergeObjectivesAsync(moduleId, testSetId, [testObjective], objective, objectiveName, apiStackKey, apiModule, endpointCode, environmentKey);
             _logger.LogInformation("Test objective merged into: {Module}/{Id}", moduleId, testSetId);
         }
     }
@@ -541,7 +610,8 @@ public class TestOrchestrator
     /// All generated test cases across all tasks become steps within this objective.
     /// </summary>
     private static TestObjective? BuildObjectiveFromResults(
-        string objective, List<TestResult> results, string? objectiveName)
+        string objective, List<TestResult> results, string? objectiveName,
+        string? environmentKey = null)
     {
         var apiSteps = new List<ApiTestDefinition>();
         var webUiSteps = new List<WebUiTestDefinition>();
@@ -622,7 +692,12 @@ public class TestOrchestrator
             WebUiSteps = webUiSteps,
             DesktopUiSteps = desktopUiSteps,
             AseXmlSteps = aseXmlSteps,
-            AseXmlDeliverySteps = aseXmlDeliverySteps
+            AseXmlDeliverySteps = aseXmlDeliverySteps,
+            // Auto-pin new/rebaselined objectives to the environment they were recorded against.
+            // Users can widen the list later via the UI editor to run on additional environments.
+            AllowedEnvironments = !string.IsNullOrWhiteSpace(environmentKey)
+                ? new List<string> { environmentKey }
+                : new List<string>()
         };
     }
 

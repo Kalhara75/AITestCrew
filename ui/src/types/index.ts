@@ -14,6 +14,8 @@ export interface TestSetListItem {
   moduleId: string;
   apiStackKey?: string | null;
   apiModule?: string | null;
+  endpointCode?: string | null;
+  environmentKey?: string | null;
   objective: string;
   objectives: string[];
   objectiveNames?: Record<string, string>;
@@ -109,6 +111,8 @@ export interface TestObjective {
   aseXmlSteps: AseXmlTestDefinition[];
   aseXmlDeliverySteps: AseXmlDeliveryTestDefinition[];
   stepCount: number;
+  allowedEnvironments?: string[];
+  environmentParameters?: Record<string, Record<string, string>>;
 }
 
 export interface ObjectiveStatus {
@@ -123,6 +127,8 @@ export interface TestSetDetail {
   moduleId: string;
   apiStackKey?: string | null;
   apiModule?: string | null;
+  endpointCode?: string | null;
+  environmentKey?: string | null;
   objective: string;
   objectives: string[];
   objectiveNames?: Record<string, string>;
@@ -254,6 +260,18 @@ export interface TriggerRunRequest {
   apiStackKey?: string;
   apiModule?: string;
   verificationWaitOverride?: number;
+  environmentKey?: string;
+}
+
+export interface EnvironmentInfo {
+  key: string;
+  displayName: string;
+  isDefault: boolean;
+}
+
+export interface EnvironmentsResponse {
+  environments: EnvironmentInfo[];
+  defaultEnvironment: string | null;
 }
 
 export interface ApiModuleInfo {

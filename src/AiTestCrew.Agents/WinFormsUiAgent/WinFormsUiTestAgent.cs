@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using AiTestCrew.Agents.DesktopUiBase;
 using AiTestCrew.Core.Configuration;
+using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
 
 namespace AiTestCrew.Agents.WinFormsUiAgent;
@@ -25,15 +26,16 @@ public class WinFormsUiTestAgent : BaseDesktopUiTestAgent
         "and boundary conditions. You use AutomationId and Name properties to identify " +
         "UI elements reliably.";
 
-    protected override string TargetAppPath => _config.WinFormsAppPath;
-    protected override string TargetAppArgs => _config.WinFormsAppArgs ?? "";
+    protected override string TargetAppPath => _envResolver.ResolveWinFormsAppPath(CurrentEnvironmentKey);
+    protected override string TargetAppArgs => _envResolver.ResolveWinFormsAppArgs(CurrentEnvironmentKey) ?? "";
     protected override string TargetAppPathConfigKey => "WinFormsAppPath";
 
     public WinFormsUiTestAgent(
         Kernel kernel,
         ILogger<WinFormsUiTestAgent> logger,
-        TestEnvironmentConfig config)
-        : base(kernel, logger, config)
+        TestEnvironmentConfig config,
+        IEnvironmentResolver envResolver)
+        : base(kernel, logger, config, envResolver)
     {
     }
 

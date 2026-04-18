@@ -3,6 +3,7 @@ using Microsoft.Playwright;
 using Microsoft.SemanticKernel;
 using AiTestCrew.Agents.WebUiBase;
 using AiTestCrew.Core.Configuration;
+using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
 
 namespace AiTestCrew.Agents.LegacyWebUiAgent;
@@ -65,24 +66,28 @@ public class LegacyWebUiTestAgent : BaseWebUiTestAgent
         "You write thorough Playwright-based UI tests covering happy path, error handling, " +
         "and boundary conditions.";
 
-    protected override string TargetBaseUrl => _config.LegacyWebUiUrl;
+    protected override string TargetBaseUrl => _envResolver.ResolveLegacyWebUiUrl(CurrentEnvironmentKey);
     protected override string TargetBaseUrlConfigKey => "LegacyWebUiUrl";
 
     public LegacyWebUiTestAgent(
         Kernel kernel,
         ILogger<LegacyWebUiTestAgent> logger,
-        TestEnvironmentConfig config)
-        : base(kernel, logger, config)
+        TestEnvironmentConfig config,
+        IEnvironmentResolver envResolver)
+        : base(kernel, logger, config, envResolver)
     {
     }
 
     public override Task<bool> CanHandleAsync(TestTask task) =>
         Task.FromResult(task.Target == TestTargetType.UI_Web_MVC);
 
-    protected override (string Username, string Password)? GetConfiguredCredentials() =>
-        string.IsNullOrEmpty(_config.LegacyWebUiUsername)
-            ? null
-            : (_config.LegacyWebUiUsername, _config.LegacyWebUiPassword);
+    protected override (string Username, string Password)? GetConfiguredCredentials()
+    {
+        var user = _envResolver.ResolveLegacyWebUiUsername(CurrentEnvironmentKey);
+        if (string.IsNullOrEmpty(user)) return null;
+        var pwd = _envResolver.ResolveLegacyWebUiPassword(CurrentEnvironmentKey);
+        return (user, pwd);
+    }
 
     // ─────────────────────────────────────────────────────
     // Storage state caching (mirrors BraveCloudUiTestAgent)
@@ -91,7 +96,8 @@ public class LegacyWebUiTestAgent : BaseWebUiTestAgent
     protected override async Task PerformOneTimeAuthSetupAsync(IBrowser browser, CancellationToken ct)
     {
         // Feature disabled — fall back to per-test-case login (existing behavior)
-        if (string.IsNullOrEmpty(_config.LegacyWebUiStorageStatePath))
+        var storagePath = _envResolver.ResolveLegacyWebUiStorageStatePath(CurrentEnvironmentKey);
+        if (string.IsNullOrEmpty(storagePath))
             return;
 
         // Fast path: cached state still fresh
@@ -135,7 +141,7 @@ public class LegacyWebUiTestAgent : BaseWebUiTestAgent
 
     private async Task PerformFormsLoginAsync(IBrowser browser)
     {
-        var loginUrl = $"{_config.LegacyWebUiUrl.TrimEnd('/')}{_config.LegacyWebUiLoginPath}";
+        var loginUrl = $"{_envResolver.ResolveLegacyWebUiUrl(CurrentEnvironmentKey).TrimEnd('/')}{_config.LegacyWebUiLoginPath}";
         Logger.LogInformation("[{Agent}] Performing forms login at {Url}", Name, loginUrl);
 
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions());
@@ -147,11 +153,11 @@ public class LegacyWebUiTestAgent : BaseWebUiTestAgent
         // Fill username — try common ASP.NET MVC selectors
         var usernameField = page.Locator("input#UserName, input[name='UserName'], input[name='Email'], input[type='text']").First;
         await usernameField.WaitForAsync(new LocatorWaitForOptions { Timeout = 15_000 });
-        await usernameField.FillAsync(_config.LegacyWebUiUsername);
+        await usernameField.FillAsync(_envResolver.ResolveLegacyWebUiUsername(CurrentEnvironmentKey));
 
         // Fill password
         var passwordField = page.Locator("input#Password, input[name='Password'], input[type='password']").First;
-        await passwordField.FillAsync(_config.LegacyWebUiPassword);
+        await passwordField.FillAsync(_envResolver.ResolveLegacyWebUiPassword(CurrentEnvironmentKey));
 
         // Click submit
         var urlBeforeSubmit = page.Url;
@@ -193,10 +199,11 @@ public class LegacyWebUiTestAgent : BaseWebUiTestAgent
 
     private string? ResolveStorageStatePath()
     {
-        if (string.IsNullOrEmpty(_config.LegacyWebUiStorageStatePath)) return null;
-        return Path.IsPathRooted(_config.LegacyWebUiStorageStatePath)
-            ? _config.LegacyWebUiStorageStatePath
-            : Path.Combine(AppContext.BaseDirectory, _config.LegacyWebUiStorageStatePath);
+        var path = _envResolver.ResolveLegacyWebUiStorageStatePath(CurrentEnvironmentKey);
+        if (string.IsNullOrEmpty(path)) return null;
+        return Path.IsPathRooted(path)
+            ? path
+            : Path.Combine(AppContext.BaseDirectory, path);
     }
 
     private bool HasFreshStorageState()

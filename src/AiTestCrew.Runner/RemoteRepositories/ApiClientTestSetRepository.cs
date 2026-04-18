@@ -70,7 +70,8 @@ internal sealed class ApiClientTestSetRepository : ITestSetRepository
         List<TestObjective> newObjectives, string objective,
         string? objectiveName = null,
         string? apiStackKey = null, string? apiModule = null,
-        string? endpointCode = null)
+        string? endpointCode = null,
+        string? environmentKey = null)
     {
         await _http.PostAsync($"api/modules/{moduleId}/testsets/{testSetId}/merge", new
         {
@@ -79,7 +80,8 @@ internal sealed class ApiClientTestSetRepository : ITestSetRepository
             objectiveName,
             apiStackKey,
             apiModule,
-            endpointCode
+            endpointCode,
+            environmentKey
         });
     }
 

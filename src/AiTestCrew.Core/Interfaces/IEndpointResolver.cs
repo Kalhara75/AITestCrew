@@ -15,11 +15,21 @@ public interface IEndpointResolver
     Task<BravoEndpoint?> ResolveAsync(string endpointCode, CancellationToken ct = default);
 
     /// <summary>
+    /// Environment-aware overload. Uses the Bravo DB connection string configured
+    /// under <c>Environments[env].BravoDbConnectionString</c> when set, falling
+    /// back to <c>AseXml.BravoDb.ConnectionString</c>.
+    /// </summary>
+    Task<BravoEndpoint?> ResolveAsync(string endpointCode, string? environmentKey, CancellationToken ct = default);
+
+    /// <summary>
     /// Returns all known <c>EndPointCode</c> values. Used by the delivery agent
     /// to seed the LLM with the catalogue of valid endpoints and by the CLI's
     /// <c>--list-endpoints</c> command.
     /// </summary>
     Task<IReadOnlyList<string>> ListCodesAsync(CancellationToken ct = default);
+
+    /// <summary>Environment-aware overload; see <see cref="ResolveAsync(string, string?, CancellationToken)"/>.</summary>
+    Task<IReadOnlyList<string>> ListCodesAsync(string? environmentKey, CancellationToken ct = default);
 }
 
 /// <summary>

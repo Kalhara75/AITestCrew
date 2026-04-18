@@ -4,8 +4,10 @@ using Microsoft.Playwright;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using AiTestCrew.Agents.Base;
+using AiTestCrew.Agents.Environment;
 using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Configuration;
+using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
 
 namespace AiTestCrew.Agents.WebUiBase;
@@ -26,6 +28,15 @@ namespace AiTestCrew.Agents.WebUiBase;
 public abstract class BaseWebUiTestAgent : BaseTestAgent
 {
     protected readonly TestEnvironmentConfig _config;
+    protected readonly IEnvironmentResolver _envResolver;
+
+    /// <summary>
+    /// Active environment key for the current task (set at the top of
+    /// <see cref="ExecuteAsync"/>). Subclass overrides of <see cref="TargetBaseUrl"/>
+    /// and credential accessors read through <see cref="_envResolver"/> using this key
+    /// so URLs and credentials resolve per-environment at playback.
+    /// </summary>
+    protected string? CurrentEnvironmentKey { get; private set; }
 
     /// <summary>The root URL of the application under test.</summary>
     protected abstract string TargetBaseUrl { get; }
@@ -33,10 +44,11 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
     /// <summary>Config key name shown in error messages when TargetBaseUrl is empty.</summary>
     protected abstract string TargetBaseUrlConfigKey { get; }
 
-    protected BaseWebUiTestAgent(Kernel kernel, ILogger logger, TestEnvironmentConfig config)
+    protected BaseWebUiTestAgent(Kernel kernel, ILogger logger, TestEnvironmentConfig config, IEnvironmentResolver envResolver)
         : base(kernel, logger)
     {
         _config = config;
+        _envResolver = envResolver;
     }
 
     // ─────────────────────────────────────────────────────
@@ -80,7 +92,14 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
         var sw = Stopwatch.StartNew();
         var steps = new List<TestStep>();
 
-        Logger.LogInformation("[{Agent}] Starting task: {Desc}", Name, task.Description);
+        // Capture active environment so TargetBaseUrl (resolved per-env by subclasses)
+        // and auth-state paths pick up the right customer's settings.
+        task.Parameters.TryGetValue("EnvironmentKey", out var rawEnvKey);
+        CurrentEnvironmentKey = rawEnvKey as string;
+        var envParams = StepParameterSubstituter.ReadEnvironmentParameters(task.Parameters);
+
+        Logger.LogInformation("[{Agent}] Starting task: {Desc} (env: {Env})",
+            Name, task.Description, CurrentEnvironmentKey ?? "default");
 
         IPlaywright? playwright = null;
         IBrowser? browser = null;
@@ -92,7 +111,11 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
             if (task.Parameters.TryGetValue("PreloadedTestCases", out var preloaded)
                 && preloaded is List<WebUiTestCase> saved)
             {
-                testCases = saved;
+                // Apply per-environment {{Token}} substitution so the right NMI / user /
+                // assertion values are used for the active environment.
+                testCases = envParams.Count > 0
+                    ? saved.Select(tc => StepParameterSubstituter.Apply(tc, envParams)).ToList()
+                    : saved;
                 steps.Add(TestStep.Pass("load-cases",
                     $"Loaded {testCases.Count} saved UI test cases (reuse mode — skipping LLM generation)"));
                 Logger.LogInformation("[{Agent}] Reuse mode: {Count} saved test cases", Name, testCases.Count);

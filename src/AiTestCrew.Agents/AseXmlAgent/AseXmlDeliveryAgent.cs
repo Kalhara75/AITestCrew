@@ -76,7 +76,12 @@ public class AseXmlDeliveryAgent : BaseTestAgent
         var steps = new List<TestStep>();
         var deliveries = new List<Dictionary<string, object?>>();
 
-        Logger.LogInformation("[{Agent}] Starting task: {Desc}", Name, task.Description);
+        task.Parameters.TryGetValue("EnvironmentKey", out var rawEnvKey);
+        var envKey = rawEnvKey as string;
+        var envParams = Environment.StepParameterSubstituter.ReadEnvironmentParameters(task.Parameters);
+
+        Logger.LogInformation("[{Agent}] Starting task: {Desc} (env: {Env})",
+            Name, task.Description, envKey ?? "default");
 
         try
         {
@@ -85,7 +90,9 @@ public class AseXmlDeliveryAgent : BaseTestAgent
             if (task.Parameters.TryGetValue("PreloadedTestCases", out var preloaded)
                 && preloaded is List<AseXmlDeliveryTestCase> saved)
             {
-                testCases = saved;
+                testCases = envParams.Count > 0
+                    ? saved.Select(tc => Environment.StepParameterSubstituter.Apply(tc, envParams)).ToList()
+                    : saved;
                 steps.Add(TestStep.Pass("load-cases",
                     $"Loaded {testCases.Count} saved delivery case(s) (reuse mode — skipping LLM generation)"));
             }
@@ -140,7 +147,7 @@ public class AseXmlDeliveryAgent : BaseTestAgent
             {
                 ct.ThrowIfCancellationRequested();
                 caseIndex++;
-                await DeliverOneAsync(tc, caseIndex, runOutputDir, steps, deliveries, ct);
+                await DeliverOneAsync(tc, caseIndex, runOutputDir, steps, deliveries, envKey, ct);
             }
 
             var hasFails = steps.Any(s => s.Status == TestStatus.Failed);
@@ -186,6 +193,7 @@ public class AseXmlDeliveryAgent : BaseTestAgent
         var historyRepo = _services.GetRequiredService<IExecutionHistoryRepository>();
         var testSetId = task.Parameters.TryGetValue("TestSetId", out var tsId) ? tsId as string : null;
         var moduleId = task.Parameters.TryGetValue("ModuleId", out var mId) ? mId as string : null;
+        var envKey = task.Parameters.TryGetValue("EnvironmentKey", out var ek) ? ek as string : null;
         int? waitOverride = task.Parameters.TryGetValue("VerificationWaitOverride", out var wo) && wo is int w ? w : (int?)null;
 
         if (string.IsNullOrEmpty(testSetId))
@@ -252,6 +260,7 @@ public class AseXmlDeliveryAgent : BaseTestAgent
                         remoteFileName,
                         context,
                         steps,
+                        envKey,
                         ct);
                 }
                 finally
@@ -286,6 +295,7 @@ public class AseXmlDeliveryAgent : BaseTestAgent
         string runOutputDir,
         List<TestStep> steps,
         List<Dictionary<string, object?>> deliveries,
+        string? environmentKey,
         CancellationToken ct)
     {
         // 1) Render
@@ -340,7 +350,7 @@ public class AseXmlDeliveryAgent : BaseTestAgent
         BravoEndpoint? endpoint;
         try
         {
-            endpoint = await _endpoints.ResolveAsync(tc.EndpointCode, ct);
+            endpoint = await _endpoints.ResolveAsync(tc.EndpointCode, environmentKey, ct);
         }
         catch (InvalidOperationException ex)  // e.g. connection string not configured
         {
@@ -463,6 +473,7 @@ public class AseXmlDeliveryAgent : BaseTestAgent
                     remoteFileName,
                     context,
                     steps,
+                    environmentKey,
                     ct);
             }
         }
@@ -501,6 +512,7 @@ public class AseXmlDeliveryAgent : BaseTestAgent
         string remoteFileName,
         IReadOnlyDictionary<string, string> context,
         List<TestStep> steps,
+        string? environmentKey,
         CancellationToken ct)
     {
         var waitAction = $"wait[{deliveryIndex}.{verifyIndex}]";
@@ -535,6 +547,8 @@ public class AseXmlDeliveryAgent : BaseTestAgent
             Target = target,
             Parameters = new Dictionary<string, object>(),
         };
+        if (!string.IsNullOrWhiteSpace(environmentKey))
+            syntheticTask.Parameters["EnvironmentKey"] = environmentKey!;
 
         if (target is TestTargetType.UI_Web_MVC or TestTargetType.UI_Web_Blazor)
         {

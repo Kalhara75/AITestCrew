@@ -8,9 +8,10 @@ interface Props {
   moduleId?: string;
   apiStackKey?: string | null;
   apiModule?: string | null;
+  environmentKey?: string | null;
 }
 
-export function TriggerRunButton({ testSetId, moduleId, apiStackKey, apiModule }: Props) {
+export function TriggerRunButton({ testSetId, moduleId, apiStackKey, apiModule, environmentKey }: Props) {
   const navigate = useNavigate();
   const { individualRun, individualRunStatus, setIndividualRun } = useActiveRun();
   const [error, setError] = useState<string | null>(null);
@@ -43,6 +44,7 @@ export function TriggerRunButton({ testSetId, moduleId, apiStackKey, apiModule }
         moduleId,
         apiStackKey: apiStackKey ?? undefined,
         apiModule: apiModule ?? undefined,
+        environmentKey: environmentKey ?? undefined,
       });
       setIndividualRun({ runId: res.runId, testSetId, moduleId });
     } catch (err) {

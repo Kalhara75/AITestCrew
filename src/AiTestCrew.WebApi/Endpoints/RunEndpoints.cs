@@ -129,7 +129,8 @@ public static class RunEndpoints
                         objectiveId: request.ObjectiveId,
                         apiStackKey: request.ApiStackKey,
                         apiModule: request.ApiModule,
-                        verificationWaitOverride: request.VerificationWaitOverride);
+                        verificationWaitOverride: request.VerificationWaitOverride,
+                        environmentKey: request.EnvironmentKey);
                     var testSetId = mode is RunMode.Reuse or RunMode.VerifyOnly
                         ? request.TestSetId!
                         : !string.IsNullOrWhiteSpace(request.TestSetId)
@@ -203,4 +204,4 @@ public static class RunEndpoints
     };
 }
 
-public record RunRequest(string? Objective, string? ObjectiveName, string Mode, string? TestSetId, string? ModuleId, string? ObjectiveId, string? ApiStackKey = null, string? ApiModule = null, int? VerificationWaitOverride = null);
+public record RunRequest(string? Objective, string? ObjectiveName, string Mode, string? TestSetId, string? ModuleId, string? ObjectiveId, string? ApiStackKey = null, string? ApiModule = null, int? VerificationWaitOverride = null, string? EnvironmentKey = null);

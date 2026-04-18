@@ -351,6 +351,7 @@ dotnet run --project src/AiTestCrew.Runner -- --record-verification \
   --module aemo-b2b --testset mfn-delivery-tests \
   --objective deliver-mfn-one-in-all-in \
   --target UI_Web_Blazor \
+  --environment sumo-retail \
   --verification-name "MFN Process Overview shows 'One In All In'" \
   --wait 30
 
@@ -359,6 +360,7 @@ dotnet run --project src/AiTestCrew.Runner -- --record-verification \
   --module aemo-b2b --testset mfn-delivery-tests \
   --objective deliver-mfn-one-in-all-in \
   --target UI_Web_MVC \
+  --environment sumo-retail \
   --verification-name "Legacy MFN Search grid row exists"
 
 # Record a WinForms desktop verification
@@ -366,8 +368,11 @@ dotnet run --project src/AiTestCrew.Runner -- --record-verification \
   --module aemo-b2b --testset mfn-delivery-tests \
   --objective deliver-mfn-one-in-all-in \
   --target UI_Desktop_WinForms \
+  --environment sumo-retail \
   --verification-name "Desktop admin tool shows the transaction"
 ```
+
+`--environment` is optional — defaults to `DefaultEnvironment`. Use it to record verifications against a non-default customer (e.g. `--environment ams-metering`). The cached auth state and base URL for that env are used automatically.
 
 At record time, the CLI prints the auto-parameterise context (which `{{Tokens}}` are available) so you can see what matches to expect.
 
@@ -424,7 +429,7 @@ No 'LegacyWebUiStorageStatePath' configured — recorder will start unauthentica
 Run --auth-setup --target UI_Web_MVC first to skip the login flow during recording.
 ```
 
-Run `--auth-setup --target UI_Web_MVC` (or `UI_Web_Blazor`) once to populate the cache. Subsequent `--record-verification` runs open the recorder already logged in, so your captured steps are only the actual verification actions — no credentials ever land in the saved test set.
+Run `--auth-setup --target UI_Web_MVC --environment <envKey>` (or `UI_Web_Blazor`) once per environment to populate the cache. Subsequent `--record-verification --environment <envKey>` runs open the recorder already logged in as the right customer, so your captured steps are only the actual verification actions — no credentials ever land in the saved test set.
 
 **View, edit, and delete verifications in the web UI**:
 
@@ -451,10 +456,12 @@ dotnet run --project src/AiTestCrew.Runner -- --record \
   --module <moduleId> \
   --testset <testSetId> \
   --case-name "Happy path - valid credentials reach home" \
-  --target UI_Web_MVC
+  --target UI_Web_MVC \
+  --environment sumo-retail
 ```
 
 - `--target` is `UI_Web_MVC` (uses `LegacyWebUiUrl`) or `UI_Web_Blazor` (uses `BraveCloudUiUrl`).
+- `--environment <key>` picks which customer environment to record against — defaults to `DefaultEnvironment` if omitted. The recorder loads the matching cached auth state (saved by `--auth-setup --environment <key>`) so it starts authenticated.
 - Module and test set are created automatically if they do not exist.
 - Module/test set names are slugified so they match the WebApi directory structure.
 - Both MVC and Blazor targets replay at 1920×1080 viewport. The recorder uses `NoViewport` (maximized window) for MVC; Blazor uses 1920×1080 to match replay. Saved auth state is loaded if available.
@@ -472,10 +479,12 @@ dotnet run --project src/AiTestCrew.Runner -- --record \
   --module <moduleId> \
   --testset <testSetId> \
   --case-name "NMI Search" \
-  --target UI_Desktop_WinForms
+  --target UI_Desktop_WinForms \
+  --environment sumo-retail
 ```
 
-- `--target UI_Desktop_WinForms` uses `WinFormsAppPath` from config.
+- `--target UI_Desktop_WinForms` uses the env's `WinFormsAppPath` (falling back to the top-level field). Different customers can point at different desktop builds.
+- `--environment <key>` selects which customer app/build to record against — defaults to `DefaultEnvironment`.
 - The app launches with its working directory set to the exe's folder (so sibling DLLs load correctly).
 - Console keys add assertions: **T** (text), **V** (visible), **E** (enabled), **S** (save & stop).
 - Ctrl+V paste is captured with the actual clipboard content, not just the "V" keystroke.
@@ -492,10 +501,12 @@ Record reusable setup steps (e.g. login) that run automatically before every tes
 dotnet run --project src/AiTestCrew.Runner -- --record-setup \
   --module <moduleId> \
   --testset <testSetId> \
-  --target UI_Web_MVC
+  --target UI_Web_MVC \
+  --environment sumo-retail
 ```
 
 - Opens a browser — perform your login/setup actions, then click **Save & Stop**.
+- `--environment <key>` selects which customer env's URL + cached auth state to use — defaults to `DefaultEnvironment`.
 - The recorded steps are saved as the test set's `setupSteps` (not as a test objective).
 - During replay (`--reuse`), setup steps run before each test case in a fresh browser context: navigate to `setupStartUrl`, execute setup steps, then navigate to the test case's own start URL and execute its steps.
 - Setup steps can also be viewed, edited, and cleared in the web dashboard under the test set detail page.
@@ -504,30 +515,38 @@ dotnet run --project src/AiTestCrew.Runner -- --record-setup \
 
 ### Auth Setup
 
-Save browser authentication state so that subsequent test runs start pre-authenticated, skipping the login flow entirely. Opens a visible browser — complete the login manually, and the session is saved automatically.
+Save browser authentication state so that subsequent test runs start pre-authenticated, skipping the login flow entirely. Opens a visible browser — complete the login manually, and the session is saved automatically. **Environment-aware**: when multiple customer environments are configured, pass `--environment <key>` so the URL, credentials, and saved-state filename come from that env's block.
 
-**Blazor SSO (default):**
+**Blazor SSO (default env):**
 ```bash
 dotnet run --project src/AiTestCrew.Runner -- --auth-setup
 ```
 
-- Navigates to `BraveCloudUiUrl` which redirects to Azure AD login.
+**Blazor SSO (specific environment):**
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_Blazor --environment sumo-retail
+dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_Blazor --environment ams-metering
+```
+
+- Navigates to the env's `BraveCloudUiUrl` (falling back to the top-level field when the env block omits it) which redirects to Azure AD login.
 - Complete the full login flow (including 2FA if required) in the visible browser.
-- Once redirected back to the app, the auth state (cookies + localStorage) is saved to `BraveCloudUiStorageStatePath`.
-- The saved state is valid for `BraveCloudUiStorageStateMaxAgeHours` (default 8). Re-run `--auth-setup` when it expires.
-- If `BraveCloudUiTotpSecret` is configured (base32 TOTP secret), the agent can automate 2FA during test runs — `--auth-setup` is only needed for initial or expired sessions.
+- Once redirected back to the app, the auth state (cookies + localStorage) is saved to the env's `BraveCloudUiStorageStatePath` so each customer has its own cached state file.
+- The saved state is valid for `BraveCloudUiStorageStateMaxAgeHours` (default 8). Re-run `--auth-setup --environment <key>` when it expires.
+- If the env's `BraveCloudUiTotpSecret` is configured (base32 TOTP secret), the agent can automate 2FA during test runs — `--auth-setup` is only needed for initial or expired sessions.
 
 **Legacy ASP.NET MVC:**
 ```bash
-dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_MVC
+dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_MVC --environment sumo-retail
 ```
 
-- Navigates to `LegacyWebUiUrl` + `LegacyWebUiLoginPath` and opens the login form.
+- Navigates to the env's `LegacyWebUiUrl` + top-level `LegacyWebUiLoginPath` and opens the login form.
 - Complete the login in the visible browser.
-- Once redirected away from the login page, the auth state is saved to `LegacyWebUiStorageStatePath`.
+- Once redirected away from the login page, the auth state is saved to the env's `LegacyWebUiStorageStatePath`.
 - The saved state is valid for `LegacyWebUiStorageStateMaxAgeHours` (default 8).
 - The state is also generated **automatically** on the first headless test run — `--auth-setup` is only needed if you prefer a manual interactive login.
 - Under parallel execution, the first agent to run acquires a login lock, performs one headless login, and saves the state. All other concurrent agents reuse it.
+
+On launch, the command prints the environment name and the exact storage-state path it will write to, so you can confirm the right file is being captured.
 
 ---
 
@@ -626,6 +645,112 @@ Auth tokens are obtained per-stack from the security module's login endpoint: `{
 Users can add new stacks and modules by editing `appsettings.json` — no code changes required.
 
 The `GET /api/config/api-stacks` endpoint exposes the configured stacks and modules to the React UI for populating dropdown selectors.
+
+### Multi-Environment Support (customer-based)
+
+A test set written once can run against multiple customer environments (e.g. `sumo-retail`, `ams-metering`, `tasn-networks`). An environment provides a block of **per-customer overrides** for the settings that differ between customers: UI URLs, credentials, storage-state filenames, WinForms app path + args, Bravo DB connection string, and per-stack API BaseUrls. Everything else (LLM keys, `ApiStacks` structure, module path prefixes, shared auth scheme) stays at the top level.
+
+Orthogonal to the existing `--stack` / `--api-module` axes — environments multiplex customer deployments, stacks multiplex API platforms, modules multiplex services. You can combine all three at the same time.
+
+#### Configuring environments
+
+Add a block like this to `appsettings.json` under `TestEnvironment`:
+
+```json
+"DefaultEnvironment": "sumo-retail",
+"Environments": {
+  "sumo-retail": {
+    "DisplayName": "Sumo Retail",
+    "LegacyWebUiUrl":              "https://legacy-sumo-dev.braveenergy.com.au",
+    "LegacyWebUiUsername":         "<forms-user>",
+    "LegacyWebUiPassword":         "<forms-password>",
+    "LegacyWebUiStorageStatePath": "legacy-auth-state.sumo.json",
+    "BraveCloudUiUrl":             "https://sumo-dev.braveenergy.com.au",
+    "BraveCloudUiUsername":        "<aad-email>",
+    "BraveCloudUiPassword":        "<aad-password>",
+    "BraveCloudUiTotpSecret":      "<base32>",
+    "BraveCloudUiStorageStatePath": "bravecloud-auth-state.sumo.json",
+    "WinFormsAppPath":             "C:\\Program Files\\Sumo\\BraveDesktop.exe",
+    "WinFormsAppArgs":             "--tenant=sumo",
+    "BravoDbConnectionString":     "Server=...;Database=...Sumo...;",
+    "ApiStackBaseUrls": {
+      "bravecloud": "https://sumo-dev.braveenergy.com.au",
+      "legacy":     "https://api-sumodev.braveenergy.com.au"
+    }
+  },
+  "ams-metering": { "DisplayName": "AMS Metering", "...": "..." },
+  "tasn-networks": { "DisplayName": "TASN Networks", "...": "..." }
+}
+```
+
+**Fallback behaviour** — any field omitted from an environment block falls back to the equivalent top-level field on `TestEnvironmentConfig`. This lets legacy configs (no `Environments` section at all) keep working unchanged. It also means you can migrate gradually: define one env at a time, leaving the top-level fields in place as defaults.
+
+#### Selecting the environment at run time
+
+| Where | How |
+|---|---|
+| CLI | `--environment <customerKey>` on Normal / Reuse / Rebaseline / VerifyOnly / Record / Record-setup / Record-verification / Auth-setup runs |
+| WebApi | `environmentKey` field on `POST /api/runs` |
+| UI | Environment dropdown in the **Run Objective** dialog |
+| Persisted | The chosen env is saved on the test set; future runs use it automatically if `--environment` is omitted |
+
+Precedence: explicit CLI / UI value → persisted test-set default → `DefaultEnvironment`.
+
+List what's configured:
+
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --list-environments
+```
+
+#### Per-objective scope and parameters
+
+Each test objective carries two optional fields:
+
+- **`AllowedEnvironments: string[]`** — which environments the objective is allowed to run on. Empty = "default environment only" (preserves legacy behaviour for tests recorded before multi-env was introduced). Objectives that are newly created or rebaselined by a run are auto-stamped with the active env. Widen the list via the UI editor to run the objective on additional environments.
+- **`EnvironmentParameters: Dictionary<envKey, Dictionary<token, value>>`** — per-environment `{{Token}}` values applied at playback to every string / dict / list field on each step (`ApiTestDefinition.Endpoint`, `WebUiStep.Value`, `DesktopUiStep.AutomationId`, `AseXmlTestDefinition.FieldValues`, etc.).
+
+The orchestrator:
+1. Skips objectives excluded by `AllowedEnvironments` — shown as **Skipped** in the suite result, never **Failed**.
+2. For the remaining objectives, merges `EnvironmentParameters[activeEnv]` into the task's substitution context.
+3. Each agent runs `StepParameterSubstituter.Apply(step, envParams)` before executing — step fields are cloned with `{{Token}}` literals replaced by the env's values. Unknown tokens stay as literals and a WARN is logged (lenient mode — mirrors post-delivery verification playback).
+
+**Example** — one API objective runs on both customers with different NMIs and expected response codes:
+
+```
+AllowedEnvironments:      ["sumo-retail", "ams-metering"]
+EnvironmentParameters:
+  sumo-retail:  { NMI: "4103035611", ExpectedBody: "Active" }
+  ams-metering: { NMI: "9999999999", ExpectedBody: "Active" }
+
+ApiTestDefinition.Endpoint: "/Retail/Meters/{{NMI}}"
+ApiTestDefinition.ExpectedBodyContains: ["{{ExpectedBody}}"]
+```
+
+At playback against `sumo-retail`, the URL becomes `/Retail/Meters/4103035611` and the assertion expects `Active`. The same objective against `ams-metering` gets `/Retail/Meters/9999999999`.
+
+#### Editing environment parameters in the UI
+
+Open a test objective (click a row in the test-case table) → the **Environment Parameters** card appears above the Steps section. Two controls:
+
+1. **Allowed environments** — checkbox list populated from `/api/config/environments`. Tick the environments this objective should run on.
+2. **Token values for `<env>`** — environment dropdown above a key/value grid. Add / rename / delete rows; each row is one `{{Token}} → value` pair for the selected environment.
+
+Save writes back via `PUT /api/modules/{mod}/testsets/{ts}/objectives/{obj}`.
+
+#### Tokenising existing recorded tests
+
+Recorded steps contain literal values (NMIs, usernames, assertion text). To make them env-variable:
+
+1. Record the test against one environment (e.g. `sumo-retail`) as usual. All values are captured as literals.
+2. Open the objective's editor (API / Web UI / Desktop UI / aseXML) and replace the literal with `{{TokenName}}` in the step `Value` / `Endpoint` / `FieldValues`.
+3. Open the Environment Parameters card, widen `AllowedEnvironments`, and add the matching `{{TokenName}} → value` pair for each environment.
+
+Auto-tokenisation of existing recordings (analogous to the aseXML verification recorder) is on the roadmap but not in this release — tokenise manually per-objective for now.
+
+#### Known limitations
+
+- `--auth-setup --record --record-setup --record-verification` all accept `--environment`, but `--list-endpoints` always queries the default env's Bravo DB. If you need to list endpoints for another env, temporarily set it as `DefaultEnvironment` or override via the UI.
+- Execution history stores `environmentKey` so you can filter runs by customer, but the dashboard currently renders it only in the run detail (a filter dropdown is a straightforward follow-up).
 
 ### Authentication
 
@@ -812,11 +937,14 @@ Shows a single run's results:
 ### Triggering Runs from the UI
 
 From a module detail page, click **Run Objective** to:
-1. Select the **API Stack** and **API Module** from dropdown selectors (populated from `GET /api/config/api-stacks`)
-2. Select a target test set
-3. Enter a test objective (use paths relative to the module's base URL, e.g. `/NMIDiscoveryManagement/NMIDiscoveries`)
-4. Optionally enter a **Short Name** for the objective (e.g. `"NMI Discovery GET"`) — displayed in place of the full text throughout the UI
-5. The UI sends a POST to `/api/runs` with `moduleId`, `testSetId`, `apiStackKey`, `apiModule`, and optional `objectiveName`
+1. Select the **Environment** from the dropdown (populated from `GET /api/config/environments`) — defaults to the server's `DefaultEnvironment`
+2. Select the **API Stack** and **API Module** from dropdown selectors (populated from `GET /api/config/api-stacks`)
+3. Select a target test set
+4. Enter a test objective (use paths relative to the module's base URL, e.g. `/NMIDiscoveryManagement/NMIDiscoveries`)
+5. Optionally enter a **Short Name** for the objective (e.g. `"NMI Discovery GET"`) — displayed in place of the full text throughout the UI
+6. The UI sends a POST to `/api/runs` with `moduleId`, `testSetId`, `apiStackKey`, `apiModule`, `environmentKey`, and optional `objectiveName`
+
+Individual per-objective Run / Verify / Rebaseline buttons carry over the test set's persisted `environmentKey` automatically — no re-selection needed per click.
 6. Shows a spinner while polling every 3 seconds
 7. Automatically navigates to the results page when the run completes
 
@@ -1256,7 +1384,8 @@ Every flag the Runner CLI accepts, one row per flag. Scope column shows which ru
 | Flag | Scope | Value | Purpose |
 |---|---|---|---|
 | `--api-module <key>` | Normal, Reuse | e.g. `sdr`, `security` | Pick a module within the active API stack (`ApiStacks.<stack>.Modules.<key>`). Persists on the test set. |
-| `--auth-setup` | Auth | (none) | Launch a browser for manual login; save storage state to config. Combine with `--target`. |
+| `--auth-setup` | Auth | (none) | Launch a browser for manual login; save storage state to the env-specific path. Combine with `--target` and `--environment`. |
+| `--environment <key>` | Every run + Recording + Auth | e.g. `sumo-retail`, `ams-metering` | Customer environment. Picks URLs, creds, WinForms app path, Bravo DB connection, per-stack BaseUrls, and cached auth-state filenames. Persists on the test set. Omit for `DefaultEnvironment`. |
 | `--case-name "<name>"` | Record, Record-setup | string | Display name for the captured test case or setup. |
 | `--create-module "<name>"` | Management | string | Create a module directory + manifest. Name is slugified for the id. |
 | `--create-testset <moduleId> "<name>"` | Management | slug + string | Create an empty test set in a module. |
@@ -1264,6 +1393,7 @@ Every flag the Runner CLI accepts, one row per flag. Scope column shows which ru
 | `--endpoint <EndPointCode>` | Delivery (Normal/Reuse/Rebaseline) | e.g. `GatewaySPARQ` | Bravo outbound endpoint from `mil.V2_MIL_EndPoint`. Overrides LLM extraction; persists on the test set. |
 | `--list` | List | (none) | List legacy-flat test sets. |
 | `--list-endpoints` | List | (none) | Query Bravo DB and print all `EndPointCode`s. Requires `AseXml.BravoDb.ConnectionString`. |
+| `--list-environments` | List | (none) | Print configured customer environments (from `TestEnvironment.Environments`) with the default marked. |
 | `--list-modules` | List | (none) | List all modules and their test-set counts. |
 | `--migrate-to-sqlite` | Migration | (none) | Reads all JSON files from the current data directory and inserts them into SQLite. Requires `SqliteConnectionString` to be configured. |
 | `--module <moduleId>` | Every run | slug | Module scope. Required for module-scoped runs and nearly all recording. |
@@ -1285,10 +1415,11 @@ Every flag the Runner CLI accepts, one row per flag. Scope column shows which ru
 | Command | Needs in `appsettings.json` |
 |---|---|
 | Any run (LLM) | `LlmProvider`, `LlmApiKey`, `LlmModel` |
-| API tests | `ApiStacks.<stack>.BaseUrl`, `.Modules`, optional `AuthToken` / `AuthUsername` / `AuthPassword` |
-| Legacy MVC UI tests | `LegacyWebUiUrl`, `LegacyWebUiUsername`, `LegacyWebUiPassword`, `LegacyWebUiStorageStatePath` |
-| Blazor UI tests | `BraveCloudUiUrl`, `BraveCloudUiUsername`, `BraveCloudUiPassword`, `BraveCloudUiStorageStatePath`, optional `BraveCloudUiTotpSecret` |
-| WinForms UI tests | `WinFormsAppPath`, `WinFormsAppArgs` |
+| API tests | `ApiStacks.<stack>.BaseUrl` + `.Modules`; per-env override via `Environments.<env>.ApiStackBaseUrls.<stack>`; optional `AuthToken` / `AuthUsername` / `AuthPassword` |
+| Legacy MVC UI tests | `LegacyWebUiUrl`, `LegacyWebUiUsername`, `LegacyWebUiPassword`, `LegacyWebUiStorageStatePath` — all per-env in `Environments.<env>.*` (falls back to top-level) |
+| Blazor UI tests | `BraveCloudUiUrl`, `BraveCloudUiUsername`, `BraveCloudUiPassword`, `BraveCloudUiStorageStatePath`, optional `BraveCloudUiTotpSecret` — all per-env (falls back to top-level) |
+| WinForms UI tests | `WinFormsAppPath`, `WinFormsAppArgs` — per-env (falls back to top-level) |
 | aseXML Generate | `AseXml.TemplatesPath` (default `templates/asexml`), `AseXml.OutputPath` |
-| aseXML Deliver / `--list-endpoints` | `AseXml.BravoDb.ConnectionString` (never in `appsettings.example.json`) |
-| aseXML verification recording | Same as the matching UI target above; tip: run `--auth-setup --target <UI_*>` first to cache auth state |
+| aseXML Deliver / `--list-endpoints` | `BravoDbConnectionString` per-env (falls back to top-level `AseXml.BravoDb.ConnectionString`) — never committed to `appsettings.example.json` |
+| aseXML verification recording | Same as the matching UI target above; tip: run `--auth-setup --target <UI_*> --environment <envKey>` first to cache per-env auth state |
+| Multi-environment | `DefaultEnvironment`, `Environments.<key>.*` — omit to fall back to legacy single-env behaviour using top-level fields |

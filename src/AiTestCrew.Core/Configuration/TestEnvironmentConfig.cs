@@ -29,6 +29,17 @@ public class TestEnvironmentConfig
     public string? DefaultApiModule { get; set; }
     public string? OpenApiSpecUrl { get; set; }
 
+    // --- Environments (customers) ---
+    // Each environment provides per-customer overrides for UI URLs, credentials,
+    // WinForms app path, Bravo DB connection string, and per-stack BaseUrls.
+    // Empty dictionary = single-environment mode; top-level flat fields are used as-is.
+    public Dictionary<string, EnvironmentConfig> Environments { get; set; } = new();
+
+    // The environment key used when no explicit --environment is passed and the
+    // test set has no persisted EnvironmentKey. Falls back to the first key in
+    // Environments, or to the implicit single-env "default" when Environments is empty.
+    public string? DefaultEnvironment { get; set; }
+
     // --- Authentication ---
     // Set AuthToken to inject credentials into every request automatically.
     // AuthScheme: "Bearer" (default), "Basic", or "None"

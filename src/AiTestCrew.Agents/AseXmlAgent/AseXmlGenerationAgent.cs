@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using AiTestCrew.Agents.AseXmlAgent.Templates;
 using AiTestCrew.Agents.Base;
+using AiTestCrew.Agents.Environment;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Models;
 
@@ -53,11 +54,14 @@ public class AseXmlGenerationAgent : BaseTestAgent
         try
         {
             // ── Reuse mode: use preloaded test cases, skip LLM ──
+            var envParams = StepParameterSubstituter.ReadEnvironmentParameters(task.Parameters);
             List<AseXmlTestCase>? testCases = null;
             if (task.Parameters.TryGetValue("PreloadedTestCases", out var preloaded)
                 && preloaded is List<AseXmlTestCase> saved)
             {
-                testCases = saved;
+                testCases = envParams.Count > 0
+                    ? saved.Select(tc => StepParameterSubstituter.Apply(tc, envParams)).ToList()
+                    : saved;
                 steps.Add(TestStep.Pass("load-cases",
                     $"Loaded {testCases.Count} saved aseXML test case(s) (reuse mode — skipping LLM generation)"));
             }

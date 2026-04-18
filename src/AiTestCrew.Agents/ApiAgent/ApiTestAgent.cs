@@ -6,6 +6,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using AiTestCrew.Agents.Base;
+using AiTestCrew.Agents.Environment;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
@@ -54,15 +55,18 @@ public class ApiTestAgent : BaseTestAgent
         var sw = Stopwatch.StartNew();
         var steps = new List<TestStep>();
 
-        // ── Resolve API target (stack + module) from task parameters ──
+        // ── Resolve API target (stack + module + env) from task parameters ──
         task.Parameters.TryGetValue("ApiStackKey", out var sk);
         task.Parameters.TryGetValue("ApiModule", out var mk);
+        task.Parameters.TryGetValue("EnvironmentKey", out var ek);
         var stackKey = sk as string;
         var moduleKey = mk as string;
-        var resolvedBaseUrl = _resolver.ResolveApiBaseUrl(stackKey, moduleKey);
+        var envKey = ek as string;
+        var resolvedBaseUrl = _resolver.ResolveApiBaseUrl(stackKey, moduleKey, envKey);
+        var envParams = StepParameterSubstituter.ReadEnvironmentParameters(task.Parameters);
 
-        Logger.LogInformation("[{Agent}] Starting task: {Desc} (target: {BaseUrl})",
-            Name, task.Description, resolvedBaseUrl);
+        Logger.LogInformation("[{Agent}] Starting task: {Desc} (target: {BaseUrl}, env: {Env})",
+            Name, task.Description, resolvedBaseUrl, envKey ?? "default");
 
         try
         {
@@ -91,7 +95,7 @@ public class ApiTestAgent : BaseTestAgent
                 }
 
                 // ── 2. Discovery call ──
-                var discovery = await DiscoverEndpointAsync(task, resolvedBaseUrl, stackKey, ct);
+                var discovery = await DiscoverEndpointAsync(task, resolvedBaseUrl, stackKey, envKey, ct);
                 if (discovery is not null)
                 {
                     steps.Add(TestStep.Pass("discovery",
@@ -123,10 +127,14 @@ public class ApiTestAgent : BaseTestAgent
             }
 
             // ── 4. Execute each test case (each becomes a step) ──
-            foreach (var tc in testCases)
+            foreach (var rawTc in testCases)
             {
                 ct.ThrowIfCancellationRequested();
-                var stepResult = await ExecuteTestCaseAsync(tc, resolvedBaseUrl, stackKey, ct);
+                // Apply per-environment {{Token}} substitution before executing.
+                var tc = envParams.Count > 0
+                    ? StepParameterSubstituter.Apply(rawTc, envParams)
+                    : rawTc;
+                var stepResult = await ExecuteTestCaseAsync(tc, resolvedBaseUrl, stackKey, envKey, ct);
                 steps.Add(stepResult);
 
                 Logger.LogInformation("[{Agent}] {Status}: {Method} {Endpoint} - {Summary}",
@@ -302,7 +310,7 @@ public class ApiTestAgent : BaseTestAgent
     /// Execute a single API test case and return a TestStep with the result.
     /// </summary>
     private async Task<TestStep> ExecuteTestCaseAsync(
-        ApiTestCase tc, string apiBaseUrl, string? stackKey, CancellationToken ct)
+        ApiTestCase tc, string apiBaseUrl, string? stackKey, string? envKey, CancellationToken ct)
     {
         var stepSw = Stopwatch.StartNew();
 
@@ -321,7 +329,7 @@ public class ApiTestAgent : BaseTestAgent
 
             // Inject auth credentials (overrides anything the LLM generated
             // for the same header, ensuring real credentials are always used).
-            await InjectAuthAsync(request, stackKey, ct);
+            await InjectAuthAsync(request, stackKey, envKey, ct);
 
             // Add body for non-GET requests
             if (tc.Body is not null && tc.Method.ToUpperInvariant() != "GET")
@@ -472,7 +480,7 @@ public class ApiTestAgent : BaseTestAgent
     /// This is passed to the LLM so it generates assertions using real field names.
     /// </summary>
     private async Task<EndpointDiscovery?> DiscoverEndpointAsync(
-        TestTask task, string apiBaseUrl, string? stackKey, CancellationToken ct)
+        TestTask task, string apiBaseUrl, string? stackKey, string? envKey, CancellationToken ct)
     {
         // Extract endpoint path + optional query string from the task description
         // Matches paths like /Api/Foo?x=1 or Api/Foo?x=1 (with or without leading /)
@@ -488,7 +496,7 @@ public class ApiTestAgent : BaseTestAgent
         try
         {
             var request = new HttpRequestMessage(HttpMethod.Get, url);
-            await InjectAuthAsync(request, stackKey, ct);
+            await InjectAuthAsync(request, stackKey, envKey, ct);
 
             Logger.LogDebug("[{Agent}] Discovery GET {Url}", Name, url);
             var response = await _http.SendAsync(request, ct);
@@ -534,9 +542,9 @@ public class ApiTestAgent : BaseTestAgent
     /// Called after the LLM-generated headers are applied so real credentials
     /// always take precedence.
     /// </summary>
-    private async Task InjectAuthAsync(HttpRequestMessage request, string? stackKey, CancellationToken ct)
+    private async Task InjectAuthAsync(HttpRequestMessage request, string? stackKey, string? envKey, CancellationToken ct)
     {
-        var tokenProvider = _resolver.GetTokenProvider(stackKey);
+        var tokenProvider = _resolver.GetTokenProvider(stackKey, envKey);
         var token = await tokenProvider.GetTokenAsync(ct);
         if (string.IsNullOrWhiteSpace(token)) return;
 

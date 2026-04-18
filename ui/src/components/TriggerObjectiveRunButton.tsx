@@ -11,11 +11,12 @@ interface Props {
   moduleId?: string;
   apiStackKey?: string | null;
   apiModule?: string | null;
+  environmentKey?: string | null;
   disabled?: boolean;
   hasDeliveryVerifications?: boolean;
 }
 
-export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObjective, source, moduleId, apiStackKey, apiModule, disabled, hasDeliveryVerifications }: Props) {
+export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObjective, source, moduleId, apiStackKey, apiModule, environmentKey, disabled, hasDeliveryVerifications }: Props) {
   const { individualRun, individualRunStatus, setIndividualRun } = useActiveRun();
   const [error, setError] = useState<string | null>(null);
   const [showRebaselineConfirm, setShowRebaselineConfirm] = useState(false);
@@ -38,6 +39,7 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObject
         objective: mode === 'Rebaseline' ? parentObjective : undefined,
         apiStackKey: apiStackKey ?? undefined,
         apiModule: apiModule ?? undefined,
+        environmentKey: environmentKey ?? undefined,
         verificationWaitOverride: mode === 'VerifyOnly' ? 0 : undefined,
       });
       setIndividualRun({ runId: res.runId, testSetId, moduleId, objectiveId });

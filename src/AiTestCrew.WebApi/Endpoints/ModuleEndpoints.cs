@@ -120,6 +120,10 @@ public static class ModuleEndpoints
                     ts.Id,
                     ts.Name,
                     ts.ModuleId,
+                    ts.ApiStackKey,
+                    ts.ApiModule,
+                    ts.EndpointCode,
+                    ts.EnvironmentKey,
                     ts.Objectives,
                     ts.ObjectiveNames,
                     Objective = ts.Objective,
@@ -486,7 +490,8 @@ public static class ModuleEndpoints
                                     moduleId: moduleId,
                                     targetTestSetId: ts.Id,
                                     apiStackKey: ts.ApiStackKey,
-                                    apiModule: ts.ApiModule);
+                                    apiModule: ts.ApiModule,
+                                    environmentKey: ts.EnvironmentKey);
                                 runTracker.Complete(childRunId, ts.Id);
                                 moduleRunTracker.CompleteTestSet(moduleRunId, ts.Id, true, null);
                             }
@@ -656,7 +661,7 @@ public static class ModuleEndpoints
             await tsRepo.MergeObjectivesAsync(moduleId, tsId,
                 request.Objectives, request.Objective,
                 request.ObjectiveName, request.ApiStackKey, request.ApiModule,
-                request.EndpointCode);
+                request.EndpointCode, request.EnvironmentKey);
             return Results.Ok(new { merged = true });
         });
 
@@ -697,6 +702,7 @@ public static class ModuleEndpoints
         return new
         {
             testSet.Id, testSet.Name, testSet.ModuleId,
+            testSet.ApiStackKey, testSet.ApiModule, testSet.EndpointCode, testSet.EnvironmentKey,
             testSet.Objectives, testSet.ObjectiveNames,
             Objective = testSet.Objective,
             testSet.CreatedAt, testSet.LastRunAt, RunCount = historyRepo.CountRuns(testSet.Id),
@@ -740,7 +746,7 @@ public record MoveObjectiveRequest(string Objective, string DestinationModuleId,
 public record MergeObjectivesRequest(
     List<TestObjective> Objectives, string Objective,
     string? ObjectiveName = null, string? ApiStackKey = null, string? ApiModule = null,
-    string? EndpointCode = null);
+    string? EndpointCode = null, string? EnvironmentKey = null);
 
 // ── Test objective editing records ──
 public record AiPatchRequest(string Instruction, AiPatchScope? Scope);

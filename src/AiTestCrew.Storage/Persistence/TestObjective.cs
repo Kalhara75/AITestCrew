@@ -70,6 +70,25 @@ public class TestObjective
     public int StepCount => ApiSteps.Count + WebUiSteps.Count + DesktopUiSteps.Count
         + AseXmlSteps.Count + AseXmlDeliverySteps.Count;
 
+    /// <summary>
+    /// Environment keys this objective is allowed to run on (e.g. "sumo-retail").
+    /// Empty list means "default environment only" — legacy objectives created
+    /// before the multi-env feature are treated this way by the orchestrator.
+    /// To run an objective against additional environments, add env keys here
+    /// and supply matching <see cref="EnvironmentParameters"/> entries.
+    /// New objectives created/rebaselined by a run are auto-stamped with the active env key.
+    /// </summary>
+    public List<string> AllowedEnvironments { get; set; } = [];
+
+    /// <summary>
+    /// Per-environment {{Token}} → value overrides. Outer key = environment key
+    /// (e.g. "sumo-retail"), inner key = token name (e.g. "NMI"), value = substitute.
+    /// At playback, any <c>{{Token}}</c> literal in a step definition field is substituted
+    /// with the value from the active environment's dictionary (lenient — unknown
+    /// tokens remain as literals and are logged as WARN).
+    /// </summary>
+    public Dictionary<string, Dictionary<string, string>> EnvironmentParameters { get; set; } = new();
+
     // ── Backward compatibility for old v2 JSON with singular fields ──
 
     /// <summary>

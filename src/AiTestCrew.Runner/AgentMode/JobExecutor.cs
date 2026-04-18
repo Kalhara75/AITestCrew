@@ -40,7 +40,8 @@ internal sealed class JobExecutor
             objectiveId: request.ObjectiveId,
             apiStackKey: request.ApiStackKey,
             apiModule: request.ApiModule,
-            verificationWaitOverride: request.VerificationWaitOverride);
+            verificationWaitOverride: request.VerificationWaitOverride,
+            environmentKey: request.EnvironmentKey);
     }
 
     private sealed class QueuedRunRequest
@@ -54,5 +55,6 @@ internal sealed class JobExecutor
         public string? ApiStackKey { get; set; }
         public string? ApiModule { get; set; }
         public int? VerificationWaitOverride { get; set; }
+        public string? EnvironmentKey { get; set; }
     }
 }

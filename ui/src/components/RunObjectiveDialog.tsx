@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { triggerRun } from '../api/runs';
-import { fetchApiStacks } from '../api/config';
+import { fetchApiStacks, fetchEnvironments } from '../api/config';
 import { useActiveRun } from '../contexts/ActiveRunContext';
-import type { TestSetListItem, ApiStacksResponse } from '../types';
+import type { TestSetListItem, ApiStacksResponse, EnvironmentsResponse } from '../types';
 
 interface Props {
   open: boolean;
@@ -26,6 +26,10 @@ export function RunObjectiveDialog({ open, moduleId, testSets, onClose }: Props)
   const [selectedStack, setSelectedStack] = useState('');
   const [selectedApiModule, setSelectedApiModule] = useState('');
 
+  // Environment selection
+  const [envConfig, setEnvConfig] = useState<EnvironmentsResponse | null>(null);
+  const [selectedEnvironment, setSelectedEnvironment] = useState('');
+
   // Load available stacks on mount
   useEffect(() => {
     if (!open) return;
@@ -46,6 +50,13 @@ export function RunObjectiveDialog({ open, moduleId, testSets, onClose }: Props)
         }
       })
       .catch(() => { /* non-fatal — stacks just won't be shown */ });
+    fetchEnvironments()
+      .then(data => {
+        setEnvConfig(data);
+        if (data.defaultEnvironment) setSelectedEnvironment(data.defaultEnvironment);
+        else if (data.environments.length > 0) setSelectedEnvironment(data.environments[0].key);
+      })
+      .catch(() => { /* non-fatal — env picker just won't be shown */ });
   }, [open]);
 
   // Update available modules when stack changes
@@ -94,6 +105,7 @@ export function RunObjectiveDialog({ open, moduleId, testSets, onClose }: Props)
         testSetId: selectedTestSetId,
         apiStackKey: selectedStack || undefined,
         apiModule: selectedApiModule || undefined,
+        environmentKey: selectedEnvironment || undefined,
       });
       setStartedRunId(res.runId);
       setIndividualRun({ runId: res.runId, testSetId: selectedTestSetId, moduleId });
@@ -128,6 +140,23 @@ export function RunObjectiveDialog({ open, moduleId, testSets, onClose }: Props)
           </div>
         ) : (
           <form onSubmit={handleSubmit}>
+            {envConfig && envConfig.environments.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <label style={labelStyle}>Environment</label>
+                <select
+                  style={{ ...inputStyle, cursor: 'pointer' }}
+                  value={selectedEnvironment}
+                  onChange={e => setSelectedEnvironment(e.target.value)}
+                >
+                  {envConfig.environments.map(env => (
+                    <option key={env.key} value={env.key}>
+                      {env.displayName}{env.isDefault ? ' (default)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             {stackKeys.length > 0 && (
               <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
                 <div style={{ flex: 1 }}>

@@ -23,10 +23,14 @@ Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → C
 |---|---|
 | `src/AiTestCrew.Runner/Program.cs` | CLI arg parsing, DI wiring, console output |
 | `src/AiTestCrew.Orchestrator/TestOrchestrator.cs` | RunAsync with Normal/Reuse/Rebaseline/List modes, module-aware |
-| `src/AiTestCrew.Agents/ApiAgent/ApiTestAgent.cs` | REST API test generation and execution (multi-stack aware via `IApiTargetResolver`) |
-| `src/AiTestCrew.Agents/Auth/ApiTargetResolver.cs` | Resolves API base URLs and per-stack token providers from `ApiStacks` config |
+| `src/AiTestCrew.Agents/ApiAgent/ApiTestAgent.cs` | REST API test generation and execution (multi-stack + multi-env aware via `IApiTargetResolver` + `IEnvironmentResolver`) |
+| `src/AiTestCrew.Agents/Auth/ApiTargetResolver.cs` | Resolves API base URLs (env-overridable) and per-(env,stack) token providers |
+| `src/AiTestCrew.Agents/Environment/EnvironmentResolver.cs` | `IEnvironmentResolver` implementation — per-customer overrides for UI URLs, creds, WinForms path, Bravo DB, per-stack BaseUrls; falls back to top-level config fields |
+| `src/AiTestCrew.Agents/Environment/StepParameterSubstituter.cs` | Clones step definitions / test cases and substitutes `{{Tokens}}` using `TokenSubstituter` (lenient). Handles API, WebUi, DesktopUi, aseXml, AseXmlDelivery, VerificationStep shapes plus their runtime test-case counterparts |
 | `src/AiTestCrew.Core/Configuration/ApiStackConfig.cs` | Config models for API stacks and modules (`ApiStackConfig`, `ApiModuleConfig`) |
-| `src/AiTestCrew.Core/Interfaces/IApiTargetResolver.cs` | Interface for multi-stack URL and auth resolution |
+| `src/AiTestCrew.Core/Configuration/EnvironmentConfig.cs` | Per-customer env config block (URLs, creds, WinForms path, Bravo DB connection string, per-stack BaseUrl overrides) |
+| `src/AiTestCrew.Core/Interfaces/IApiTargetResolver.cs` | Interface for multi-stack URL and auth resolution (env-aware overloads) |
+| `src/AiTestCrew.Core/Interfaces/IEnvironmentResolver.cs` | Interface for customer-environment resolution (ResolveKey / ListKeys / per-setting resolvers) |
 | `src/AiTestCrew.Agents/Base/BaseTestAgent.cs` | `AskLlmAsync`, `AskLlmForJsonAsync`, `SummariseResultsAsync` |
 | `src/AiTestCrew.Agents/Persistence/PersistedModule.cs` | Module model (id, name, description, timestamps) |
 | `src/AiTestCrew.Agents/Persistence/ModuleRepository.cs` | CRUD for modules in `modules/{id}/module.json` |
@@ -73,7 +77,7 @@ Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → C
 | `templates/asexml/` | Checked-in aseXML templates + manifests grouped by transaction type (copied into each project's `bin/templates/asexml/` at build) |
 | `ui/src/components/AseXmlTestCaseTable.tsx` | Read-only viewer for `AseXmlSteps` (no edit dialog in Phase 1) |
 | `ui/src/components/AseXmlDeliveryTestCaseTable.tsx` | Read-only viewer for `AseXmlDeliverySteps` (adds Endpoint column) |
-| `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` | Bound from `appsettings.json → TestEnvironment` — `ApiStacks`, auth, execution, Playwright, desktop UI settings |
+| `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` | Bound from `appsettings.json → TestEnvironment` — `ApiStacks`, `Environments`, `DefaultEnvironment`, auth, execution, Playwright, desktop UI settings |
 | `src/AiTestCrew.Core/Services/AgentConcurrencyLimiter.cs` | Global semaphore for parallel execution, bounded by `MaxParallelAgents` |
 | `src/AiTestCrew.Core/Models/Agent.cs` | Phase 4 agent record — registered Runner instance + capabilities + status |
 | `src/AiTestCrew.Core/Models/RunQueueEntry.cs` | Phase 4 queue row — enqueued run waiting for / claimed by / completed on a local agent |
@@ -102,9 +106,9 @@ executions/{testSetId}/{runId}.json      ← Execution history with per-objectiv
 ```
 
 ### Key persistence models
-- `TestObjective` — one per user objective, contains `ApiSteps: List<ApiTestDefinition>`, `WebUiSteps: List<WebUiTestDefinition>`, `DesktopUiSteps: List<DesktopUiTestDefinition>`, `AseXmlSteps: List<AseXmlTestDefinition>`, and `AseXmlDeliverySteps: List<AseXmlDeliveryTestDefinition>`. Each `AseXmlDeliveryTestDefinition` can own `PostDeliveryVerifications: List<VerificationStep>` — recorded UI steps that run after delivery with `{{Token}}` substitution from the render context. `Source` field tracks origin: `"Generated"` (AI) or `"Recorded"` (user recording). Rebaseline is only allowed for generated objectives.
-- `PersistedTestSet` — contains `List<TestObjective> TestObjectives` (v2 schema), optional `ApiStackKey` + `ApiModule` for multi-stack targeting, optional `EndpointCode` for aseXML delivery targeting
-- `PersistedExecutionRun` — contains `List<PersistedObjectiveResult> ObjectiveResults`
+- `TestObjective` — one per user objective, contains `ApiSteps: List<ApiTestDefinition>`, `WebUiSteps: List<WebUiTestDefinition>`, `DesktopUiSteps: List<DesktopUiTestDefinition>`, `AseXmlSteps: List<AseXmlTestDefinition>`, and `AseXmlDeliverySteps: List<AseXmlDeliveryTestDefinition>`. Each `AseXmlDeliveryTestDefinition` can own `PostDeliveryVerifications: List<VerificationStep>` — recorded UI steps that run after delivery with `{{Token}}` substitution from the render context. `Source` field tracks origin: `"Generated"` (AI) or `"Recorded"` (user recording). Rebaseline is only allowed for generated objectives. Multi-env fields: `AllowedEnvironments: List<string>` (empty = default-env only; otherwise restricts to the listed env keys) and `EnvironmentParameters: Dictionary<envKey, Dictionary<token, value>>` (per-env `{{Token}}` values applied at playback).
+- `PersistedTestSet` — contains `List<TestObjective> TestObjectives` (v2 schema), optional `ApiStackKey` + `ApiModule` for multi-stack targeting, optional `EndpointCode` for aseXML delivery targeting, optional `EnvironmentKey` for the default customer environment
+- `PersistedExecutionRun` — contains `List<PersistedObjectiveResult> ObjectiveResults` + `EnvironmentKey` (which customer env the run executed against)
 - `PersistedTaskEntry` — **deprecated** (v1 schema, kept only for migration deserialization)
 
 ## Run modes
@@ -123,6 +127,11 @@ dotnet run --project src/AiTestCrew.Runner -- --reuse <testSetId> --module <modu
 dotnet run --project src/AiTestCrew.Runner -- --stack bravecloud --api-module sdr --module sdr --testset nmi "objective"
 dotnet run --project src/AiTestCrew.Runner -- --stack legacy --api-module sdr --module sdr --testset nmi "objective"
 
+# ── Multi-environment (customer-based) targeting ───────────────────────────
+dotnet run --project src/AiTestCrew.Runner -- --list-environments                             # List configured customer envs (default marked)
+dotnet run --project src/AiTestCrew.Runner -- --reuse <testSetId> --module <moduleId> --environment sumo-retail    # Run against Sumo (default fallback)
+dotnet run --project src/AiTestCrew.Runner -- --reuse <testSetId> --module <moduleId> --environment ams-metering   # Run same set against AMS (uses per-env URLs, creds, DB, app path)
+
 # ── Module + test set management ───────────────────────────────────────────
 dotnet run --project src/AiTestCrew.Runner -- --list                                         # List saved test sets
 dotnet run --project src/AiTestCrew.Runner -- --list-modules                                 # List modules
@@ -134,19 +143,21 @@ dotnet run --project src/AiTestCrew.Runner -- --agent --name "Alice-PC"         
 dotnet run --project src/AiTestCrew.Runner -- --agent --capabilities UI_Web_Blazor,UI_Web_MVC  # Limit which target types this agent will accept
 
 # ── Recording (standalone test cases) ──────────────────────────────────────
+# All recording + auth commands accept --environment <key>; omit for DefaultEnvironment.
 dotnet run --project src/AiTestCrew.Runner -- --record-setup --module sdr --testset nmi      # Record reusable setup steps (e.g. login)
-dotnet run --project src/AiTestCrew.Runner -- --auth-setup                                   # Save Blazor SSO + 2FA auth state
-dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_MVC               # Save Legacy MVC forms auth state
-dotnet run --project src/AiTestCrew.Runner -- --record --module sec --testset users --case-name "Search" --target UI_Web_Blazor
-dotnet run --project src/AiTestCrew.Runner -- --record --module desktop --testset calc --case-name "Basic Add" --target UI_Desktop_WinForms
+dotnet run --project src/AiTestCrew.Runner -- --auth-setup                                   # Save Blazor SSO + 2FA auth state (default env)
+dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_Blazor --environment sumo-retail  # Save auth for a specific customer env (writes env-scoped storage-state file)
+dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_MVC --environment ams-metering    # Save Legacy MVC forms auth for AMS
+dotnet run --project src/AiTestCrew.Runner -- --record --module sec --testset users --case-name "Search" --target UI_Web_Blazor --environment sumo-retail
+dotnet run --project src/AiTestCrew.Runner -- --record --module desktop --testset calc --case-name "Basic Add" --target UI_Desktop_WinForms --environment sumo-retail
 
 # ── aseXML (Phase 1: generate; Phase 2: deliver; Phase 3: verify) ─────────
 dotnet run --project src/AiTestCrew.Runner -- --module aemo-b2b --testset mfn-tests "Generate an MFN for NMI 4103035611 ..."  # Render XML to output/asexml/
 dotnet run --project src/AiTestCrew.Runner -- --list-endpoints                               # List endpoints from mil.V2_MIL_EndPoint (needs AseXml.BravoDb.ConnectionString)
 dotnet run --project src/AiTestCrew.Runner -- --module aemo-b2b --testset mfn-delivery --endpoint GatewaySPARQ --obj-name "Deliver MFN" "Deliver MFN for NMI 4103035611 to GatewaySPARQ ..."
-dotnet run --project src/AiTestCrew.Runner -- --record-verification --module aemo-b2b --testset mfn-delivery --objective <idOrName> --target UI_Web_Blazor --verification-name "MFN Process Overview shows 'One In All In'" --wait 30
-dotnet run --project src/AiTestCrew.Runner -- --record-verification --module aemo-b2b --testset mfn-delivery --objective <idOrName> --target UI_Web_MVC --verification-name "Legacy MFN Search grid row exists"
-# Tip: run --auth-setup --target UI_Web_MVC first so MVC recording starts authenticated (skips capturing the login flow).
+dotnet run --project src/AiTestCrew.Runner -- --record-verification --module aemo-b2b --testset mfn-delivery --objective <idOrName> --target UI_Web_Blazor --environment sumo-retail --verification-name "MFN Process Overview shows 'One In All In'" --wait 30
+dotnet run --project src/AiTestCrew.Runner -- --record-verification --module aemo-b2b --testset mfn-delivery --objective <idOrName> --target UI_Web_MVC --environment sumo-retail --verification-name "Legacy MFN Search grid row exists"
+# Tip: run --auth-setup --target UI_Web_MVC --environment <envKey> first so MVC recording starts authenticated against the right customer (skips capturing the login flow).
 
 # ── Verify-only (re-run post-delivery verifications without re-delivering) ──
 dotnet run --project src/AiTestCrew.Runner -- --verify-only --reuse mfn-delivery --module aemo-b2b --objective "Deliver MFN One In All In to GatewaySPARQ"
@@ -159,7 +170,8 @@ dotnet run --project src/AiTestCrew.Runner -- --verify-only --reuse mfn-delivery
 |---|---|---|---|
 | `--agent` | Agent | flag | Start the Runner as a long-running agent that polls the server for queued UI/desktop jobs. Requires `ServerUrl` + `ApiKey` in config. |
 | `--api-module <key>` | Normal / Reuse | e.g. `sdr` | Pick a module within a multi-stack API (`ApiStacks.<stack>.Modules`). Persists on the test set. |
-| `--auth-setup` | Auth | (none) | Launch a browser and save auth state. `--target UI_Web_Blazor` (default) = Azure SSO + TOTP; `--target UI_Web_MVC` = forms auth. |
+| `--auth-setup` | Auth | (none) | Launch a browser and save auth state. `--target UI_Web_Blazor` (default) = Azure SSO + TOTP; `--target UI_Web_MVC` = forms auth. Combine with `--environment` to pick the right customer's URL / credentials / storage-state file. |
+| `--environment <key>` | All run modes + Auth + Recording | e.g. `sumo-retail`, `ams-metering` | Customer environment key. Picks per-env URLs, credentials, WinForms app path, Bravo DB connection, per-stack BaseUrls, and cached auth-state filenames. Persists on the test set. Omit for `TestEnvironment.DefaultEnvironment`. |
 | `--capabilities <list>` | Agent | e.g. `UI_Web_Blazor,UI_Web_MVC` | Comma-separated target types this agent accepts. Default: all three UI targets. |
 | `--case-name "<name>"` | Recording | string | Display name for a recorded test case or setup recording. |
 | `--create-module "<name>"` | Management | string | Create a module; slugifies the name. |
@@ -168,6 +180,7 @@ dotnet run --project src/AiTestCrew.Runner -- --verify-only --reuse mfn-delivery
 | `--endpoint <EndPointCode>` | Delivery | e.g. `GatewaySPARQ` | Bravo `mil.V2_MIL_EndPoint.EndPointCode`. Overrides LLM extraction. Persisted on the test set. |
 | `--list` | List | (none) | List legacy flat test sets. |
 | `--list-endpoints` | List | (none) | Query Bravo DB and print available endpoint codes. |
+| `--list-environments` | List | (none) | List configured customer environments (default marked). |
 | `--list-modules` | List | (none) | List modules. |
 | `--module <moduleId>` | All | slug | Module scope for the command. |
 | `--name "<name>"` | Agent | string | Agent display name shown on the dashboard. Defaults to `$env:COMPUTERNAME`. |
@@ -197,9 +210,12 @@ All agents extend `BaseTestAgent` and implement `ITestAgent`:
 ## Conventions
 
 - All LLM calls via `AskLlmAsync` / `AskLlmForJsonAsync` — never call `IChatCompletionService` directly from an agent
-- Auth is injected via `IApiTargetResolver` → per-stack `ITokenProvider`, never from LLM-generated headers
-- API base URLs are resolved via `IApiTargetResolver.ResolveApiBaseUrl(stackKey, moduleKey)` — never hardcode URLs in agents
+- Auth is injected via `IApiTargetResolver` → per-(env,stack) `ITokenProvider`, never from LLM-generated headers
+- API base URLs are resolved via `IApiTargetResolver.ResolveApiBaseUrl(stackKey, moduleKey, envKey)` — never hardcode URLs in agents
 - API stacks and modules are configured in `TestEnvironmentConfig.ApiStacks` — no legacy flat `BaseUrl`/`ApiBaseUrl`
+- Customer environments are configured in `TestEnvironmentConfig.Environments` (with `DefaultEnvironment`) — read via `IEnvironmentResolver` methods, never from `TestEnvironmentConfig` top-level fields directly in an agent (top-level fields are fallbacks for when an env block omits a setting)
+- Agents read their active env from `task.Parameters["EnvironmentKey"]` and env-specific `{{Token}}` values from `task.Parameters["EnvironmentParameters"]`, then apply them via `StepParameterSubstituter.Apply(caseOrDef, envParams)` before executing each step
+- Web/Desktop agents set `CurrentEnvironmentKey` at the top of `ExecuteAsync` so subclass `TargetBaseUrl` / `TargetAppPath` getters resolve per-env via `_envResolver`
 - Use `TestStep.Pass/Fail/Err` factories, never construct `TestStep` directly
 - JSON serialisation: `PropertyNamingPolicy = CamelCase`, `PropertyNameCaseInsensitive = true`
 - New config settings go in `TestEnvironmentConfig` + `appsettings.example.json` (not `appsettings.json`)
@@ -248,6 +264,8 @@ Adding a ___ is → ___
 | A new UI edit dialog | Manual — parallel to `EditWebUiTestCaseDialog.tsx` | Or reuse the existing one via its generic `definition` / `onSave` / `onDelete` props |
 | A new wait strategy for verifications (SFTP pickup poll, DB status poll) | Extend `VerificationStep` with an optional richer strategy object; `AseXmlDeliveryAgent.RunVerificationAsync` dispatch | Currently fixed-delay only (`WaitBeforeSeconds`) |
 | A new persistence field on any existing model | Extend the class; update `FromTestCase`/`ToTestCase` if applicable; update TS type | Re-reads old JSON via lenient deserialisation; no migration needed for additive changes |
+| A new customer environment (e.g. TASN Networks) | Manual — `appsettings.json` only | Add an entry under `TestEnvironment.Environments.<key>` with the customer's URLs/creds/DB/per-stack BaseUrls. Run `--auth-setup --environment <key>` per target to cache auth state. Zero code changes. |
+| A new per-environment setting (e.g. customer reporting URL) | Manual — three files | Add field to `EnvironmentConfig`; add `ResolveXxx(envKey)` on `IEnvironmentResolver` + `EnvironmentResolver` (with top-level fallback); inject the resolver wherever the setting is consumed. |
 
 ## Documentation
 
