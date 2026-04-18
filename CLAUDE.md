@@ -75,6 +75,19 @@ Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → C
 | `ui/src/components/AseXmlDeliveryTestCaseTable.tsx` | Read-only viewer for `AseXmlDeliverySteps` (adds Endpoint column) |
 | `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` | Bound from `appsettings.json → TestEnvironment` — `ApiStacks`, auth, execution, Playwright, desktop UI settings |
 | `src/AiTestCrew.Core/Services/AgentConcurrencyLimiter.cs` | Global semaphore for parallel execution, bounded by `MaxParallelAgents` |
+| `src/AiTestCrew.Core/Models/Agent.cs` | Phase 4 agent record — registered Runner instance + capabilities + status |
+| `src/AiTestCrew.Core/Models/RunQueueEntry.cs` | Phase 4 queue row — enqueued run waiting for / claimed by / completed on a local agent |
+| `src/AiTestCrew.Storage/Sqlite/SqliteAgentRepository.cs` | Agent upsert / heartbeat / stale-offline marking |
+| `src/AiTestCrew.Storage/Sqlite/SqliteRunQueueRepository.cs` | Run-queue enqueue / atomic claim / progress / result |
+| `src/AiTestCrew.WebApi/Endpoints/AgentEndpoints.cs` | `/api/agents/*` — register, heartbeat, list, deregister |
+| `src/AiTestCrew.WebApi/Endpoints/QueueEndpoints.cs` | `/api/queue/*` — next (claim), progress, result, list, cancel |
+| `src/AiTestCrew.WebApi/Services/AgentHeartbeatMonitor.cs` | `BackgroundService` that marks agents Offline when heartbeat is stale |
+| `src/AiTestCrew.WebApi/Services/RunDispatchHelper.cs` | Decides whether a run must be enqueued for a local agent (Web/Desktop targets) or run in-process |
+| `src/AiTestCrew.Runner/AgentMode/AgentRunner.cs` | Runner `--agent` mode — register, heartbeat, poll, execute |
+| `src/AiTestCrew.Runner/AgentMode/AgentClient.cs` | HTTP wrapper around `/api/agents/*` + `/api/queue/*` |
+| `src/AiTestCrew.Runner/AgentMode/JobExecutor.cs` | Bridges a dequeued job to `TestOrchestrator.RunAsync` |
+| `ui/src/components/AgentsPanel.tsx` | Dashboard panel — agents with status dot, capabilities, owner, current job |
+| `ui/src/components/QueueBanner.tsx` | Dashboard banner — active queued/claimed/running jobs + cancel button |
 
 ## Test organisation
 
@@ -116,6 +129,10 @@ dotnet run --project src/AiTestCrew.Runner -- --list-modules                    
 dotnet run --project src/AiTestCrew.Runner -- --create-module "Name"                         # Create a module
 dotnet run --project src/AiTestCrew.Runner -- --create-testset <moduleId> "Name"             # Create empty test set
 
+# ── Agent mode (Phase 4 — distributed execution) ───────────────────────────
+dotnet run --project src/AiTestCrew.Runner -- --agent --name "Alice-PC"                       # Register this machine as a long-running agent (polls server, executes queued UI/desktop jobs)
+dotnet run --project src/AiTestCrew.Runner -- --agent --capabilities UI_Web_Blazor,UI_Web_MVC  # Limit which target types this agent will accept
+
 # ── Recording (standalone test cases) ──────────────────────────────────────
 dotnet run --project src/AiTestCrew.Runner -- --record-setup --module sdr --testset nmi      # Record reusable setup steps (e.g. login)
 dotnet run --project src/AiTestCrew.Runner -- --auth-setup                                   # Save Blazor SSO + 2FA auth state
@@ -140,8 +157,10 @@ dotnet run --project src/AiTestCrew.Runner -- --verify-only --reuse mfn-delivery
 
 | Flag | Modes | Value | Purpose |
 |---|---|---|---|
+| `--agent` | Agent | flag | Start the Runner as a long-running agent that polls the server for queued UI/desktop jobs. Requires `ServerUrl` + `ApiKey` in config. |
 | `--api-module <key>` | Normal / Reuse | e.g. `sdr` | Pick a module within a multi-stack API (`ApiStacks.<stack>.Modules`). Persists on the test set. |
 | `--auth-setup` | Auth | (none) | Launch a browser and save auth state. `--target UI_Web_Blazor` (default) = Azure SSO + TOTP; `--target UI_Web_MVC` = forms auth. |
+| `--capabilities <list>` | Agent | e.g. `UI_Web_Blazor,UI_Web_MVC` | Comma-separated target types this agent accepts. Default: all three UI targets. |
 | `--case-name "<name>"` | Recording | string | Display name for a recorded test case or setup recording. |
 | `--create-module "<name>"` | Management | string | Create a module; slugifies the name. |
 | `--create-testset <moduleId> "<name>"` | Management | slug + string | Create an empty test set in a module. |
@@ -151,6 +170,7 @@ dotnet run --project src/AiTestCrew.Runner -- --verify-only --reuse mfn-delivery
 | `--list-endpoints` | List | (none) | Query Bravo DB and print available endpoint codes. |
 | `--list-modules` | List | (none) | List modules. |
 | `--module <moduleId>` | All | slug | Module scope for the command. |
+| `--name "<name>"` | Agent | string | Agent display name shown on the dashboard. Defaults to `$env:COMPUTERNAME`. |
 | `--obj-name "<name>"` | Normal / Rebaseline | string | Short display name for the generated objective. |
 | `--objective <idOrName>` | Reuse / VerifyOnly / Record-verification | slug OR display name | Reuse: scope to a single test case. VerifyOnly: required, identifies the delivery objective. Record-verification: target delivery objective. Case-insensitive; matches `TestObjective.Id` first, then `Name`. |
 | `--rebaseline` | Rebaseline | flag | Regenerate test cases via LLM and overwrite. Only valid for AI-generated objectives. |

@@ -216,6 +216,13 @@ public class TestOrchestrator
                 }
                 tasks = filtered;
 
+                if (tasks.Count == 1)
+                {
+                    // Override the run's top-level objective so the dashboard header
+                    // reflects the filtered test case, not the parent test set's full objective.
+                    objective = tasks[0].Description;
+                }
+
                 if (tasks.Count == 0)
                 {
                     var available = saved.TestObjectives.Count > 0

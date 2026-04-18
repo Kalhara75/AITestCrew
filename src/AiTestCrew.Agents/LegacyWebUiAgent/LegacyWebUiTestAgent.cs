@@ -36,6 +36,29 @@ public class LegacyWebUiTestAgent : BaseWebUiTestAgent
     /// </summary>
     private static readonly SemaphoreSlim s_loginGate = new(1, 1);
 
+    /// <summary>
+    /// Serializes objective execution within this agent — the legacy MVC backend
+    /// cannot reliably handle multiple concurrent authenticated sessions for the
+    /// same user (single-session enforcement, shared ASP.NET session state,
+    /// dev-server load). Running test sets one objective at a time here avoids
+    /// the 15s Playwright timeouts that appear under parallel load, while still
+    /// letting API and Blazor agents use the global MaxParallelAgents budget.
+    /// </summary>
+    private static readonly SemaphoreSlim s_executionGate = new(1, 1);
+
+    public override async Task<TestResult> ExecuteAsync(TestTask task, CancellationToken ct = default)
+    {
+        await s_executionGate.WaitAsync(ct);
+        try
+        {
+            return await base.ExecuteAsync(task, ct);
+        }
+        finally
+        {
+            s_executionGate.Release();
+        }
+    }
+
     public override string Name => "Legacy Web UI Agent";
     public override string Role =>
         "Senior Web UI Test Engineer specialising in ASP.NET MVC applications. " +

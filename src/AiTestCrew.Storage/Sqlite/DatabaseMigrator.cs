@@ -83,12 +83,46 @@ public static class DatabaseMigrator
                 data          TEXT NOT NULL DEFAULT '{}'
             );
 
+            CREATE TABLE IF NOT EXISTS agents (
+                id            TEXT PRIMARY KEY,
+                name          TEXT NOT NULL,
+                user_id       TEXT,
+                capabilities  TEXT NOT NULL,
+                version       TEXT,
+                status        TEXT NOT NULL,
+                last_seen_at  TEXT NOT NULL,
+                registered_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS run_queue (
+                id             TEXT PRIMARY KEY,
+                module_id      TEXT NOT NULL,
+                test_set_id    TEXT NOT NULL,
+                objective_id   TEXT,
+                target_type    TEXT NOT NULL,
+                mode           TEXT NOT NULL,
+                requested_by   TEXT,
+                status         TEXT NOT NULL,
+                claimed_by     TEXT,
+                claimed_at     TEXT,
+                completed_at   TEXT,
+                error          TEXT,
+                request_json   TEXT NOT NULL,
+                created_at     TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_run_queue_status_target
+                ON run_queue (status, target_type);
+
+            CREATE INDEX IF NOT EXISTS idx_run_queue_claimed_by
+                ON run_queue (claimed_by, status);
+
             CREATE TABLE IF NOT EXISTS schema_version (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
 
-            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '2');
+            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '3');
             """;
         cmd.ExecuteNonQuery();
     }

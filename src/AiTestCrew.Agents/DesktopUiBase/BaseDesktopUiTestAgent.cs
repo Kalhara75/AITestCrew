@@ -391,6 +391,8 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
         image.ToFile(path);
 
         Logger.LogDebug("[{Agent}] Screenshot saved: {Path}", Name, path);
+        // When running in agent mode (ServerUrl set), push a copy to the server so the dashboard can render it
+        _ = AiTestCrew.Agents.Shared.RemoteScreenshotUploader.TryUploadAsync(_config, path, Logger);
         // Return just the filename — the WebApi serves /screenshots/{fileName}
         return fileName;
     }

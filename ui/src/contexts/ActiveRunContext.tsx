@@ -110,16 +110,18 @@ export function ActiveRunProvider({ children }: { children: React.ReactNode }) {
     refetchInterval: 3000,
   });
 
-  // When individual run completes/fails, clear it and invalidate
+  // When individual run reaches a terminal state, clear it and invalidate
   useEffect(() => {
     if (!individualRunStatusData || !individualRun) return;
-    if (individualRunStatusData.status === 'Completed' || individualRunStatusData.status === 'Failed') {
+    const s = individualRunStatusData.status;
+    if (s === 'Completed' || s === 'Failed' || s === 'Cancelled') {
       const { moduleId, testSetId } = individualRun;
       setIndividualRun(null);
       if (testSetId) {
         queryClient.invalidateQueries({ queryKey: ['testSet', moduleId, testSetId] });
         queryClient.invalidateQueries({ queryKey: ['runs', moduleId, testSetId] });
       }
+      queryClient.invalidateQueries({ queryKey: ['queue'] });
     }
   }, [individualRunStatusData?.status]);
 

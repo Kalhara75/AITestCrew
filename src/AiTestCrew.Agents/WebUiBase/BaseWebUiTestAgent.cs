@@ -947,6 +947,8 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
             var path = Path.Combine(_config.PlaywrightScreenshotDir, fileName);
             await page.ScreenshotAsync(new PageScreenshotOptions { Path = path, FullPage = true });
             Logger.LogInformation("[{Agent}] Screenshot saved: {Path}", Name, path);
+            // When running in agent mode (ServerUrl set), push a copy to the server so the dashboard can render it
+            await AiTestCrew.Agents.Shared.RemoteScreenshotUploader.TryUploadAsync(_config, path, Logger);
             // Return just the filename — the WebApi serves /screenshots/{fileName}
             return fileName;
         }

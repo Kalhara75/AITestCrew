@@ -1,6 +1,14 @@
 # Phase 4 — Distributed Test Execution via Local Agents
 
-**Status:** Planned, not implemented. Pick up in a fresh Claude Code session.
+**Status:** Implemented. See `docs/architecture.md#distributed-execution-phase-4` for the as-built description and `docs/deployment.md#local-agent-setup-phase-4` for the operator setup.
+
+Post-implementation refinements (added after initial rollout, all documented in the two files above):
+
+- **Screenshot forwarding** — `POST /api/screenshots` endpoint + `RemoteScreenshotUploader` helper so agent-captured failure screenshots render on the dashboard.
+- **Legacy MVC serialization** — `LegacyWebUiTestAgent` wraps `ExecuteAsync` with a static `SemaphoreSlim(1, 1)` to avoid 15-second Playwright timeouts from concurrent sessions against the legacy backend. Blazor / API / aseXML / Desktop agents remain parallel.
+- **Single-objective heading fix** — when a run is filtered to one objective, `TestOrchestrator` overwrites the suite-level `objective` with the filtered task's display name so the dashboard header matches what executed.
+
+The notes below are the original design spec retained for future reference.
 
 ---
 

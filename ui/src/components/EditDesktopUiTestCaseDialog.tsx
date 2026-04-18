@@ -109,10 +109,6 @@ export function EditDesktopUiTestCaseDialog({
     }
   };
 
-  /** Best display label for a selector */
-  const selectorLabel = (s: DesktopUiStep) =>
-    s.automationId || s.name || (s.className ? `${s.className}:${s.controlType}` : null) || s.treePath || '(none)';
-
   return (
     <div style={overlayStyle} onClick={onClose}>
       <div style={dialogStyle} onClick={e => e.stopPropagation()}>

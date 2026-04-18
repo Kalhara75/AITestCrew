@@ -149,6 +149,15 @@ if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCas
     builder.Services.AddSingleton<IExecutionHistoryRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteExecutionHistoryRepository(connFactory, envConfig.MaxExecutionRunsPerTestSet));
     builder.Services.AddSingleton<IModuleRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteModuleRepository(connFactory));
     builder.Services.AddSingleton<IUserRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteUserRepository(connFactory));
+    builder.Services.AddSingleton<IAgentRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteAgentRepository(connFactory));
+    builder.Services.AddSingleton<IRunQueueRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteRunQueueRepository(connFactory));
+
+    // Background monitor to mark agents Offline if no heartbeat
+    builder.Services.AddHostedService(sp => new AgentHeartbeatMonitor(
+        sp,
+        sp.GetRequiredService<ILogger<AgentHeartbeatMonitor>>(),
+        TimeSpan.FromSeconds(envConfig.AgentHeartbeatTimeoutSeconds > 0
+            ? envConfig.AgentHeartbeatTimeoutSeconds : 120)));
 }
 else
 {
@@ -220,7 +229,11 @@ app.MapGroup("/api/modules").MapModuleEndpoints();
 app.MapGroup("/api/testsets").MapTestSetEndpoints();
 app.MapGroup("/api/runs").MapRunEndpoints();
 if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCase))
+{
     app.MapGroup("/api/users").MapUserEndpoints();
+    app.MapGroup("/api/agents").MapAgentEndpoints();
+    app.MapGroup("/api/queue").MapQueueEndpoints();
+}
 
 // ── Execution history (Runner API client) ──
 app.MapPost("/api/executions", async (PersistedExecutionRun run, IExecutionHistoryRepository historyRepo) =>
@@ -228,6 +241,29 @@ app.MapPost("/api/executions", async (PersistedExecutionRun run, IExecutionHisto
     await historyRepo.SaveAsync(run);
     return Results.Ok(new { saved = true, runId = run.RunId });
 });
+
+// ── Screenshot upload (Phase 4 — agents push captures to the server) ──
+app.MapPost("/api/screenshots", async (HttpRequest req, TestEnvironmentConfig cfg) =>
+{
+    if (!req.HasFormContentType) return Results.BadRequest(new { error = "multipart/form-data required" });
+    var form = await req.ReadFormAsync();
+    var file = form.Files.GetFile("file") ?? form.Files.FirstOrDefault();
+    if (file is null || file.Length == 0) return Results.BadRequest(new { error = "file is required" });
+
+    var dir = string.IsNullOrEmpty(cfg.PlaywrightScreenshotDir)
+        ? Path.Combine(AppContext.BaseDirectory, "screenshots")
+        : Path.GetFullPath(cfg.PlaywrightScreenshotDir);
+    Directory.CreateDirectory(dir);
+
+    // Strip directory components to prevent path traversal
+    var safeName = Path.GetFileName(file.FileName);
+    if (string.IsNullOrWhiteSpace(safeName) || safeName.Contains("..")) safeName = $"{Guid.NewGuid():N}.png";
+    var target = Path.Combine(dir, safeName);
+
+    await using var stream = File.Create(target);
+    await file.CopyToAsync(stream);
+    return Results.Ok(new { fileName = safeName, url = $"/screenshots/{safeName}" });
+}).DisableAntiforgery();
 
 // ── Health check ──
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok", timestamp = DateTime.UtcNow }));

@@ -1076,6 +1076,80 @@ All fields support environment variable overrides via `AITESTCREW_TestEnvironmen
 
 ---
 
+## Distributed Execution (Phase 4)
+
+The server cannot execute Web UI (Playwright) or Desktop UI (FlaUI) tests because Windows Server Core containers lack Media Foundation and non-interactive sessions have no desktop. Phase 4 introduces a **local-agent model**: QA engineers run the Runner CLI in a long-running `--agent` mode that polls the server for queued jobs and executes them on their own machine.
+
+### Flow
+
+1. Dashboard triggers a run. WebApi looks at the test set's target types.
+2. If the run needs a browser/desktop (`UI_Web_*`, `UI_Desktop_*`), the WebApi inserts a row into `run_queue` instead of executing in-process.
+3. A local Runner with matching capabilities claims the job atomically via `UPDATE ... WHERE status='Queued'` inside a transaction.
+4. The agent executes the job via the existing `TestOrchestrator.RunAsync` (same code path as the CLI), posts `/api/queue/{jobId}/progress` when it starts and `/api/queue/{jobId}/result` when done.
+5. Results are written to `execution_runs` via the existing Runner API-client flow, so the dashboard shows them like any other run.
+
+### New SQLite tables
+
+```sql
+agents        -- Registered Runner instances, updated on heartbeat (30s)
+run_queue     -- Jobs pending/claimed/running/completed (target_type + capabilities match drives claim)
+```
+
+### New endpoints
+
+| Method | Route | Purpose |
+|---|---|---|
+| `POST` | `/api/agents/register` | Register or re-register a Runner as an agent |
+| `POST` | `/api/agents/{id}/heartbeat` | Keep-alive; returns the job the server thinks this agent is running |
+| `DELETE` | `/api/agents/{id}` | Graceful deregister (Ctrl+C on Runner) |
+| `GET` | `/api/agents` | Dashboard list — name, status, capabilities, owner, current job |
+| `GET` | `/api/queue/next?agentId=&capabilities=` | Atomic claim-oldest-matching, returns `204 No Content` if none |
+| `POST` | `/api/queue/{jobId}/progress` | Flip Claimed → Running |
+| `POST` | `/api/queue/{jobId}/result` | Terminal state (Completed / Failed) |
+| `GET` | `/api/queue` | Dashboard queue list |
+| `DELETE` | `/api/queue/{jobId}` | Cancel a Queued job (fails if already claimed) |
+| `POST` | `/api/screenshots` | Multipart upload — agents push failure screenshots to the server's `PlaywrightScreenshotDir` so the dashboard's `/screenshots/{file}` static handler can serve them |
+
+### Dispatch decision (`RunDispatchHelper`)
+
+`RunDispatchHelper.GetAgentRequiredTarget(testSet, objectiveId)` walks the target types of the objectives that will actually run; if any are `UI_Web_MVC`, `UI_Web_Blazor`, or `UI_Desktop_WinForms`, the run is enqueued. Pure API/aseXML sets continue to execute in the server process.
+
+### Heartbeat monitor
+
+`AgentHeartbeatMonitor` is a `BackgroundService` that runs every 30s and marks agents Offline when their `last_seen_at` is older than `AgentHeartbeatTimeoutSeconds` (default 120). No cleanup is done for completed queue entries — they stay for audit/debug.
+
+### Screenshot forwarding
+
+When an agent captures a Playwright or FlaUI failure screenshot, the file lives on the agent's local disk — the server serving the dashboard can't see it. `RemoteScreenshotUploader.TryUploadAsync` (in `AiTestCrew.Agents/Shared/`) is invoked from `BaseWebUiTestAgent.CaptureScreenshotAsync` and `BaseDesktopUiTestAgent.CaptureScreenshot`. When `TestEnvironmentConfig.ServerUrl` is set (agent mode), it POSTs the file to `/api/screenshots`, which saves it into the server's `PlaywrightScreenshotDir`. The step detail line still reads `"...| Screenshot: <filename>"`, and the existing `/screenshots/{filename}` static handler resolves to the uploaded copy. When `ServerUrl` is empty (legacy local mode), the uploader is a no-op — the screenshot is served directly from the local dir.
+
+The endpoint strips directory components from the uploaded filename (`Path.GetFileName`) and rejects paths containing `..` to prevent traversal.
+
+### Per-agent concurrency
+
+`TestOrchestrator` parallelizes objective execution throttled by the global `MaxParallelAgents` (default 4). Most agents (API, aseXML, Blazor UI) cope fine. The **legacy ASP.NET MVC** backend cannot — concurrent authenticated sessions for the same user trigger single-session enforcement, shared ASP.NET session-state corruption, or dev-server overload, producing 15-second Playwright timeouts. `LegacyWebUiTestAgent` therefore wraps its own `ExecuteAsync` with a static `SemaphoreSlim(1, 1)` so its objectives run sequentially within a Runner process. Other agents continue to use the global budget unchanged.
+
+When adding a new agent that hits a fragile backend, copy this pattern: a static semaphore + an `ExecuteAsync` override that gates on it. Reach for it only if parallel execution actually fails — API / Blazor agents don't need it.
+
+### Single-objective heading
+
+In Reuse/VerifyOnly mode, `TestOrchestrator.RunAsync` overwrites its `objective` parameter with the test set's stored `Objective` field (the parent objective entered when the set was first created). That flows through to `PersistedExecutionRun.Objective` and the dashboard's execution-detail heading. When the caller filters to a single objective (`--objective` on the CLI, single-case Run button in the dashboard), the orchestrator narrows `objective` back to the filtered task's `Description` (the objective's display name) so the header matches what actually ran. Test-set-level runs still show the parent objective.
+
+### Security
+
+Agents authenticate via the owning user's API key (the existing `X-Api-Key` middleware). The `claimed_by` column stores the agent id, and the agent must supply the same id when posting progress/result, preventing cross-agent claim theft.
+
+### New config (`TestEnvironmentConfig`)
+
+| Field | Default | Purpose |
+|---|---|---|
+| `AgentHeartbeatTimeoutSeconds` | 120 | Server-side: how long before a silent agent is marked Offline |
+| `AgentName` | (empty → `$COMPUTERNAME`) | Runner-side: display name on the dashboard |
+| `AgentCapabilities` | (empty → all three UI targets) | Runner-side: comma-separated target types this agent accepts |
+| `AgentPollIntervalSeconds` | 10 | Runner-side: idle poll cadence |
+| `AgentHeartbeatIntervalSeconds` | 30 | Runner-side: heartbeat cadence |
+
+---
+
 ## Deployment
 
 ### Files

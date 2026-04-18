@@ -46,9 +46,11 @@ Not all test types can execute on the server. Understanding this is critical for
 |---|---|---|---|
 | **API** (REST/GraphQL) | Server executes | Local executes | HTTP access to the target API only |
 | **aseXML** (generate/deliver) | Server executes | Local executes | Network access to Bravo SFTP/FTP endpoints |
-| **Web UI — Playwright** (Blazor/MVC) | **Cannot execute on Server Core containers** — see note below | Local executes (visible or headless) | Chromium + full Windows (Media Foundation) |
-| **Desktop UI — FlaUI** (WinForms) | **Cannot execute on server** | **Must execute locally** | Interactive Windows desktop + target app installed |
-| **Post-delivery UI verifications** | Depends on target (see above) | Depends on target | Same as the verification's target type |
+| **Web UI — Playwright** (Blazor/MVC) | Server enqueues → **local agent** executes | Local executes (visible or headless) | Chromium + full Windows (Media Foundation) |
+| **Desktop UI — FlaUI** (WinForms) | Server enqueues → **local agent** executes | Local executes | Interactive Windows desktop + target app installed |
+| **Post-delivery UI verifications** | Same as target — API verifications execute on server; Web/Desktop are queued | Depends on target | Same as the verification's target type |
+
+> **Phase 4 agent mode:** the dashboard triggers web + desktop runs exactly like API runs; under the covers the server enqueues the job and a local Runner (started with `--agent`) claims and executes it. See **[Local Agent Setup](#local-agent-setup-phase-4)** below.
 
 > **Web UI tests + Windows Server Core containers:** Chromium requires the Windows Media Foundation subsystem (`mf.dll`) which Windows Server Core omits. Enabling it via `DISM` fails inside containers (no package source), and copying the DLLs manually fails signature verification. For a server deployment using Windows Server Core (the default for `.NET 8` Windows containers), web UI tests must be run from a local Runner CLI on a machine with full Windows. If you need web UI tests to run centrally, host the WebApi on a full Windows Server VM (not Server Core) using `publish.ps1` + install as a Windows Service, not Docker.
 
@@ -111,6 +113,64 @@ Keep an RDP session open to a server/VM. Disconnect without locking so the deskt
 tscon %sessionname% /dest:console
 ```
 
+### Local Agent Setup (Phase 4)
+
+Turns each QA engineer's Runner CLI into a long-running worker that claims jobs the server can't execute in-process (web + desktop UI). Setup is a one-time flag.
+
+**On the QA machine:**
+
+1. Clone and build the Runner (same binary as the CLI — no separate install).
+2. Set `ServerUrl` + `ApiKey` in `src/AiTestCrew.Runner/appsettings.json` so the Runner talks to the shared server.
+3. Start the agent:
+
+```powershell
+dotnet run --project src/AiTestCrew.Runner -- --agent --name "Alice-PC"
+```
+
+Expected output:
+
+```
+Registered as 72ad9b3c1a5e (Alice-PC)
+Capabilities: UI_Web_Blazor, UI_Web_MVC, UI_Desktop_WinForms
+Server: https://aitestcrew.internal
+Polling for jobs — press Ctrl+C to stop.
+```
+
+**Defaults:**
+- `--name` defaults to `$env:COMPUTERNAME` (or the `AgentName` config value).
+- `--capabilities` defaults to all three UI targets (`UI_Web_Blazor,UI_Web_MVC,UI_Desktop_WinForms`).
+- Poll interval 10s, heartbeat interval 30s, server marks agent Offline after 2 min of silence. All configurable via `AgentPollIntervalSeconds`, `AgentHeartbeatIntervalSeconds`, `AgentHeartbeatTimeoutSeconds`.
+
+**Dashboard view:**
+- The Modules page lists connected agents with status (Online / Busy / Offline), capabilities, and any job they're currently running.
+- When a dashboard user triggers a web/desktop run, the banner shows *"Queued — waiting for agent with UI_Web_Blazor"* until an agent claims it, then flips to *"Running on Alice-PC"*.
+
+**Auto-start on login (optional):**
+
+Create `C:\Tools\aitestcrew-agent\start-agent.cmd`:
+
+```cmd
+@echo off
+cd /d "C:\MyCode\github\AITestCrew"
+dotnet run --project src\AiTestCrew.Runner -- --agent --name "%COMPUTERNAME%"
+```
+
+Add a shortcut to the Windows Startup folder (`shell:startup`) pointing at the cmd file. For desktop tests, the machine must remain logged in with an interactive session (see [Option B](#why-desktop-tests-cant-run-on-the-server) above for the auto-login pattern).
+
+**Stopping the agent:**
+Press Ctrl+C — the Runner finishes the current job, deregisters itself from the server, and exits. An ungracefully killed agent is detected by the heartbeat timeout.
+
+**Auth state:**
+Playwright storage-state files live on the agent's machine (e.g. `bravecloud-auth-state.json` next to the Runner binary). Run `dotnet run --project src/AiTestCrew.Runner -- --auth-setup` on the QA machine once so the first Blazor job doesn't fall through to an interactive login. For Legacy MVC forms auth use `--auth-setup --target UI_Web_MVC`. The server's `docker-auth-state` mount is only used for runs that execute server-side (API / aseXML) — not for agent-claimed jobs.
+
+**Screenshots on failure:**
+When a Web UI or Desktop UI step fails, the agent captures a screenshot locally, then POSTs a copy to `POST /api/screenshots` on the server. The dashboard's execution-detail page renders it via `/screenshots/{filename}` from the server's `PlaywrightScreenshotDir`. Nothing to configure — it happens automatically whenever `ServerUrl` is set in the Runner config. If screenshots aren't rendering, check the agent terminal for `Screenshot upload failed: ...` warnings (often a stale API key or the agent hitting a Docker server restart mid-run).
+
+**Legacy MVC concurrency:**
+The Legacy Web UI agent (`UI_Web_MVC`) serializes objective execution inside its process via a static semaphore — only one MVC test case runs at a time even when `MaxParallelAgents > 1`. This sidesteps the single-session / shared-ASP.NET-session issues that otherwise cause 15-second Playwright timeouts when many objectives in a test set run concurrently. Blazor (`UI_Web_Blazor`), API, aseXML, and Desktop agents continue to parallelize up to `MaxParallelAgents`.
+
+---
+
 ### Recommended team workflow
 
 | Activity | Where | Who |
@@ -118,8 +178,8 @@ tscon %sessionname% /dest:console
 | **Record** web UI test cases | QA's local machine (Runner CLI) | Any QA engineer |
 | **Record** desktop test cases | QA's local machine (Runner CLI) | Any QA engineer |
 | **Run** API / aseXML tests | Server (dashboard or Runner CLI) | Anyone |
-| **Run** web UI tests | Server (dashboard — headless) | Anyone |
-| **Run** desktop tests | Local machine or dedicated VM (Runner CLI) | QA engineer or scheduled task |
+| **Run** web UI tests | Dashboard → local agent claims the job | Anyone with an agent online |
+| **Run** desktop tests | Dashboard → local agent on a machine with the app | Anyone with an agent online |
 | **View results** | Server dashboard (browser) | Anyone |
 | **Manage** modules/test sets/users | Server dashboard (browser) | Anyone |
 
@@ -606,3 +666,7 @@ Rebuild the Runner package and redistribute the zip/folder. The Runner is statel
 | Web UI test in Docker: `Target page, context or browser has been closed` | Server Core lacks Media Foundation (Chromium dependency). Cannot be fixed reliably — run web UI tests from the local Runner CLI instead. See "Test Execution Model" above. |
 | `Missing X-Api-Key header` when creating first user | Bootstrap mode allows POST `/api/users` without auth only when zero users exist. If you already have users, get an existing admin's API key and send it as `X-Api-Key`. |
 | Copied DB shows as empty after container restart | A stale WAL file was applied on top. Use the helper container sequence in "Copying an existing SQLite DB into the container" above — it removes the `.db-wal` / `.db-shm` files before copying. |
+| Agent shows Offline on the dashboard while the Runner is still running | Heartbeat stopped reaching the server. Check the agent terminal for `Heartbeat failed: ...` warnings (stale API key, dropped network, Docker restart). The Runner keeps retrying; it goes back Online on the next successful heartbeat. |
+| Agent-claimed Web/Desktop run shows "View Screenshot" but the image fails to load | The agent couldn't upload to `/api/screenshots` after capture. Check the agent terminal for `Screenshot upload failed: ...`. Usually an expired API key, the Docker container restarted between capture and upload, or `PlaywrightScreenshotDir` isn't writable inside the container. |
+| Legacy MVC test set: many objectives fail at `Timeout 15000ms exceeded` when "Re-run Tests" on a whole set | The legacy MVC backend can't handle concurrent authenticated sessions. The agent already serializes `UI_Web_MVC` objectives inside its process, but if you run multiple test sets in parallel (module-level run) each still gets one browser per test set. Either run test sets one at a time or set `MaxParallelAgents: 1` on the **agent's** `appsettings.json`. |
+| Dashboard heading shows the parent test-set objective instead of the filtered single test case | Fixed in the orchestrator — single-objective runs now display the objective's own name. Old persisted runs keep the previous heading; only new runs will look right. |

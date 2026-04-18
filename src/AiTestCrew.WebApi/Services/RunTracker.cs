@@ -48,12 +48,15 @@ public class RunTracker : IRunTracker
         }
     }
 
-    public bool HasActiveRun() => _runs.Values.Any(r => r.Status == "Running");
+    public bool HasActiveRun() => _runs.Values.Any(IsActive);
 
     public bool HasActiveRunForTestSet(string testSetId) =>
-        _runs.Values.Any(r => r.Status == "Running" && r.TestSetId == testSetId);
+        _runs.Values.Any(r => IsActive(r) && r.TestSetId == testSetId);
 
-    public RunStatus? GetActiveRun() => _runs.Values.FirstOrDefault(r => r.Status == "Running");
+    public RunStatus? GetActiveRun() => _runs.Values.FirstOrDefault(IsActive);
+
+    private static bool IsActive(RunStatus r) =>
+        r.Status == "Running" || r.Status == "Queued" || r.Status == "Claimed";
 }
 
 public class RunStatus

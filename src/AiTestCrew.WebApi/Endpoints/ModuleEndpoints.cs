@@ -385,6 +385,8 @@ public static class ModuleEndpoints
             IModuleRepository moduleRepo, ITestSetRepository tsRepo,
             IRunTracker runTracker, IModuleRunTracker moduleRunTracker,
             TestOrchestrator orchestrator, TestEnvironmentConfig config,
+            AiTestCrew.Core.Interfaces.IRunQueueRepository? queueRepo,
+            HttpContext ctx,
             ILogger<TestOrchestrator> logger) =>
         {
             var module = await moduleRepo.GetAsync(moduleId);
@@ -419,6 +421,7 @@ public static class ModuleEndpoints
                 {
                     // Run all test sets in parallel — the orchestrator's
                     // AgentConcurrencyLimiter gates how many agents execute at once.
+                    var requestedBy = (ctx.Items["User"] as AiTestCrew.Core.Models.User)?.Id;
                     var testSetTasks = runnableTestSets.Select(ts => Task.Run(async () =>
                     {
                         var childRunId = Guid.NewGuid().ToString("N")[..12];
@@ -427,15 +430,66 @@ public static class ModuleEndpoints
 
                         try
                         {
-                            await orchestrator.RunAsync(
-                                "", RunMode.Reuse, ts.Id,
-                                externalRunId: childRunId,
-                                moduleId: moduleId,
-                                targetTestSetId: ts.Id,
-                                apiStackKey: ts.ApiStackKey,
-                                apiModule: ts.ApiModule);
-                            runTracker.Complete(childRunId, ts.Id);
-                            moduleRunTracker.CompleteTestSet(moduleRunId, ts.Id, true, null);
+                            var agentTarget = queueRepo is not null
+                                ? RunDispatchHelper.GetAgentRequiredTarget(ts, null) : null;
+
+                            if (agentTarget is not null && queueRepo is not null)
+                            {
+                                // Enqueue for a local agent and poll until terminal
+                                var entry = new AiTestCrew.Core.Models.RunQueueEntry
+                                {
+                                    Id = childRunId,
+                                    ModuleId = moduleId,
+                                    TestSetId = ts.Id,
+                                    TargetType = agentTarget,
+                                    Mode = RunMode.Reuse.ToString(),
+                                    RequestedBy = requestedBy,
+                                    RequestJson = System.Text.Json.JsonSerializer.Serialize(new RunRequest(
+                                        Objective: null, ObjectiveName: null, Mode: "Reuse",
+                                        TestSetId: ts.Id, ModuleId: moduleId, ObjectiveId: null,
+                                        ApiStackKey: ts.ApiStackKey, ApiModule: ts.ApiModule,
+                                        VerificationWaitOverride: null)),
+                                    CreatedAt = DateTime.UtcNow
+                                };
+                                await queueRepo.EnqueueAsync(entry);
+                                var status = runTracker.Get(childRunId);
+                                if (status is not null) status.Status = "Queued";
+
+                                // Wait for the agent to finish
+                                while (true)
+                                {
+                                    await Task.Delay(2000);
+                                    var job = await queueRepo.GetByIdAsync(childRunId);
+                                    if (job is null) break;
+                                    if (job.Status is "Completed" or "Failed" or "Cancelled")
+                                    {
+                                        if (job.Status == "Completed")
+                                        {
+                                            runTracker.Complete(childRunId, ts.Id);
+                                            moduleRunTracker.CompleteTestSet(moduleRunId, ts.Id, true, null);
+                                        }
+                                        else
+                                        {
+                                            var err = job.Error ?? job.Status;
+                                            runTracker.Fail(childRunId, err);
+                                            moduleRunTracker.CompleteTestSet(moduleRunId, ts.Id, false, err);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                await orchestrator.RunAsync(
+                                    "", RunMode.Reuse, ts.Id,
+                                    externalRunId: childRunId,
+                                    moduleId: moduleId,
+                                    targetTestSetId: ts.Id,
+                                    apiStackKey: ts.ApiStackKey,
+                                    apiModule: ts.ApiModule);
+                                runTracker.Complete(childRunId, ts.Id);
+                                moduleRunTracker.CompleteTestSet(moduleRunId, ts.Id, true, null);
+                            }
                         }
                         catch (Exception ex)
                         {

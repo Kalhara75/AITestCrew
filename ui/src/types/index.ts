@@ -317,6 +317,43 @@ export interface ActiveRunResponse {
   run: RunStatusResponse | null;
 }
 
+// ── Distributed execution (Phase 4) ──
+
+export interface AgentSummary {
+  id: string;
+  name: string;
+  userId: string | null;
+  ownerName: string | null;
+  capabilities: string[];
+  version: string | null;
+  status: 'Online' | 'Offline' | 'Busy' | string;
+  lastSeenAt: string;
+  registeredAt: string;
+  currentJob: {
+    id: string;
+    testSetId: string;
+    objectiveId: string | null;
+    targetType: string;
+    status: string;
+  } | null;
+}
+
+export interface QueueEntry {
+  id: string;
+  moduleId: string;
+  testSetId: string;
+  objectiveId: string | null;
+  targetType: string;
+  mode: string;
+  status: 'Queued' | 'Claimed' | 'Running' | 'Completed' | 'Failed' | 'Cancelled' | string;
+  claimedBy: string | null;
+  requestedBy: string | null;
+  claimedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  error: string | null;
+}
+
 // Legacy types kept for backward compatibility
 export interface WebUiTestCase {
   name: string;

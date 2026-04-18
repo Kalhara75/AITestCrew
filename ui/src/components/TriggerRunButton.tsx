@@ -51,24 +51,30 @@ export function TriggerRunButton({ testSetId, moduleId, apiStackKey, apiModule }
   };
 
   if (isActive) {
+    const s = individualRunStatus?.status;
+    const label = s === 'Queued' ? 'Queued — waiting for agent...'
+                : s === 'Claimed' ? 'Agent claimed the job...'
+                : 'Running tests...';
     return (
       <div style={{
         display: 'flex',
         alignItems: 'center',
         gap: 12,
         padding: '10px 20px',
-        background: '#eff6ff',
+        background: s === 'Queued' || s === 'Claimed' ? '#fffbeb' : '#eff6ff',
         borderRadius: 8,
-        border: '1px solid #bfdbfe',
+        border: `1px solid ${s === 'Queued' || s === 'Claimed' ? '#fde68a' : '#bfdbfe'}`,
       }}>
         <div style={{
           width: 16, height: 16,
-          border: '2.5px solid #bfdbfe',
-          borderTop: '2.5px solid #2563eb',
+          border: `2.5px solid ${s === 'Queued' || s === 'Claimed' ? '#fde68a' : '#bfdbfe'}`,
+          borderTop: `2.5px solid ${s === 'Queued' || s === 'Claimed' ? '#b45309' : '#2563eb'}`,
           borderRadius: '50%',
           animation: 'spin 0.8s linear infinite',
         }} />
-        <span style={{ fontSize: 13, color: '#1e40af', fontWeight: 500 }}>Running tests...</span>
+        <span style={{ fontSize: 13, color: s === 'Queued' || s === 'Claimed' ? '#78350f' : '#1e40af', fontWeight: 500 }}>
+          {label}
+        </span>
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
     );

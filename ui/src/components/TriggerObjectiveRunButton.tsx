@@ -16,7 +16,7 @@ interface Props {
 }
 
 export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObjective, source, moduleId, apiStackKey, apiModule, disabled, hasDeliveryVerifications }: Props) {
-  const { individualRun, setIndividualRun } = useActiveRun();
+  const { individualRun, individualRunStatus, setIndividualRun } = useActiveRun();
   const [error, setError] = useState<string | null>(null);
   const [showRebaselineConfirm, setShowRebaselineConfirm] = useState(false);
 
@@ -67,15 +67,18 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObject
   };
 
   if (isActive) {
+    const s = individualRunStatus?.status;
+    const queued = s === 'Queued' || s === 'Claimed';
     return (
-      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }} title={queued ? 'Waiting for agent' : 'Running'}>
         <div style={{
           width: 12, height: 12,
-          border: '2px solid #bfdbfe',
-          borderTop: '2px solid #2563eb',
+          border: `2px solid ${queued ? '#fde68a' : '#bfdbfe'}`,
+          borderTop: `2px solid ${queued ? '#b45309' : '#2563eb'}`,
           borderRadius: '50%',
           animation: 'spin 0.8s linear infinite',
         }} />
+        {queued && <span style={{ fontSize: 10, color: '#78350f' }}>queued</span>}
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
     );

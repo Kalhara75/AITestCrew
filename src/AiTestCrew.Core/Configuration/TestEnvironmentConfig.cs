@@ -69,6 +69,21 @@ public class TestEnvironmentConfig
     public bool VerboseLogging { get; set; } = true;
     public int MaxExecutionRunsPerTestSet { get; set; } = 10;
 
+    // --- Distributed execution (Phase 4) ---
+    // Agents send heartbeats; if one is silent longer than this, the server marks it Offline.
+    public int AgentHeartbeatTimeoutSeconds { get; set; } = 120;
+
+    // --- Runner agent mode (Phase 4) ---
+    // Agent-mode identifier — persists across restarts so the same machine keeps the same id.
+    public string AgentName { get; set; } = "";
+    // Target types this agent can execute (e.g. "UI_Web_Blazor,UI_Web_MVC,UI_Desktop_WinForms").
+    // Empty = default to all three UI target types.
+    public string AgentCapabilities { get; set; } = "";
+    // Poll cadence when idle.
+    public int AgentPollIntervalSeconds { get; set; } = 10;
+    // Heartbeat cadence.
+    public int AgentHeartbeatIntervalSeconds { get; set; } = 30;
+
     // --- Playwright browser settings ---
     public string PlaywrightBrowser { get; set; } = "chromium";  // chromium | firefox | webkit
     public bool PlaywrightHeadless { get; set; } = true;

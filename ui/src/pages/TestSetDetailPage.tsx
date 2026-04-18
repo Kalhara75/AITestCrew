@@ -16,7 +16,7 @@ import { MoveObjectiveDialog } from '../components/MoveObjectiveDialog';
 import { TriggerObjectiveRunButton } from '../components/TriggerObjectiveRunButton';
 import { AiPatchPanel } from '../components/AiPatchPanel';
 import { SetupStepsPanel } from '../components/SetupStepsPanel';
-import type { TestObjective, RunSummary, ObjectiveStatus } from '../types';
+import type { TestObjective, ObjectiveStatus } from '../types';
 
 export function TestSetDetailPage() {
   const { id, moduleId } = useParams<{ id: string; moduleId?: string }>();
@@ -164,7 +164,6 @@ export function TestSetDetailPage() {
         ) : (
           <ObjectiveListTable
             objectives={testSet.testObjectives}
-            runs={runs || []}
             objectiveStatuses={testSet.objectiveStatuses}
             testSetId={testSet.id}
             moduleId={moduleId}
@@ -295,7 +294,6 @@ export function TestSetDetailPage() {
 
 function ObjectiveListTable({
   objectives,
-  runs,
   objectiveStatuses,
   testSetId,
   moduleId,
@@ -307,7 +305,6 @@ function ObjectiveListTable({
   onDelete,
 }: {
   objectives: TestObjective[];
-  runs: RunSummary[];
   objectiveStatuses?: Record<string, ObjectiveStatus>;
   testSetId: string;
   moduleId?: string;

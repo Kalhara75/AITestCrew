@@ -540,6 +540,21 @@ dotnet run --project src/AiTestCrew.Runner -- --list
 
 Output includes: ID (slug), module, objective, objective count, total step count, created date, last run date, and total run count.
 
+### Agent (Phase 4 — distributed execution)
+Long-running worker mode. Turns the Runner into an agent that polls the central server for queued jobs (web UI or desktop UI tests the server can't execute on its own) and runs them locally on the current machine.
+
+```
+dotnet run --project src/AiTestCrew.Runner -- --agent --name "Alice-PC"
+dotnet run --project src/AiTestCrew.Runner -- --agent --capabilities UI_Web_Blazor,UI_Web_MVC
+```
+
+`--name` defaults to the machine's hostname (`$env:COMPUTERNAME`). `--capabilities` defaults to all three UI targets (`UI_Web_Blazor,UI_Web_MVC,UI_Desktop_WinForms`). The agent registers, sends heartbeats every 30s, polls the job queue every 10s, and deregisters gracefully on Ctrl+C. Requires `TestEnvironment.ServerUrl` and `ApiKey` to be set so it can reach the shared server. See `docs/deployment.md#local-agent-setup-phase-4` for the team setup.
+
+**Behaviour notes:**
+- **Screenshots** captured by the Web UI or Desktop UI agents (on step failure) are saved locally first, then uploaded to the server via `POST /api/screenshots` so the dashboard's execution-detail page can render them. Upload is silent on success; failures are logged as warnings but don't fail the run.
+- **Legacy MVC serialization** — `UI_Web_MVC` objectives run sequentially inside one agent process via a static semaphore in `LegacyWebUiTestAgent`. This avoids 15-second Playwright timeouts caused by single-session enforcement on the legacy backend when multiple objectives in a set run concurrently. Blazor, API, aseXML, and Desktop agents still parallelize up to `MaxParallelAgents`.
+- **Single-objective heading** — when the dashboard triggers a single test case (Run button on one row, not "Re-run Tests" on the whole set), the execution-detail heading shows that specific objective's name rather than the parent test set's original objective.
+
 ---
 
 ## Configuration

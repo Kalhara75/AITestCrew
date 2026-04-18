@@ -1032,6 +1032,47 @@ if (cli.ListEndpoints)
     return;
 }
 
+// ── Agent mode — long-running worker that polls the server for queued jobs ──
+if (cli.AgentMode)
+{
+    if (string.IsNullOrWhiteSpace(envConfig.ServerUrl))
+    {
+        AnsiConsole.MarkupLine("[red]--agent requires TestEnvironment.ServerUrl to be set in appsettings.json.[/]");
+        AnsiConsole.MarkupLine("[grey]The agent connects to the central server to claim queued jobs.[/]");
+        return;
+    }
+
+    var agentName = cli.AgentName
+        ?? (string.IsNullOrWhiteSpace(envConfig.AgentName) ? Environment.MachineName : envConfig.AgentName);
+
+    var caps = (cli.AgentCapabilities ?? envConfig.AgentCapabilities ?? "")
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (caps.Length == 0)
+        caps = new[] { "UI_Web_Blazor", "UI_Web_MVC", "UI_Desktop_WinForms" };
+
+    var agentLogger = host.Services.GetRequiredService<ILogger<AiTestCrew.Runner.AgentMode.AgentRunner>>();
+    var agentClient = new AiTestCrew.Runner.AgentMode.AgentClient(envConfig.ServerUrl, envConfig.ApiKey);
+    var jobExecutor = new AiTestCrew.Runner.AgentMode.JobExecutor(
+        host.Services.GetRequiredService<TestOrchestrator>());
+    var agentRunner = new AiTestCrew.Runner.AgentMode.AgentRunner(
+        agentClient, jobExecutor, envConfig, agentLogger, agentName, caps);
+
+    using var shutdownCts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) =>
+    {
+        e.Cancel = true;
+        AnsiConsole.MarkupLine("\n[yellow]Ctrl+C received — draining current job and deregistering...[/]");
+        shutdownCts.Cancel();
+    };
+
+    try
+    {
+        await agentRunner.RunAsync(shutdownCts.Token);
+    }
+    catch (OperationCanceledException) { /* graceful shutdown */ }
+    return;
+}
+
 // ── Provider label ──
 var providerLabel = envConfig.LlmProvider.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
     ? $"Claude ({envConfig.LlmModel})"
@@ -1183,6 +1224,8 @@ static CliArgs ParseArgs(string[] args)
     string? objectiveId = null, verificationName = null;
     int? verificationWait = null;
     int deliveryStepIndex = 0;
+    bool agentMode = false;
+    string? agentName = null, agentCapabilities = null;
     var mode = RunMode.Normal;
 
     for (int i = 0; i < args.Length; i++)
@@ -1303,6 +1346,19 @@ static CliArgs ParseArgs(string[] args)
                 break;
             case "--delivery-step-index":
                 throw new ArgumentException("--delivery-step-index requires an integer.");
+            case "--agent":
+                agentMode = true;
+                break;
+            case "--name" when i + 1 < args.Length:
+                agentName = args[++i];
+                break;
+            case "--name":
+                throw new ArgumentException("--name requires a \"<name>\" argument.");
+            case "--capabilities" when i + 1 < args.Length:
+                agentCapabilities = args[++i];
+                break;
+            case "--capabilities":
+                throw new ArgumentException("--capabilities requires a comma-separated list.");
             default:
                 remaining.Add(args[i]);
                 break;
@@ -1337,7 +1393,10 @@ static CliArgs ParseArgs(string[] args)
         ObjectiveId = objectiveId,
         VerificationName = verificationName,
         VerificationWait = verificationWait,
-        DeliveryStepIndex = deliveryStepIndex
+        DeliveryStepIndex = deliveryStepIndex,
+        AgentMode = agentMode,
+        AgentName = agentName,
+        AgentCapabilities = agentCapabilities
     };
 }
 
@@ -1366,6 +1425,11 @@ class CliArgs
     public bool ListEndpoints { get; init; }
     public bool MigrateToSqlite { get; init; }
     public bool RecordVerification { get; init; }
+
+    // Agent mode (Phase 4)
+    public bool AgentMode { get; init; }
+    public string? AgentName { get; init; }
+    public string? AgentCapabilities { get; init; }
 
     /// <summary>
     /// --objective &lt;id&gt;. Context-dependent:

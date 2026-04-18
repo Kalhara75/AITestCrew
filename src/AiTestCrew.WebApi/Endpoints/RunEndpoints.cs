@@ -1,4 +1,6 @@
+using System.Text.Json;
 using AiTestCrew.Agents.Persistence;
+using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
 using AiTestCrew.Orchestrator;
 using AiTestCrew.WebApi.Services;
@@ -10,7 +12,9 @@ public static class RunEndpoints
     public static RouteGroupBuilder MapRunEndpoints(this RouteGroupBuilder group)
     {
         group.MapPost("/", async (RunRequest request, IRunTracker tracker, IModuleRunTracker moduleRunTracker,
-            TestOrchestrator orchestrator, ITestSetRepository tsRepo, ILogger<TestOrchestrator> logger) =>
+            TestOrchestrator orchestrator, ITestSetRepository tsRepo,
+            IRunQueueRepository? queueRepo, HttpContext ctx,
+            ILogger<TestOrchestrator> logger) =>
         {
             // Validate request
             if (string.IsNullOrWhiteSpace(request.Mode))
@@ -41,12 +45,19 @@ public static class RunEndpoints
                     return Results.BadRequest(new { error = "objectiveId is only supported in Reuse, Rebaseline, or VerifyOnly mode" });
             }
 
+            // Load the test set once (needed for rebaseline guard + dispatch decision)
+            PersistedTestSet? testSet = null;
+            if (mode is RunMode.Reuse or RunMode.Rebaseline or RunMode.VerifyOnly
+                && !string.IsNullOrWhiteSpace(request.TestSetId))
+            {
+                testSet = !string.IsNullOrWhiteSpace(request.ModuleId)
+                    ? await tsRepo.LoadAsync(request.ModuleId, request.TestSetId!)
+                    : await tsRepo.LoadAsync(request.TestSetId!);
+            }
+
             // Recorded objectives cannot be rebaselined
             if (mode == RunMode.Rebaseline && !string.IsNullOrWhiteSpace(request.ObjectiveId))
             {
-                var testSet = !string.IsNullOrWhiteSpace(request.ModuleId)
-                    ? await tsRepo.LoadAsync(request.ModuleId, request.TestSetId!)
-                    : await tsRepo.LoadAsync(request.TestSetId!);
                 if (testSet is null)
                     return Results.NotFound(new { error = $"Test set '{request.TestSetId}' not found" });
                 var obj = testSet.TestObjectives.Find(o => o.Id == request.ObjectiveId);
@@ -64,6 +75,43 @@ public static class RunEndpoints
 
             var runId = Guid.NewGuid().ToString("N")[..12];
             var objective = mode is RunMode.Reuse or RunMode.VerifyOnly ? "" : request.Objective!;
+            var user = ctx.Items["User"] as User;
+
+            // ── Decide: run in-process or enqueue for a local agent ──
+            string? agentTarget = testSet is not null && queueRepo is not null
+                ? RunDispatchHelper.GetAgentRequiredTarget(testSet, request.ObjectiveId)
+                : null;
+
+            if (agentTarget is not null && queueRepo is not null)
+            {
+                // Enqueue for a local agent to pick up
+                var entry = new RunQueueEntry
+                {
+                    Id = runId,
+                    ModuleId = request.ModuleId ?? testSet!.ModuleId ?? "",
+                    TestSetId = request.TestSetId!,
+                    ObjectiveId = request.ObjectiveId,
+                    TargetType = agentTarget,
+                    Mode = mode.ToString(),
+                    RequestedBy = user?.Id,
+                    RequestJson = JsonSerializer.Serialize(request, _jsonOpts),
+                    CreatedAt = DateTime.UtcNow
+                };
+                await queueRepo.EnqueueAsync(entry);
+                tracker.Create(runId, objective, request.Mode, request.TestSetId);
+                // Mark it Queued explicitly so the dashboard shows the right state
+                var status = tracker.Get(runId);
+                if (status is not null) status.Status = "Queued";
+
+                return Results.Accepted($"/api/runs/{runId}/status", new
+                {
+                    runId,
+                    status = "Queued",
+                    targetType = agentTarget,
+                    startedAt = DateTime.UtcNow
+                });
+            }
+
             tracker.Create(runId, objective, request.Mode, request.TestSetId);
 
             // Fire and forget — the orchestrator persists results via ExecutionHistoryRepository
@@ -104,8 +152,28 @@ public static class RunEndpoints
             });
         });
 
-        group.MapGet("/{runId}/status", (string runId, IRunTracker tracker) =>
+        group.MapGet("/{runId}/status", async (string runId, IRunTracker tracker, IRunQueueRepository? queueRepo) =>
         {
+            // Queue takes precedence — it's the source of truth for agent-dispatched runs
+            if (queueRepo is not null)
+            {
+                var job = await queueRepo.GetByIdAsync(runId);
+                if (job is not null)
+                {
+                    return Results.Ok(new RunStatus
+                    {
+                        RunId = job.Id,
+                        Objective = "",
+                        Mode = job.Mode,
+                        TestSetId = job.TestSetId,
+                        Status = job.Status,
+                        StartedAt = job.CreatedAt,
+                        CompletedAt = job.CompletedAt,
+                        Error = job.Error
+                    });
+                }
+            }
+
             var status = tracker.Get(runId);
             if (status is null) return Results.NotFound(new { error = $"Run '{runId}' not found" });
             return Results.Ok(status);
@@ -127,6 +195,12 @@ public static class RunEndpoints
 
         return group;
     }
+
+    private static readonly JsonSerializerOptions _jsonOpts = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+    };
 }
 
 public record RunRequest(string? Objective, string? ObjectiveName, string Mode, string? TestSetId, string? ModuleId, string? ObjectiveId, string? ApiStackKey = null, string? ApiModule = null, int? VerificationWaitOverride = null);
