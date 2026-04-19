@@ -54,6 +54,20 @@ public class FieldSpec
     /// <summary>Example value shown to the LLM and used as a placeholder in the UI.</summary>
     public string? Example { get; set; }
 
+    /// <summary>
+    /// Optional per-field guidance surfaced to the LLM via the template catalogue.
+    /// Use this for fields whose structure is non-obvious (e.g. a multi-line CSV
+    /// payload with its own grammar) so the LLM has enough context to fill them.
+    /// </summary>
+    public string? Description { get; set; }
+
+    /// <summary>
+    /// Optional format tag that drives post-render validation. When set, the renderer
+    /// invokes a format-specific validator on the resolved value before returning.
+    /// Known values: "nem12" (NEM12 CSV body grammar check).
+    /// </summary>
+    public string? Format { get; set; }
+
     // ── const ─────────────────────────────────────────────────────────────
     /// <summary>Hardwired value for source="const".</summary>
     public string? Value { get; set; }

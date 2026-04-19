@@ -159,19 +159,41 @@ public class TestOrchestrator
             _logger.LogInformation("Reuse mode: loaded test set '{Id}' (run #{Run}, {Count} objectives, env={Env})",
                 saved.Id, saved.RunCount + 1, saved.TestObjectives.Count, effectiveEnv);
 
-            // Filter objectives: skip those not allowed on the active env.
+            // Identify an explicitly-requested single objective (by Id or Name). When the
+            // caller names a specific objective, the environment filter should not silently
+            // exclude it — the user's intent overrides. The env filter is meant for bulk
+            // "run all" scenarios where only some objectives belong to the active env.
+            var explicitTarget = !string.IsNullOrEmpty(objectiveId)
+                ? saved.TestObjectives.FirstOrDefault(o =>
+                    string.Equals(o.Id, objectiveId, StringComparison.OrdinalIgnoreCase))
+                  ?? saved.TestObjectives.FirstOrDefault(o =>
+                    string.Equals(o.Name, objectiveId, StringComparison.OrdinalIgnoreCase))
+                : null;
+
+            // Filter objectives: skip those not allowed on the active env (unless explicitly named).
             var objectivesToRun = new List<TestObjective>();
             foreach (var candidate in saved.TestObjectives)
             {
-                if (IsObjectiveAllowedIn(candidate, effectiveEnv, defaultEnv))
+                var isExplicit = explicitTarget is not null && ReferenceEquals(candidate, explicitTarget);
+                var allowedHere = IsObjectiveAllowedIn(candidate, effectiveEnv, defaultEnv);
+                if (allowedHere || isExplicit)
                 {
+                    if (isExplicit && !allowedHere)
+                    {
+                        var allowedList = candidate.AllowedEnvironments.Count == 0
+                            ? defaultEnv
+                            : string.Join(", ", candidate.AllowedEnvironments);
+                        _logger.LogWarning(
+                            "Objective '{Name}' is explicitly requested — running despite env filter (active='{Active}', allowed='{Allowed}').",
+                            candidate.Name, effectiveEnv, allowedList);
+                    }
                     objectivesToRun.Add(candidate);
                     continue;
                 }
-                var allowedList = candidate.AllowedEnvironments.Count == 0
+                var skipAllowed = candidate.AllowedEnvironments.Count == 0
                     ? defaultEnv
                     : string.Join(", ", candidate.AllowedEnvironments);
-                var skipReason = $"Skipped: not allowed in environment '{effectiveEnv}' (allowed: {allowedList})";
+                var skipReason = $"Skipped: not allowed in environment '{effectiveEnv}' (allowed: {skipAllowed})";
                 _logger.LogInformation("Skipping objective '{Name}' — {Reason}", candidate.Name, skipReason);
                 preSkippedResults.Add(new TestResult
                 {

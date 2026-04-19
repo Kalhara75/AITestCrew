@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import { updateObjective, deleteObjective } from '../api/modules';
-import type { DesktopUiTestDefinition, DesktopUiStep, TestObjective } from '../types';
+import type { DesktopUiTestDefinition, DesktopUiStep } from '../types';
 
 const ACTIONS = [
   'click', 'double-click', 'right-click', 'fill', 'select',
@@ -24,23 +23,45 @@ function emptyStep(): DesktopUiStep {
   };
 }
 
-interface Props {
-  open: boolean;
-  objective: TestObjective;
-  stepIndex: number;
-  moduleId: string;
-  testSetId: string;
-  onClose: () => void;
-  onSaved: () => void;
-  onDeleted?: () => void;
+export interface EditDesktopUiSavePayload {
+  /** The (possibly edited) display name / case name. */
+  name: string;
+  /** The full DesktopUiTestDefinition with possibly-modified steps. */
+  definition: DesktopUiTestDefinition;
 }
 
+interface Props {
+  open: boolean;
+  /** Title shown at the top of the dialog. Defaults to "Edit Desktop UI Test Case". */
+  title?: string;
+  /** Initial definition shown in the form (cloned on mount). */
+  definition: DesktopUiTestDefinition;
+  /** Initial display name shown above Description. Editable; passed back to onSave. */
+  caseName: string;
+  onClose: () => void;
+  onSave: (payload: EditDesktopUiSavePayload) => Promise<void>;
+  /** Optional. When present, the bottom-left "Delete" button appears and calls this on confirm. */
+  onDelete?: () => Promise<void>;
+  /** Override the delete button label. Defaults to "Delete Step". */
+  deleteLabel?: string;
+  /** Override the confirmation message text. Defaults to "Delete this step?". */
+  deleteConfirmMessage?: string;
+}
+
+/**
+ * Generic Desktop UI test-case / step-set editor.
+ *
+ * Mirrors EditWebUiTestCaseDialog: data-shape-agnostic — callers pass a
+ * DesktopUiTestDefinition plus save/delete callbacks describing how to persist
+ * the edits in their own context (standalone objective, aseXML post-delivery
+ * verification, etc.). The dialog never calls the persistence API directly.
+ */
 export function EditDesktopUiTestCaseDialog({
-  open, objective, stepIndex, moduleId, testSetId, onClose, onSaved, onDeleted,
+  open, title, definition, caseName, onClose, onSave, onDelete,
+  deleteLabel, deleteConfirmMessage,
 }: Props) {
-  const step = objective.desktopUiSteps[stepIndex];
-  const [form, setForm] = useState<DesktopUiTestDefinition>(() => structuredClone(step));
-  const [name, setName] = useState(objective.name);
+  const [form, setForm] = useState<DesktopUiTestDefinition>(() => structuredClone(definition));
+  const [name, setName] = useState(caseName);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -78,10 +99,7 @@ export function EditDesktopUiTestCaseDialog({
     setSaving(true);
     setError(null);
     try {
-      const updatedSteps = [...objective.desktopUiSteps];
-      updatedSteps[stepIndex] = form;
-      await updateObjective(moduleId, testSetId, objective.id, { ...objective, name, desktopUiSteps: updatedSteps });
-      onSaved();
+      await onSave({ name, definition: form });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Save failed');
     } finally {
@@ -89,19 +107,12 @@ export function EditDesktopUiTestCaseDialog({
     }
   };
 
-  const isLastStep = objective.desktopUiSteps.length <= 1;
-
   const handleDelete = async () => {
+    if (!onDelete) return;
     setDeleting(true);
     setError(null);
     try {
-      if (isLastStep) {
-        await deleteObjective(moduleId, testSetId, objective.id);
-      } else {
-        const updatedSteps = objective.desktopUiSteps.filter((_, i) => i !== stepIndex);
-        await updateObjective(moduleId, testSetId, objective.id, { ...objective, desktopUiSteps: updatedSteps });
-      }
-      onDeleted?.();
+      await onDelete();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Delete failed');
       setDeleting(false);
@@ -113,7 +124,7 @@ export function EditDesktopUiTestCaseDialog({
     <div style={overlayStyle} onClick={onClose}>
       <div style={dialogStyle} onClick={e => e.stopPropagation()}>
         <h2 style={{ margin: '0 0 18px', fontSize: 18, fontWeight: 700, color: '#0f172a' }}>
-          Edit Desktop UI Test Case
+          {title ?? 'Edit Desktop UI Test Case'}
         </h2>
 
         <div style={{ maxHeight: 'calc(80vh - 130px)', overflowY: 'auto', paddingRight: 6 }}>
@@ -242,15 +253,15 @@ export function EditDesktopUiTestCaseDialog({
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 16 }}>
           <div>
-            {onDeleted && !confirmDelete && (
+            {onDelete && !confirmDelete && (
               <button onClick={() => setConfirmDelete(true)} style={deleteBtnStyle}>
-                Delete Step
+                {deleteLabel ?? 'Delete Step'}
               </button>
             )}
-            {confirmDelete && (
+            {confirmDelete && onDelete && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 13, color: '#dc2626' }}>
-                  {isLastStep ? 'Last step -- entire test case will be deleted.' : 'Delete this step?'}
+                  {deleteConfirmMessage ?? 'Delete this step?'}
                 </span>
                 <button onClick={handleDelete} disabled={deleting} style={deleteBtnStyle}>
                   {deleting ? 'Deleting...' : 'Yes, delete'}

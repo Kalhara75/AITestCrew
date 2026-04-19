@@ -1,0 +1,31 @@
+{
+  "templateId": "MDN-NEM12-5min",
+  "transactionType": "MeterDataNotification",
+  "transactionGroup": "MTRD",
+  "description": "Inbound Meter Data Notification (MDN) carrying NEM12 interval data at 5-minute intervals (288 values per 300 record). Matches the MDP header shape that includes company-name descriptions and a batch security context (e.g. ACUMEMDP, VECTOMDP -> SPARQ): <From description='...'>, <To description='...'>, <SecurityContext>..BATCH</SecurityContext>. Use this template when the objective mentions 5-minute reads, smart-meter high-resolution data, or explicitly names an MDP whose B2B header includes a company description.",
+  "fields": {
+    "To":               { "source": "const", "value": "SPARQ" },
+    "ToDescription":    { "source": "const", "value": "Sumo Power" },
+    "TransactionGroup": { "source": "const", "value": "MTRD" },
+    "Priority":         { "source": "const", "value": "Low" },
+    "Market":           { "source": "const", "value": "NEM" },
+    "Role":             { "source": "const", "value": "FRMP" },
+
+    "MessageID":        { "source": "auto", "generator": "messageId",     "pattern": "MDN-MSG-BE-{rand8}" },
+    "MessageDate":      { "source": "auto", "generator": "nowOffset",     "offset": "+10:00" },
+    "TransactionID":    { "source": "auto", "generator": "transactionId", "pattern": "MDN-TXN-BE-{rand8}" },
+    "TransactionDate":  { "source": "auto", "generator": "nowOffset",     "offset": "+10:00" },
+
+    "From":             { "source": "user", "required": true,  "example": "ACUMEMDP" },
+    "FromDescription":  { "source": "user", "required": true,  "example": "Acumen Metering Pty Ltd" },
+    "SecurityContext":  { "source": "user", "required": true,  "example": "ACUMENMDPBATCH" },
+
+    "CsvIntervalData":  {
+      "source": "user",
+      "required": true,
+      "format": "nem12",
+      "example": "100,NEM12,202604191026,ACUMEMDP,SPARQ\n200,3120780126,B1E1,B1,B1,B1,LG022026725,kWh,5,\n300,20260415,<288 comma-separated numeric-or-blank values>,A,,,20260419101813,\n400,1,48,F14,76,\n400,49,73,A,,\n400,74,288,F14,76,\n500,N,,20260416000000,15777.165\n900",
+      "description": "NEM12 interval-CSV body embedded in <CSVIntervalData>. Emit the raw CSV (no XML wrapping). Grammar, in order: one 100 header, then one or more 200 datastream blocks, each with one or more 300 day-of-interval records and optional 400/500 trailers, terminated by a single 900. Record formats (comma-separated): 100,NEM12,YYYYMMDDHHMM,<From>,<To> (5 fields). 200,<NMI>,<NMIConfig>,<RegisterID>,<NMISuffix>,<MDMDataStreamId>,<MeterSerial>,<UOM>,<IntervalLength>,<NextScheduledReadDate> (10 fields; IntervalLength MUST be 5 for this template). 300,<YYYYMMDD>,<288 interval values>,<QualityMethod>,<ReasonCode>,<ReasonDescription>,<UpdateDateTime>,<MSATSLoadDateTime> (total 295 fields; interval values numeric or blank; QualityMethod is one of A|E|F|N|S|V, optionally suffixed with a 2-3 digit reason code e.g. S51, F58, F14). 400,<StartInterval>,<EndInterval>,<QualityMethod>,<ReasonCode>,<ReasonDescription> (6 fields; 1 <= start <= end <= 288). 500,<ReadType>,<MDMDataStreamId>,<MeterReadDateTime>,<MeterRegisterReadValue> (5 fields). 900 (1 field). Trailing commas are preserved and ARE significant to the field count. Do NOT wrap in CDATA. Do NOT insert XML entities; the renderer escapes <, >, & automatically. Emit the full 288 comma-separated values for every 300 record — do NOT abbreviate."
+    }
+  }
+}

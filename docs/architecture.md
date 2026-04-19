@@ -241,7 +241,7 @@ During replay, elements are searched across progressively wider scopes: primary 
 - **Assertion capture**: When the user presses T/V/E in the console, the next click is converted to an assertion. Text extraction uses the stored element reference directly (not a re-search from stale `mainWindow`) and searches children/descendants for text.
 - **Post-recording validation**: Warns about TreePath-only selectors, consecutive clicks without waits, and missing assertions.
 
-**React UI** — `DesktopUiTestCaseTable` displays desktop test cases with step count and action preview. `EditDesktopUiTestCaseDialog` provides a full step editor with five cascading selector fields (AutomationId, Name, ClassName, ControlType, TreePath), action-specific context fields (Value, MenuPath, WindowTitle), and step add/remove/reorder controls.
+**React UI** — `DesktopUiTestCaseTable` displays desktop test cases with step count and action preview. `EditDesktopUiTestCaseDialog` provides a full step editor with five cascading selector fields (AutomationId, Name, ClassName, ControlType, TreePath), action-specific context fields (Value, MenuPath, WindowTitle), and step add/remove/reorder controls. The dialog is generic: its props (`definition`, `caseName`, `onSave`, `onDelete`, `title`, `deleteLabel`, `deleteConfirmMessage`) mirror `EditWebUiTestCaseDialog`, so callers plug in their own persistence. Reused in two places: standalone desktop test cases (`DesktopUiTestCaseTable` saves via `updateObjective`) and post-delivery UI verifications (`AseXmlDeliveryTestCaseTable` saves via `updateVerification` with the definition wrapped back into the enclosing `VerificationStep.desktopUi`). This mirrors the earlier Web UI alignment where `EditWebUiTestCaseDialog` serves both standalone objectives and aseXML verifications.
 
 > **Note:** `PersistedTaskEntry` is **deprecated** (v1 schema only). It is retained solely for deserializing legacy test set files during migration. New code should use `TestObjective` exclusively.
 
@@ -300,6 +300,10 @@ Duplicate `fill` steps on the same selector are deduplicated (update-in-place). 
 - `auto` — generated at render time via a named generator (`messageId`, `transactionId`, `nowOffset`, `today`). Patterns use `{rand8}` for 8-char alphanumeric substitution. Cannot be overridden.
 - `user` — supplied via the `AseXmlTestDefinition.FieldValues` dictionary. `required: true` fields cause a failing step when missing. `example` is shown to the LLM and (later) used as a UI placeholder.
 - `const` — hardwired in the template; surfaced for display only.
+
+`FieldSpec` also supports two optional, additive properties:
+- `description` — per-field guidance surfaced to the LLM via `AseXmlGenerationAgent.BuildCatalogueForLlm` (used for fields whose structure is non-obvious, e.g. a multi-line CSV body that carries its own sub-grammar).
+- `format` — post-render validator key. Currently wired: `"nem12"` → `Nem12CsvValidator` (grammar check of the 100/200/300/400/500/900 record structure, IntervalLength-aware 300-record width, quality-flag regex, 400 range sanity). The renderer runs the validator on the resolved (pre-escape) value after the XML well-formedness check; a violation throws `AseXmlRenderException` with the template and field name in the message. New formats = one enum-like switch arm in `AseXmlRenderer.Render` plus a stateless validator class.
 
 **LLM writes values, never XML** — `GenerateTestCasesAsync` asks the LLM to pick a `templateId` and fill `fieldValues`. The resulting `AseXmlTestCase` is passed to `AseXmlRenderer.Render(manifest, body, userValues)` which is a pure function: applies generators to `auto` fields, enforces `required` on `user` fields, substitutes `const` values, runs a single regex pass `\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}` for token substitution with proper XML escaping, and verifies well-formedness via `XDocument.Parse`. An unknown token (template references a name not in the manifest) is a hard failure — prevents silent malformed output from a typo drift between template and manifest.
 
@@ -1148,6 +1152,7 @@ The three axes compose: `--environment ams-metering --stack legacy --api-module 
 
 1. **Resolve effective env** (top of `TestOrchestrator.RunAsync`): CLI → `saved.EnvironmentKey` → `DefaultEnvironment`.
 2. **Skip disallowed objectives** in Reuse/VerifyOnly: if `AllowedEnvironments` is non-empty and doesn't contain the effective env, emit a `Skipped` TestResult and drop the task.
+    - **Exception — explicit single-objective override.** When the caller names a specific objective by Id or Name (UI `Run`/`Verify` on a row, or CLI `--objective <idOrName>`), that objective is kept in `objectivesToRun` even if the env filter would have excluded it, and a WARN is logged. Bulk "run all" behaviour is unchanged. Rationale: if the user explicitly picks the objective, env policy shouldn't silently suppress it — and without this override the single-objective matcher later fails with a misleading "not found … Available: \<same slug\>" error, because the matcher runs on the (env-filtered) `tasks` list while the error lists `saved.TestObjectives`.
 3. **Auto-stamp new objectives** in Normal/Rebaseline: `BuildObjectiveFromResults(..., environmentKey)` sets `AllowedEnvironments = [effectiveEnv]` when saving.
 4. **Inject into TestTask**: every surviving task gets `Parameters["EnvironmentKey"] = effectiveEnv` + `Parameters["EnvironmentParameters"] = envParams` (the per-env dict if the objective defines one).
 5. **Agents read env from parameters**:

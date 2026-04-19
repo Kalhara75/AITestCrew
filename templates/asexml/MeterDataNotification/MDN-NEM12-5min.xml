@@ -1,0 +1,22 @@
+<ase:aseXML xsi:schemaLocation="urn:aseXML:r46 http://www.nemmco.com.au/aseXML/schemas/r46/aseXML_r46.xsd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ase="urn:aseXML:r46">
+  <Header>
+    <From description="{{FromDescription}}">{{From}}</From>
+    <To description="{{ToDescription}}">{{To}}</To>
+    <MessageID>{{MessageID}}</MessageID>
+    <MessageDate>{{MessageDate}}</MessageDate>
+    <TransactionGroup>{{TransactionGroup}}</TransactionGroup>
+    <Priority>{{Priority}}</Priority>
+    <SecurityContext>{{SecurityContext}}</SecurityContext>
+    <Market>{{Market}}</Market>
+  </Header>
+  <Transactions>
+    <Transaction transactionID="{{TransactionID}}" transactionDate="{{TransactionDate}}">
+      <MeterDataNotification version="r25">
+        <CSVIntervalData>{{CsvIntervalData}}</CSVIntervalData>
+        <ParticipantRole>
+          <Role>{{Role}}</Role>
+        </ParticipantRole>
+      </MeterDataNotification>
+    </Transaction>
+  </Transactions>
+</ase:aseXML>

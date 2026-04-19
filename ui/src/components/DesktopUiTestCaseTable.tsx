@@ -145,18 +145,39 @@ export function DesktopUiTestCaseTable({ objectives, moduleId, testSetId, onTest
         </tbody>
       </table>
 
-      {editing && moduleId && testSetId && (
-        <EditDesktopUiTestCaseDialog
-          open
-          objective={editing.objective}
-          stepIndex={editing.stepIndex}
-          moduleId={moduleId}
-          testSetId={testSetId}
-          onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); onTestCaseUpdated?.(); }}
-          onDeleted={() => { setEditing(null); onTestCaseUpdated?.(); }}
-        />
-      )}
+      {editing && moduleId && testSetId && (() => {
+        const obj = editing.objective;
+        const idx = editing.stepIndex;
+        const isLastStep = obj.desktopUiSteps.length <= 1;
+        return (
+          <EditDesktopUiTestCaseDialog
+            open
+            definition={obj.desktopUiSteps[idx]}
+            caseName={obj.name}
+            deleteConfirmMessage={isLastStep
+              ? 'Last step -- entire test case will be deleted.'
+              : 'Delete this step?'}
+            onClose={() => setEditing(null)}
+            onSave={async ({ name, definition }) => {
+              const updatedSteps = [...obj.desktopUiSteps];
+              updatedSteps[idx] = definition;
+              await updateObjective(moduleId, testSetId, obj.id, { ...obj, name, desktopUiSteps: updatedSteps });
+              setEditing(null);
+              onTestCaseUpdated?.();
+            }}
+            onDelete={async () => {
+              if (isLastStep) {
+                await deleteObjective(moduleId, testSetId, obj.id);
+              } else {
+                const updatedSteps = obj.desktopUiSteps.filter((_, i) => i !== idx);
+                await updateObjective(moduleId, testSetId, obj.id, { ...obj, desktopUiSteps: updatedSteps });
+              }
+              setEditing(null);
+              onTestCaseUpdated?.();
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }

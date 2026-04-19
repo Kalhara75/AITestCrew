@@ -103,6 +103,30 @@ public static class AseXmlRenderer
                 $"Template '{manifest.TemplateId}' produced malformed XML after substitution: {ex.Message}");
         }
 
+        // Format-specific validation — run on the resolved (pre-escape) value so the
+        // validator sees exactly what the LLM produced, with newlines intact.
+        foreach (var (name, spec) in manifest.Fields)
+        {
+            if (string.IsNullOrWhiteSpace(spec.Format)) continue;
+            if (!string.Equals(spec.Source, "user", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!resolved.TryGetValue(name, out var rawValue) || string.IsNullOrEmpty(rawValue)) continue;
+
+            switch (spec.Format.ToLowerInvariant())
+            {
+                case "nem12":
+                    if (!Nem12CsvValidator.Validate(rawValue, out var nem12Err))
+                    {
+                        throw new AseXmlRenderException(
+                            $"Template '{manifest.TemplateId}' field '{name}': NEM12 grammar violation — {nem12Err}");
+                    }
+                    break;
+
+                default:
+                    throw new AseXmlRenderException(
+                        $"Template '{manifest.TemplateId}' field '{name}': unknown format '{spec.Format}'.");
+            }
+        }
+
         return new RenderResult(rendered, resolved);
     }
 

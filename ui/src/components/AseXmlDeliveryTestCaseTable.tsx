@@ -1,6 +1,7 @@
 import { Fragment, useState } from 'react';
 import { deleteVerification, updateVerification } from '../api/modules';
 import { EditWebUiTestCaseDialog } from './EditWebUiTestCaseDialog';
+import { EditDesktopUiTestCaseDialog } from './EditDesktopUiTestCaseDialog';
 import type { TestObjective, AseXmlDeliveryTestDefinition, VerificationStep, WebUiStep, DesktopUiStep } from '../types';
 
 interface Props {
@@ -244,11 +245,11 @@ function VerificationsPanel({
                         </span>
                       ) : (
                         <>
-                          {v.webUi && (
+                          {(v.webUi || v.desktopUi) && (
                             <span
                               onClick={() => setEditingIdx(i)}
                               style={{ fontSize: 13, color: '#1d4ed8', cursor: 'pointer', opacity: 0.7, marginRight: 8 }}
-                              title="Edit Web UI steps"
+                              title={v.desktopUi ? 'Edit Desktop UI steps' : 'Edit Web UI steps'}
                             >
                               &#9998;
                             </span>
@@ -298,6 +299,33 @@ function VerificationsPanel({
               ...verifications[editingIdx],
               description: name,
               webUi: definition,
+            };
+            await updateVerification(moduleId, testSetId, objectiveId, deliveryIndex, editingIdx, updated);
+            setEditingIdx(null);
+            onChanged?.();
+          }}
+          onDelete={async () => {
+            await deleteVerification(moduleId, testSetId, objectiveId, deliveryIndex, editingIdx);
+            setEditingIdx(null);
+            onChanged?.();
+          }}
+        />
+      )}
+
+      {editingIdx !== null && moduleId && testSetId && verifications[editingIdx].desktopUi && !verifications[editingIdx].webUi && (
+        <EditDesktopUiTestCaseDialog
+          open
+          title="Edit Verification — Desktop UI Steps"
+          definition={verifications[editingIdx].desktopUi!}
+          caseName={verifications[editingIdx].description}
+          deleteLabel="Delete Verification"
+          deleteConfirmMessage="Delete this entire verification?"
+          onClose={() => setEditingIdx(null)}
+          onSave={async ({ name, definition }) => {
+            const updated: VerificationStep = {
+              ...verifications[editingIdx],
+              description: name,
+              desktopUi: definition,
             };
             await updateVerification(moduleId, testSetId, objectiveId, deliveryIndex, editingIdx, updated);
             setEditingIdx(null);

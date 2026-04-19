@@ -52,10 +52,17 @@ The following target types are defined but do not yet have agent implementations
 Templates live under `templates/asexml/{TransactionType}/{templateId}.xml`, each paired with a `{templateId}.manifest.json` that declares every token used in the template and classifies it as:
 
 - **`auto`** — generated at render time (e.g. `MessageID`, `TransactionID`, timestamps). Never overridable.
-- **`user`** — supplied by the caller (LLM-extracted from the objective, or, later, via the edit dialog). `required: true` fields cause a failing step when missing.
+- **`user`** — supplied by the caller (LLM-extracted from the objective, or, later, via the edit dialog). `required: true` fields cause a failing step when missing. Optional `description` guides the LLM on structure; optional `format` (e.g. `"nem12"`) triggers post-render validation.
 - **`const`** — hardwired in the template (e.g. `From`, `To`, `SupplyOn`, `SupplyOff`). Surfaced for display but not editable.
 
 Adding a new transaction type is a content change, not a code change: drop a new `{template}.xml` + `{template}.manifest.json` pair under `templates/asexml/{TransactionType}/` and the registry picks it up at next startup. Adding a new auto-field generator is a one-method change in `src/AiTestCrew.Agents/AseXmlAgent/Templates/FieldGenerators.cs`.
+
+**Shipped transaction types:**
+
+| Transaction | Templates | Notes |
+|---|---|---|
+| `MeterFaultAndIssueNotification` (MFN) | `MFN-OneInAllIn` | DNSP-initiated outage notification to a FRMP. |
+| `MeterDataNotification` (MDN) | `MDN-NEM12-30min`, `MDN-NEM12-5min` | MDP-initiated NEM12 interval data delivery. The `CsvIntervalData` user field carries the NEM12 CSV body (100/200/300/400/500/900 records) and is grammar-validated post-render via `Nem12CsvValidator` — malformed CSV fails the render step with a line-level diagnostic. The 30-min variant matches the plain MDP header shape (no `description` attr, no `SecurityContext`); the 5-min variant matches MDPs that include descriptions + `SecurityContext`. |
 
 Rendered XML is written to `output/asexml/{timestamp}_{taskId}/{NN}-{caseName}.xml`. The delivery agent (`AseXml_Deliver`) renders the XML, uploads it via SFTP/FTP to a Bravo endpoint, and optionally runs post-delivery UI verifications with `{{Token}}` substitution from each run's context.
 
@@ -711,6 +718,7 @@ Each test objective carries two optional fields:
 
 The orchestrator:
 1. Skips objectives excluded by `AllowedEnvironments` — shown as **Skipped** in the suite result, never **Failed**.
+   - **Exception — explicit single-objective runs bypass the filter.** When the caller names one specific objective by Id or Name (the UI `Run` / `Verify` buttons on an individual row, or the CLI `--objective <idOrName>`), that objective runs regardless of `AllowedEnvironments` and a WARN is logged (`"… explicitly requested — running despite env filter (active='X', allowed='Y')"`). Bulk "run all" behaviour is unchanged. Rationale: explicit user intent overrides the env policy; without this, clicking Verify on a delivery whose allowed envs don't include the current default would fail with a misleading "not found" error.
 2. For the remaining objectives, merges `EnvironmentParameters[activeEnv]` into the task's substitution context.
 3. Each agent runs `StepParameterSubstituter.Apply(step, envParams)` before executing — step fields are cloned with `{{Token}}` literals replaced by the env's values. Unknown tokens stay as literals and a WARN is logged (lenient mode — mirrors post-delivery verification playback).
 

@@ -257,6 +257,10 @@ public class AseXmlGenerationAgent : BaseTestAgent
                     var req = spec.Required ? "required" : "optional";
                     var ex  = string.IsNullOrWhiteSpace(spec.Example) ? "" : $" example=\"{spec.Example}\"";
                     sb.AppendLine($"    - {name} ({req}){ex}");
+                    if (!string.IsNullOrWhiteSpace(spec.Description))
+                        sb.AppendLine($"      description: {spec.Description}");
+                    if (!string.IsNullOrWhiteSpace(spec.Format))
+                        sb.AppendLine($"      format: {spec.Format}");
                 }
             }
         }
