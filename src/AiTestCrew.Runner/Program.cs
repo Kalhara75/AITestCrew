@@ -16,6 +16,7 @@ using AiTestCrew.Agents.DesktopUiBase;
 using AiTestCrew.Agents.LegacyWebUiAgent;
 using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Agents.Shared;
+using AiTestCrew.Agents.Teardown;
 using AiTestCrew.Agents.WebUiBase;
 using AiTestCrew.Agents.WinFormsUiAgent;
 using AiTestCrew.Core.Configuration;
@@ -995,6 +996,13 @@ else
     builder.Services.AddSingleton<IModuleRepository>(new ModuleRepository(AppContext.BaseDirectory));
 }
 
+// Teardown executor — runs user-defined SQL DELETE statements before each
+// objective when the test set defines TeardownSteps and the env opts in.
+builder.Services.AddSingleton<ITeardownExecutor>(sp => new BravoTeardownExecutor(
+    sp.GetRequiredService<IEnvironmentResolver>(),
+    sp.GetRequiredService<ILogger<BravoTeardownExecutor>>()
+));
+
 // Orchestrator (receives IEnumerable<ITestAgent> and ITestSetRepository from DI automatically)
 builder.Services.AddSingleton(new AgentConcurrencyLimiter(envConfig.MaxParallelAgents));
 builder.Services.AddSingleton<TestOrchestrator>();
@@ -1197,7 +1205,9 @@ await AnsiConsole.Status()
             apiStackKey: cli.ApiStackKey, apiModule: cli.ApiModule,
             endpointCode: cli.EndpointCode,
             verificationWaitOverride: cli.Mode == RunMode.VerifyOnly ? cli.VerificationWait : null,
-            environmentKey: cli.EnvironmentKey);
+            environmentKey: cli.EnvironmentKey,
+            teardownDryRun: cli.TeardownDryRun,
+            skipTeardown: cli.SkipTeardown);
     });
 
 // ── Results table ──
@@ -1272,6 +1282,7 @@ static CliArgs ParseArgs(string[] args)
     int deliveryStepIndex = 0;
     bool agentMode = false;
     string? agentName = null, agentCapabilities = null;
+    bool teardownDryRun = false, skipTeardown = false;
     var mode = RunMode.Normal;
 
     for (int i = 0; i < args.Length; i++)
@@ -1413,6 +1424,12 @@ static CliArgs ParseArgs(string[] args)
                 break;
             case "--capabilities":
                 throw new ArgumentException("--capabilities requires a comma-separated list.");
+            case "--teardown-dry-run":
+                teardownDryRun = true;
+                break;
+            case "--skip-teardown":
+                skipTeardown = true;
+                break;
             default:
                 remaining.Add(args[i]);
                 break;
@@ -1452,7 +1469,9 @@ static CliArgs ParseArgs(string[] args)
         DeliveryStepIndex = deliveryStepIndex,
         AgentMode = agentMode,
         AgentName = agentName,
-        AgentCapabilities = agentCapabilities
+        AgentCapabilities = agentCapabilities,
+        TeardownDryRun = teardownDryRun,
+        SkipTeardown = skipTeardown
     };
 }
 
@@ -1499,4 +1518,10 @@ class CliArgs
     public string? VerificationName { get; init; }
     public int? VerificationWait { get; init; }
     public int DeliveryStepIndex { get; init; }
+
+    /// <summary>--teardown-dry-run: log substituted teardown SQL but don't execute.</summary>
+    public bool TeardownDryRun { get; init; }
+
+    /// <summary>--skip-teardown: bypass test-set teardown entirely for this run.</summary>
+    public bool SkipTeardown { get; init; }
 }

@@ -32,6 +32,7 @@ public class TestOrchestrator
     private readonly IModuleRepository _moduleRepo;
     private readonly AgentConcurrencyLimiter _concurrencyLimiter;
     private readonly IEnvironmentResolver _envResolver;
+    private readonly ITeardownExecutor _teardownExecutor;
     private readonly ILogger<TestOrchestrator> _logger;
 
     public TestOrchestrator(
@@ -43,6 +44,7 @@ public class TestOrchestrator
         IModuleRepository moduleRepo,
         AgentConcurrencyLimiter concurrencyLimiter,
         IEnvironmentResolver envResolver,
+        ITeardownExecutor teardownExecutor,
         ILogger<TestOrchestrator> logger)
     {
         _agents = agents.ToList();
@@ -53,6 +55,7 @@ public class TestOrchestrator
         _moduleRepo = moduleRepo;
         _concurrencyLimiter = concurrencyLimiter;
         _envResolver = envResolver;
+        _teardownExecutor = teardownExecutor;
         _logger = logger;
     }
 
@@ -86,7 +89,9 @@ public class TestOrchestrator
         string? apiModule = null,
         string? endpointCode = null,
         int? verificationWaitOverride = null,
-        string? environmentKey = null)
+        string? environmentKey = null,
+        bool teardownDryRun = false,
+        bool skipTeardown = false)
     {
         var sw = Stopwatch.StartNew();
         var startedAt = DateTime.UtcNow;
@@ -205,6 +210,21 @@ public class TestOrchestrator
                 });
             }
 
+            // Pre-compute teardown contexts (async, needs history lookup) before
+            // the synchronous Select below. Indexed by objective id so the
+            // builder remains a single place that knows precedence rules.
+            Dictionary<string, IReadOnlyDictionary<string, string>>? teardownCtxByObj = null;
+            if (mode == RunMode.Reuse && !skipTeardown && saved.TeardownSteps.Count > 0)
+            {
+                teardownCtxByObj = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+                var teardownTestSetId = targetTestSetId ?? reuseId ?? "";
+                foreach (var obj in objectivesToRun)
+                {
+                    teardownCtxByObj[obj.Id] = await BuildTeardownContextAsync(
+                        obj, effectiveEnv, teardownTestSetId, moduleId, ct);
+                }
+            }
+
             // Build tasks from allowed objectives — one task per objective, injecting its steps
             tasks = objectivesToRun.Select(obj =>
             {
@@ -255,6 +275,19 @@ public class TestOrchestrator
                 if (obj.EnvironmentParameters.TryGetValue(effectiveEnv, out var envParams)
                     && envParams.Count > 0)
                     parameters["EnvironmentParameters"] = envParams;
+
+                // Inject data teardown: per-test-set SQL runs once before this
+                // objective's agent task. Only in Reuse mode (not VerifyOnly —
+                // that re-runs verifications against data that must remain).
+                if (teardownCtxByObj is not null
+                    && teardownCtxByObj.TryGetValue(obj.Id, out var teardownCtx))
+                {
+                    parameters["TeardownSteps"] = saved.TeardownSteps
+                        .Select(s => new SqlTeardownStepDto(s.Name, s.Sql))
+                        .ToList();
+                    parameters["TeardownContext"] = teardownCtx;
+                    parameters["TeardownDryRun"] = teardownDryRun;
+                }
 
                 return new TestTask
                 {
@@ -405,12 +438,55 @@ public class TestOrchestrator
 
                 _logger.LogInformation("Routing [{Id}] -> {Agent}", task.Id, agent.Name);
 
+                // ── Run data teardown before dispatching to the agent ──
+                // Attached to the task by the Reuse branch above. On failure,
+                // short-circuit this objective to an error result and skip
+                // agent execution entirely.
+                List<TeardownStepResult>? teardownSteps = null;
+                if (task.Parameters.TryGetValue("TeardownSteps", out var tdStepsObj)
+                    && tdStepsObj is List<SqlTeardownStepDto> tdSteps)
+                {
+                    var tdCtx = task.Parameters.TryGetValue("TeardownContext", out var c)
+                        && c is IReadOnlyDictionary<string, string> d
+                            ? d
+                            : new Dictionary<string, string>();
+                    var tdDry = task.Parameters.TryGetValue("TeardownDryRun", out var dr)
+                        && dr is bool b && b;
+                    var envKey = task.Parameters.TryGetValue("EnvironmentKey", out var ek)
+                        && ek is string s ? s : _envResolver.ResolveKey(null);
+
+                    var td = await _teardownExecutor.ExecuteAsync(tdSteps, tdCtx, envKey, tdDry, ct);
+                    teardownSteps = td.Steps;
+                    if (!td.Success)
+                    {
+                        var summary = td.Error
+                            ?? string.Join("; ", td.Steps
+                                .Where(s => s.Error is not null)
+                                .Select(s => $"{s.Name}: {s.Error}"));
+                        _logger.LogError("[{Id}] teardown failed — skipping agent dispatch. {Summary}",
+                            task.Id, summary);
+                        var failed = new TestResult
+                        {
+                            ObjectiveId  = task.Id,
+                            ObjectiveName = task.Description,
+                            AgentName    = agent.Name,
+                            Status       = TestStatus.Error,
+                            Summary      = $"Teardown failed: {summary}",
+                        };
+                        failed.Metadata["teardown"] = td.Steps;
+                        indexedResults.Add((index, failed));
+                        return;
+                    }
+                }
+
                 using var taskCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 taskCts.CancelAfter(task.Timeout);
 
                 try
                 {
                     var result = await agent.ExecuteAsync(task, taskCts.Token);
+                    if (teardownSteps is not null)
+                        result.Metadata["teardown"] = teardownSteps;
                     indexedResults.Add((index, result));
 
                     _logger.LogInformation("[{Id}] Result: {Status} ({Passed}/{Total} steps passed)",
@@ -625,6 +701,67 @@ public class TestOrchestrator
             await _testSetRepo.MergeObjectivesAsync(moduleId, testSetId, [testObjective], objective, objectiveName, apiStackKey, apiModule, endpointCode, environmentKey);
             _logger.LogInformation("Test objective merged into: {Module}/{Id}", moduleId, testSetId);
         }
+    }
+
+    /// <summary>
+    /// Builds the <c>{{Token}}</c> substitution context for teardown SQL on a
+    /// single objective. Precedence (ascending): the previous successful run's
+    /// delivery context (MessageID, TransactionID, Filename, EndpointCode,
+    /// RemotePath, UploadedAs from execution history) → env-level
+    /// <see cref="TestObjective.EnvironmentParameters"/> → first delivery
+    /// step's <see cref="AseXmlDeliveryTestDefinition.FieldValues"/>.
+    ///
+    /// The history lookup lets teardown clean up the **prior run's** data by
+    /// auto-generated identifiers (e.g. <c>{{TransactionID}}</c>), which is
+    /// the only meaningful value those tokens can carry at teardown time —
+    /// the next run hasn't generated its values yet.
+    ///
+    /// On the very first run (no prior history), MessageID / TransactionID
+    /// are absent from the context and any teardown step that references them
+    /// will fail strict-mode substitution — that's the right behaviour
+    /// (nothing to delete on a fresh test set anyway).
+    /// </summary>
+    private async Task<Dictionary<string, string>> BuildTeardownContextAsync(
+        TestObjective obj, string envKey,
+        string testSetId, string? moduleId,
+        CancellationToken ct)
+    {
+        var ctx = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        // 1. Lowest precedence: prior run's delivery context from history.
+        try
+        {
+            var prior = await _historyRepo.GetLatestDeliveryContextAsync(testSetId, moduleId, obj.Id);
+            if (prior is not null)
+            {
+                foreach (var kv in prior)
+                    ctx[kv.Key] = kv.Value;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Could not load prior delivery context for objective '{Obj}' — teardown tokens that depend on it (e.g. {{TransactionID}}) will be undefined.",
+                obj.Id);
+        }
+
+        // 2. Env-level parameters.
+        if (obj.EnvironmentParameters.TryGetValue(envKey, out var envParams))
+        {
+            foreach (var kv in envParams)
+                ctx[kv.Key] = kv.Value;
+        }
+
+        // 3. Highest precedence: the delivery step's user-supplied field values.
+        if (obj.AseXmlDeliverySteps.Count > 0)
+        {
+            var first = obj.AseXmlDeliverySteps[0];
+            foreach (var kv in first.FieldValues)
+                ctx[kv.Key] = kv.Value;
+        }
+
+        ct.ThrowIfCancellationRequested();
+        return ctx;
     }
 
     /// <summary>

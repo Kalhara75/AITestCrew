@@ -2,7 +2,7 @@ import { apiFetch } from './client';
 import type {
   Module, TestSetListItem, TestSetDetail, RunSummary, ExecutionRun,
   MoveObjectiveRequest, TestObjective, AiPatchRequest, AiPatchPreview, AiPatchApplyRequest,
-  TriggerModuleRunResponse, ModuleRunStatus, WebUiStep, VerificationStep,
+  TriggerModuleRunResponse, ModuleRunStatus, WebUiStep, VerificationStep, SqlTeardownStep,
 } from '../types';
 
 export const fetchModules = () =>
@@ -117,6 +117,18 @@ export const updateSetupSteps = (moduleId: string, tsId: string, setupStartUrl: 
 export const clearSetupSteps = (moduleId: string, tsId: string) =>
   apiFetch<TestSetDetail>(
     `/modules/${moduleId}/testsets/${tsId}/setup-steps`,
+    { method: 'DELETE' }
+  );
+
+export const updateTeardownSteps = (moduleId: string, tsId: string, teardownSteps: SqlTeardownStep[]) =>
+  apiFetch<TestSetDetail>(
+    `/modules/${moduleId}/testsets/${tsId}/teardown-steps`,
+    { method: 'PUT', body: JSON.stringify({ teardownSteps }) }
+  );
+
+export const clearTeardownSteps = (moduleId: string, tsId: string) =>
+  apiFetch<TestSetDetail>(
+    `/modules/${moduleId}/testsets/${tsId}/teardown-steps`,
     { method: 'DELETE' }
   );
 

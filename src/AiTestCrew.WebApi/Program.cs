@@ -8,6 +8,7 @@ using AiTestCrew.Agents.Auth;
 using AiTestCrew.Agents.BraveCloudUiAgent;
 using AiTestCrew.Agents.LegacyWebUiAgent;
 using AiTestCrew.Agents.Persistence;
+using AiTestCrew.Agents.Teardown;
 using AiTestCrew.Agents.WinFormsUiAgent;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
@@ -173,6 +174,12 @@ else
     builder.Services.AddSingleton<IModuleRepository>(new ModuleRepository(dataDir));
 }
 
+// ── Teardown executor ──
+builder.Services.AddSingleton<ITeardownExecutor>(sp => new BravoTeardownExecutor(
+    sp.GetRequiredService<IEnvironmentResolver>(),
+    sp.GetRequiredService<ILogger<BravoTeardownExecutor>>()
+));
+
 // ── Orchestrator ──
 builder.Services.AddSingleton(new AgentConcurrencyLimiter(envConfig.MaxParallelAgents));
 builder.Services.AddSingleton<TestOrchestrator>();
@@ -291,7 +298,8 @@ app.MapGet("/api/config/environments", (IEnvironmentResolver envResolver) =>
     {
         key = k,
         displayName = envResolver.ResolveDisplayName(k),
-        isDefault = string.Equals(k, defaultKey, StringComparison.OrdinalIgnoreCase)
+        isDefault = string.Equals(k, defaultKey, StringComparison.OrdinalIgnoreCase),
+        dataTeardownEnabled = envResolver.ResolveDataTeardownEnabled(k)
     }).ToList();
     return Results.Ok(new { environments, defaultEnvironment = defaultKey });
 });

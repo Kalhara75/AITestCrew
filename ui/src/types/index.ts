@@ -137,9 +137,15 @@ export interface TestSetDetail {
   runCount: number;
   setupStartUrl: string;
   setupSteps: WebUiStep[];
+  teardownSteps: SqlTeardownStep[];
   lastRunStatus: string | null;
   objectiveStatuses?: Record<string, ObjectiveStatus>;
   testObjectives: TestObjective[];
+}
+
+export interface SqlTeardownStep {
+  name: string;
+  sql: string;
 }
 
 export interface MoveObjectiveRequest {
@@ -267,6 +273,7 @@ export interface EnvironmentInfo {
   key: string;
   displayName: string;
   isDefault: boolean;
+  dataTeardownEnabled?: boolean;
 }
 
 export interface EnvironmentsResponse {

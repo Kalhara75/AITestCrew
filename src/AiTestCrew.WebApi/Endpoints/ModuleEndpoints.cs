@@ -384,6 +384,43 @@ public static class ModuleEndpoints
             return Results.Ok(TestSetResponse(testSet, historyRepo));
         });
 
+        // PUT /api/modules/{moduleId}/testsets/{tsId}/teardown-steps — save/update teardown steps
+        group.MapPut("/{moduleId}/testsets/{tsId}/teardown-steps",
+            async (string moduleId, string tsId, TeardownStepsRequest request,
+                ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
+        {
+            var testSet = await tsRepo.LoadAsync(moduleId, tsId);
+            if (testSet is null)
+                return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
+
+            // Guardrail-validate each step at save-time so bad SQL never reaches the DB.
+            var steps = request.TeardownSteps ?? [];
+            foreach (var step in steps)
+            {
+                var (ok, reason) = AiTestCrew.Agents.Teardown.SqlGuardrails.Validate(step.Sql);
+                if (!ok)
+                    return Results.BadRequest(new { error = $"Step '{step.Name}' rejected: {reason}" });
+            }
+
+            testSet.TeardownSteps = steps;
+            await tsRepo.SaveAsync(testSet, moduleId);
+            return Results.Ok(TestSetResponse(testSet, historyRepo));
+        });
+
+        // DELETE /api/modules/{moduleId}/testsets/{tsId}/teardown-steps — clear teardown steps
+        group.MapDelete("/{moduleId}/testsets/{tsId}/teardown-steps",
+            async (string moduleId, string tsId,
+                ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
+        {
+            var testSet = await tsRepo.LoadAsync(moduleId, tsId);
+            if (testSet is null)
+                return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
+
+            testSet.TeardownSteps = [];
+            await tsRepo.SaveAsync(testSet, moduleId);
+            return Results.Ok(TestSetResponse(testSet, historyRepo));
+        });
+
         // POST /api/modules/{moduleId}/run — run all test sets in a module (parallel)
         group.MapPost("/{moduleId}/run", async (string moduleId,
             IModuleRepository moduleRepo, ITestSetRepository tsRepo,
@@ -707,6 +744,7 @@ public static class ModuleEndpoints
             Objective = testSet.Objective,
             testSet.CreatedAt, testSet.LastRunAt, RunCount = historyRepo.CountRuns(testSet.Id),
             testSet.SetupStartUrl, testSet.SetupSteps,
+            testSet.TeardownSteps,
             LastRunStatus = AggregateStatus(objStatuses, currentIds),
             ObjectiveStatuses = objStatuses
                 .Where(kvp => currentIds.Contains(kvp.Key))
@@ -755,3 +793,4 @@ public record ObjectivePatchEntry(string ObjectiveId, ApiTestCase TestCase);
 public record AiPatchPreview(List<ObjectivePatchEntry> Original, List<ObjectivePatchEntry> Patched);
 public record AiPatchApplyRequest(List<ObjectivePatchEntry> Patches);
 public record SetupStepsRequest(string? SetupStartUrl, List<WebUiStep>? SetupSteps);
+public record TeardownStepsRequest(List<SqlTeardownStep>? TeardownSteps);

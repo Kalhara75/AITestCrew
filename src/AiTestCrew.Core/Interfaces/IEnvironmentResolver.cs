@@ -46,6 +46,13 @@ public interface IEnvironmentResolver
     string ResolveBravoDbConnectionString(string? key);
 
     /// <summary>
+    /// Returns whether SQL data teardown is opted-in for the given environment.
+    /// Falls back to <see cref="TestEnvironmentConfig.DataTeardownEnabled"/>
+    /// (default false) when the env block leaves it unset.
+    /// </summary>
+    bool ResolveDataTeardownEnabled(string? key);
+
+    /// <summary>
     /// Returns the API BaseUrl for the given stack, applying the environment's
     /// <see cref="EnvironmentConfig.ApiStackBaseUrls"/> override when present.
     /// Falls back to <c>ApiStacks[stackKey].BaseUrl</c>.

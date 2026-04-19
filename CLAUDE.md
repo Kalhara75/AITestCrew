@@ -74,6 +74,11 @@ Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → C
 | `src/AiTestCrew.Agents/AseXmlAgent/Delivery/DropTargetFactory.cs` | Picks SFTP vs FTP based on `OutBoxUrl` scheme; SFTP default |
 | `src/AiTestCrew.Agents/AseXmlAgent/Delivery/XmlZipPackager.cs` | Wraps XML in `{MessageID}.zip` when endpoint has `IsOutboundFilesZiped = 1` |
 | `src/AiTestCrew.Core/Interfaces/IEndpointResolver.cs` | `ResolveAsync(code)` + `ListCodesAsync()`; returns `BravoEndpoint` record |
+| `src/AiTestCrew.Agents/Teardown/BravoTeardownExecutor.cs` | `ITeardownExecutor` impl — runs per-test-set SQL `DELETE` statements once per objective in `Reuse` mode. Per-env opt-in (`DataTeardownEnabled`), guardrail-checked, strict `{{Token}}` substitution from history + env params + delivery FieldValues |
+| `src/AiTestCrew.Agents/Teardown/SqlGuardrails.cs` | Static `Validate(sql)` — strips `--` and `/* */` comments, requires `WHERE`, rejects `TRUNCATE`/`DROP`/`ALTER`/`CREATE`/`EXEC[UTE]`/`SHUTDOWN`/`GRANT`/`REVOKE`/`MERGE` |
+| `src/AiTestCrew.Core/Interfaces/ITeardownExecutor.cs` | Teardown executor contract + `SqlTeardownStepDto` |
+| `src/AiTestCrew.Storage/Persistence/SqlTeardownStep.cs` | Persisted teardown step `{ Name, Sql }` on `PersistedTestSet.TeardownSteps` |
+| `ui/src/components/TeardownStepsPanel.tsx` | Editor for `TeardownSteps` on the test set detail page (mirrors `SetupStepsPanel`); shows env-opt-in warning |
 | `templates/asexml/` | Checked-in aseXML templates + manifests grouped by transaction type (copied into each project's `bin/templates/asexml/` at build) |
 | `ui/src/components/AseXmlTestCaseTable.tsx` | Read-only viewer for `AseXmlSteps` (no edit dialog in Phase 1) |
 | `ui/src/components/AseXmlDeliveryTestCaseTable.tsx` | Read-only viewer for `AseXmlDeliverySteps` (adds Endpoint column) |
@@ -266,6 +271,7 @@ Adding a ___ is → ___
 | A new persistence field on any existing model | Extend the class; update `FromTestCase`/`ToTestCase` if applicable; update TS type | Re-reads old JSON via lenient deserialisation; no migration needed for additive changes |
 | A new customer environment (e.g. TASN Networks) | Manual — `appsettings.json` only | Add an entry under `TestEnvironment.Environments.<key>` with the customer's URLs/creds/DB/per-stack BaseUrls. Run `--auth-setup --environment <key>` per target to cache auth state. Zero code changes. |
 | A new per-environment setting (e.g. customer reporting URL) | Manual — three files | Add field to `EnvironmentConfig`; add `ResolveXxx(envKey)` on `IEnvironmentResolver` + `EnvironmentResolver` (with top-level fallback); inject the resolver wherever the setting is consumed. |
+| A new teardown protocol (e.g. API-based purge, blob/file cleanup) | Manual — implement `ITeardownExecutor` | New class in `src/AiTestCrew.Agents/Teardown/`; register in DI alongside `BravoTeardownExecutor` (Runner + WebApi `Program.cs`). The orchestrator already invokes `ITeardownExecutor.ExecuteAsync` — no orchestrator change needed if a single implementation handles all teardown. For protocol routing, introduce a factory keyed off step metadata. |
 
 ## Documentation
 

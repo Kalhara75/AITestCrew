@@ -98,6 +98,15 @@ public class PersistedTestSet
     /// </summary>
     public List<WebUiStep> SetupSteps { get; set; } = [];
 
+    /// <summary>
+    /// Optional SQL teardown statements that run ONCE PER OBJECTIVE, immediately
+    /// before the agent task dispatches. Each step supports <c>{{Token}}</c>
+    /// substitution from env parameters, the first delivery step's FieldValues,
+    /// and template const fields. Empty list = no teardown.
+    /// Gated by <c>EnvironmentConfig.DataTeardownEnabled</c> (per-env opt-in).
+    /// </summary>
+    public List<SqlTeardownStep> TeardownSteps { get; set; } = [];
+
     /// <summary>Flat list of individually runnable test objectives (v2 schema).</summary>
     public List<TestObjective> TestObjectives { get; set; } = [];
 

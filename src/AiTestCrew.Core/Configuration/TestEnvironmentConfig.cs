@@ -131,6 +131,12 @@ public class TestEnvironmentConfig
     public string? WinFormsScreenshotDir { get; set; }
     public bool WinFormsCloseAppBetweenTests { get; set; } = true;
 
+    // --- Data teardown (per-test-set SQL DELETE statements) ---
+    // Global fallback opt-in: applied when an EnvironmentConfig block leaves
+    // DataTeardownEnabled unset (null). Defaults to false so legacy configs
+    // without any teardown awareness remain safe.
+    public bool DataTeardownEnabled { get; set; } = false;
+
     // --- aseXML (AEMO B2B transactions) ---
     // TemplatesPath: directory containing transaction templates + manifests, grouped by
     //   transaction type. Each template is a .xml with {{tokens}} plus a sibling

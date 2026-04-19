@@ -617,6 +617,7 @@ Open `http://<team-server>:5050` in any browser, log in with your API key. Resul
 | `SqliteConnectionString` | string | `""` | SQLite path. Required when `StorageProvider = "Sqlite"`. |
 | `MaxParallelAgents` | int | `4` | Maximum concurrent test agent executions |
 | `MaxExecutionRunsPerTestSet` | int | `10` | Retention: old runs auto-pruned beyond this count |
+| `DataTeardownEnabled` | bool | `false` | Top-level fallback for SQL data teardown opt-in. Per-env override is `Environments.<key>.DataTeardownEnabled`. Set to `true` only on dev/test envs — never production. |
 | `PlaywrightBrowser` | string | `"chromium"` | Browser for web UI testing |
 | `PlaywrightHeadless` | bool | `true` | Run browser headless (server) or visible (recording) |
 | `PlaywrightScreenshotDir` | string | `null` | Directory for failure screenshots |
@@ -652,7 +653,8 @@ Each customer deployment has its own URLs, credentials, auth-state files, and (f
 | `LegacyWebUiUrl` / `LegacyWebUiUsername` / `LegacyWebUiPassword` / `LegacyWebUiStorageStatePath` | Per-env legacy MVC overrides |
 | `BraveCloudUiUrl` / `BraveCloudUiUsername` / `BraveCloudUiPassword` / `BraveCloudUiTotpSecret` / `BraveCloudUiStorageStatePath` | Per-env Blazor + Azure SSO overrides |
 | `WinFormsAppPath` / `WinFormsAppArgs` | Per-env desktop app path (different customer builds install to different paths / accept different launch args) |
-| `BravoDbConnectionString` | Per-env Bravo application DB for aseXML endpoint resolution |
+| `BravoDbConnectionString` | Per-env Bravo application DB for aseXML endpoint resolution **and** SQL data teardown |
+| `DataTeardownEnabled` | bool, default `false`. Per-env opt-in for SQL teardown statements attached to a test set. Set `true` only on dev/test envs where DELETE is safe — never on production. Falls back to top-level `TestEnvironment.DataTeardownEnabled`. See `docs/functional.md` *Data Teardown (SQL)*. |
 | `ApiStackBaseUrls` | Map of ApiStacks key → BaseUrl override. The shared `ApiStacks.<stack>.Modules.*` definitions are reused; only the `BaseUrl` differs per customer. |
 
 Any field omitted from an env block falls back to the top-level field of the same name. This lets you migrate gradually: add one env at a time while leaving top-level fields in place as sane defaults.

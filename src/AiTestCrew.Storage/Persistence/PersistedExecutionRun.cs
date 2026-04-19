@@ -138,9 +138,34 @@ public class PersistedExecutionRun
                     Duration = s.Duration,
                     Timestamp = s.Timestamp
                 }).ToList(),
-                Deliveries = ExtractDeliveries(r.Metadata)
+                Deliveries = ExtractDeliveries(r.Metadata),
+                TeardownResults = ExtractTeardown(r.Metadata)
             }).ToList()
         };
+    }
+
+    /// <summary>
+    /// Projects a <c>TestResult.Metadata["teardown"]</c> entry
+    /// (<c>List&lt;TeardownStepResult&gt;</c>) into the persisted shape.
+    /// </summary>
+    private static List<PersistedTeardownStep>? ExtractTeardown(IReadOnlyDictionary<string, object> metadata)
+    {
+        if (!metadata.TryGetValue("teardown", out var raw) || raw is null) return null;
+
+        if (raw is IEnumerable<TeardownStepResult> typed)
+        {
+            var list = typed.Select(t => new PersistedTeardownStep
+            {
+                Name = t.Name,
+                Sql = t.Sql,
+                RowsAffected = t.RowsAffected,
+                Error = t.Error,
+                DryRun = t.DryRun
+            }).ToList();
+            return list.Count > 0 ? list : null;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -205,6 +230,26 @@ public class PersistedObjectiveResult
     /// MessageID / TransactionID / Filename / EndpointCode from the latest run.
     /// </summary>
     public List<PersistedDelivery>? Deliveries { get; set; }
+
+    /// <summary>
+    /// Per-step teardown outcomes recorded before this objective's agent task
+    /// dispatched. Null when the test set has no teardown configured or the
+    /// run skipped teardown.
+    /// </summary>
+    public List<PersistedTeardownStep>? TeardownResults { get; set; }
+}
+
+/// <summary>
+/// Persisted snapshot of one teardown step within an execution run.
+/// Mirrors <see cref="AiTestCrew.Core.Models.TeardownStepResult"/> plus a stable shape for JSON.
+/// </summary>
+public class PersistedTeardownStep
+{
+    public string Name { get; set; } = "";
+    public string Sql { get; set; } = "";
+    public int RowsAffected { get; set; }
+    public string? Error { get; set; }
+    public bool DryRun { get; set; }
 }
 
 /// <summary>

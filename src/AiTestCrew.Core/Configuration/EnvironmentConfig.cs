@@ -37,6 +37,15 @@ public class EnvironmentConfig
     public string? BravoDbConnectionString { get; set; }
 
     /// <summary>
+    /// Opt-in flag for SQL data teardown in this environment. When false
+    /// (the default), test-set teardown steps are rejected before any SQL
+    /// runs. Set to true only on environments where DELETE statements are safe
+    /// (dev/test customer DBs), never on production.
+    /// Null = inherit top-level <c>TestEnvironmentConfig.DataTeardownEnabled</c>.
+    /// </summary>
+    public bool? DataTeardownEnabled { get; set; }
+
+    /// <summary>
     /// Per-stack BaseUrl overrides. Key is the ApiStacks key
     /// (e.g. "bravecloud", "legacy"); value is the BaseUrl that replaces
     /// the ApiStacks[key].BaseUrl when this environment is active.

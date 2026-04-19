@@ -520,6 +520,106 @@ dotnet run --project src/AiTestCrew.Runner -- --record-setup \
 - If a setup step fails during replay, the remaining setup steps and all test case steps are skipped for that test case.
 - Running `--record-setup` again for the same test set replaces the existing setup steps.
 
+### Data Teardown (SQL)
+
+Attach one or more SQL `DELETE`/`UPDATE` statements to a test set that AITestCrew runs **once per objective**, immediately before dispatching the agent, to clear server-side state written by prior runs. Use case: re-running an MDN delivery for NMI `6203575700` on `2026-04-01` fails on duplicate reads unless the prior run's rows are removed first — a teardown step handles that automatically.
+
+**Where it's edited:** the test set detail page in the web dashboard has a *Data Teardown (SQL)* panel next to *Setup Steps*. Each step has a name + SQL body; rows are ordered, can be reordered/removed, and the whole list can be cleared.
+
+#### Token substitution
+
+SQL bodies may reference `{{Token}}` placeholders. At run time, tokens resolve from (ascending priority — later sources win):
+
+1. The **prior successful run's delivery context** from execution history (`MessageID`, `TransactionID`, `Filename`, `EndpointCode`, `RemotePath`, `UploadedAs`). This is what lets you target the previous run's data for cleanup using auto-generated identifiers — the same identifiers the AEMO B2B chain uses to thread MDN/MFN/etc. transactions through the DB.
+2. The objective's per-environment parameters (`EnvironmentParameters[envKey]`).
+3. The first `AseXmlDeliverySteps[0].FieldValues` entry (e.g. `{{NMI}}`, `{{ReadDate}}`, `{{MeterSerial}}`).
+
+On the very first run for an objective (no prior history), `MessageID`/`TransactionID` are absent from the context and any teardown step that references them will fail strict-mode substitution — that's the right behaviour, since there's no prior data to clean. Unknown tokens always fail the teardown loudly — nothing runs.
+
+#### When it runs (by mode)
+
+| Trigger | Mode | Teardown? |
+|---|---|---|
+| Dashboard **Run** button (test set or single objective), CLI `--reuse` | `Reuse` | **Yes** (when configured + env opted in) |
+| Dashboard **Verify** button, CLI `--verify-only` | `VerifyOnly` | **No** — verifications inspect the just-delivered data, deleting it would defeat the purpose |
+| CLI Normal run (no `--reuse`) | `Normal` | No (initial test-set creation) |
+| CLI `--rebaseline` | `Rebaseline` | No (regenerates definitions, not data) |
+| Any mode with `--skip-teardown` | any | No (explicit bypass) |
+
+#### Per-environment opt-in
+
+Teardown is gated by `TestEnvironment.Environments.<env>.DataTeardownEnabled` (or the top-level `TestEnvironment.DataTeardownEnabled` fallback), both defaulting to `false`. Attempting a run against an env that hasn't opted in fails fast with a clear error — no SQL executes.
+
+> **Edit BOTH `appsettings.json` files.** The Runner (`src/AiTestCrew.Runner/appsettings.json`) and the WebApi (`src/AiTestCrew.WebApi/appsettings.json`) bind their own copies of `TestEnvironment` at startup. UI-driven runs read the WebApi's config; CLI-driven runs read the Runner's. Keep them in sync (or move both to a shared file via `--config`-style overrides). After any change, **restart the WebApi process** — config is bound once at startup, not hot-reloaded.
+
+The dashboard's Data Teardown panel queries `/api/config/environments` to know whether the env has opted in; when it hasn't, the panel shows a yellow warning banner but still lets you edit the SQL so you can prepare ahead of enabling the flag.
+
+#### Guardrails (applied at save AND run time)
+
+- Every statement must contain `WHERE` (word-boundary) — prevents accidental table-wide deletes.
+- Denylist: `TRUNCATE`, `DROP`, `ALTER`, `CREATE`, `EXEC`, `EXECUTE`, `SHUTDOWN`, `GRANT`, `REVOKE`, `MERGE`.
+- Line (`-- ...`) and block (`/* ... */`) comments are stripped before checking so they can't conceal or smuggle keywords.
+
+#### CLI flags
+
+- `--teardown-dry-run` — logs the fully substituted SQL and skips execution. Use for first-time sanity checks before any DELETE actually fires.
+- `--skip-teardown` — bypass teardown entirely for this run.
+
+#### Failure policy
+
+On a teardown failure for one objective, that objective is marked `Error`, its teardown result is persisted to the execution history, and subsequent objectives in the test set continue — one bad teardown doesn't abort the whole suite. No SQL is partially executed: every step is token-substituted and guardrail-checked **before** any connection opens, and within a connection the first failed step aborts the rest for that objective.
+
+#### Audit trail
+
+Every executed statement is logged at Information level with environment, step name, substituted SQL, and rows affected. Teardown outcomes are also stored under each objective's `TeardownResults` in the execution history JSON (`executions/{testSetId}/{runId}.json`).
+
+#### Worked example — MDN re-delivery cleanup
+
+Test set `mdn-delivery-tests` in module `aemo-b2b` has one delivery objective with `FieldValues = { NMI: "6203575700", ReadDate: "2026-04-02" }`. After the first successful run, `MessageID` and `TransactionID` are also available from execution history.
+
+```sql
+-- Step 1: child reads (delete first to satisfy FKs)
+DELETE FROM [mds].[V2_MDS_IntervalReadDay]
+WHERE TransactionId IN (
+  SELECT TransactionId FROM [mds].[V2_MDS_Transaction]
+  WHERE ExternalTransactionReference = '{{TransactionID}}'
+)
+
+-- Step 2: also remove the index rows for this NMI/date
+DELETE FROM [mds].[V2_MDS_IntervalIndexRead]
+WHERE MeterReadStreamId IN (
+  SELECT MeterReadStreamId FROM [mds].[V2_MDS_MeterReadStream]
+  WHERE MarketIdentifier = '{{NMI}}'
+) AND ReadDate = '{{ReadDate}}'
+
+-- Step 3: response rows
+DELETE FROM mds.V2_MDS_MeterDataResponse
+WHERE TransactionId IN (
+  SELECT TransactionId FROM [mds].[V2_MDS_Transaction]
+  WHERE ExternalTransactionReference = '{{TransactionID}}'
+)
+
+-- Step 4: parent transaction (last)
+DELETE FROM [mds].[V2_MDS_Transaction]
+WHERE ExternalTransactionReference = '{{TransactionID}}'
+```
+
+Run sequence:
+
+```bash
+# 1. First run — no prior TransactionID exists, so dry-run any TransactionID-based steps first
+dotnet run --project src/AiTestCrew.Runner -- \
+  --reuse mdn-delivery-tests --module aemo-b2b \
+  --environment sumo-retail --teardown-dry-run
+
+# 2. Once you've confirmed tokens resolve, real run
+dotnet run --project src/AiTestCrew.Runner -- \
+  --reuse mdn-delivery-tests --module aemo-b2b \
+  --environment sumo-retail
+```
+
+If a teardown step references `{{TransactionID}}` and the objective has never produced a successful delivery, the strict-mode substitution will fail — the very first run of a brand-new objective should either omit such steps or use `--skip-teardown` for that one run, then add the auto-token steps once history exists.
+
 ### Auth Setup
 
 Save browser authentication state so that subsequent test runs start pre-authenticated, skipping the login flow entirely. Opens a visible browser — complete the login manually, and the session is saved automatically. **Environment-aware**: when multiple customer environments are configured, pass `--environment <key>` so the URL, credentials, and saved-state filename come from that env's block.
@@ -1417,6 +1517,8 @@ Every flag the Runner CLI accepts, one row per flag. Scope column shows which ru
 | `--testset <testSetId>` | Every module-scoped run | slug | Test set scope. Auto-derived from `--reuse` when module is scoped without this. |
 | `--verification-name "<name>"` | Record-verification | string | Display label for the recorded verification. |
 | `--wait <seconds>` | Record-verification | int, default = `AseXml.DefaultVerificationWaitSeconds` (30) | Delay between delivery and this verification at playback. |
+| `--skip-teardown` | Reuse | flag | Bypass test-set data teardown for this run (SQL DELETE statements are not executed). |
+| `--teardown-dry-run` | Reuse | flag | Log substituted teardown SQL at Information but don't execute. Useful for sanity-checking tokens before letting real DELETEs run. |
 
 ### Environment prerequisites by command
 

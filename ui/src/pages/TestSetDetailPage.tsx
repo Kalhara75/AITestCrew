@@ -16,7 +16,9 @@ import { MoveObjectiveDialog } from '../components/MoveObjectiveDialog';
 import { TriggerObjectiveRunButton } from '../components/TriggerObjectiveRunButton';
 import { AiPatchPanel } from '../components/AiPatchPanel';
 import { SetupStepsPanel } from '../components/SetupStepsPanel';
+import { TeardownStepsPanel } from '../components/TeardownStepsPanel';
 import { EnvironmentParametersEditor } from '../components/EnvironmentParametersEditor';
+import { fetchEnvironments } from '../api/config';
 import type { TestObjective, ObjectiveStatus } from '../types';
 
 export function TestSetDetailPage() {
@@ -44,6 +46,11 @@ export function TestSetDetailPage() {
       ? fetchModuleTestSet(moduleId!, id!)
       : fetchTestSet(id!),
     enabled: !!id,
+  });
+
+  const { data: envInfo } = useQuery({
+    queryKey: ['environments'],
+    queryFn: fetchEnvironments,
   });
 
   const { data: runs } = useQuery({
@@ -156,6 +163,31 @@ export function TestSetDetailPage() {
           onUpdated={() => queryClient.invalidateQueries({ queryKey: ['testSet', moduleId, id] })}
         />
       )}
+
+      {/* Data Teardown (SQL) — per-test-set DELETE statements that clear server-side state before each run. */}
+      {isModuleScoped && (() => {
+        // Resolve the active env: persisted key wins, but only if it matches a
+        // configured env. Otherwise fall back to defaultEnvironment so legacy
+        // "default" values don't trip the disabled-env warning forever.
+        const persistedKey = testSet.environmentKey ?? null;
+        const persistedRow = persistedKey
+          ? envInfo?.environments.find(e => e.key === persistedKey)
+          : undefined;
+        const activeEnvKey = persistedRow
+          ? persistedKey
+          : envInfo?.defaultEnvironment ?? persistedKey;
+        const envRow = envInfo?.environments.find(e => e.key === activeEnvKey);
+        return (
+          <TeardownStepsPanel
+            teardownSteps={testSet.teardownSteps ?? []}
+            moduleId={moduleId!}
+            testSetId={testSet.id}
+            environmentKey={activeEnvKey}
+            dataTeardownEnabled={envRow?.dataTeardownEnabled ?? false}
+            onUpdated={() => queryClient.invalidateQueries({ queryKey: ['testSet', moduleId, id] })}
+          />
+        );
+      })()}
 
       {/* Test Cases list — clean table */}
       <div style={cardStyle({ marginBottom: 24 })}>

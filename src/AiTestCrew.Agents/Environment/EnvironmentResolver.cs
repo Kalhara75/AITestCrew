@@ -100,6 +100,12 @@ public class EnvironmentResolver : IEnvironmentResolver
     public string ResolveBravoDbConnectionString(string? key) =>
         Pick(Resolve(key).BravoDbConnectionString, _config.AseXml.BravoDb.ConnectionString);
 
+    public bool ResolveDataTeardownEnabled(string? key)
+    {
+        var env = Resolve(key);
+        return env.DataTeardownEnabled ?? _config.DataTeardownEnabled;
+    }
+
     public string ResolveApiStackBaseUrl(string? key, string stackKey)
     {
         var env = Resolve(key);
