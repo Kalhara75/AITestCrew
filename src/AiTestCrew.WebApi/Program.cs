@@ -188,6 +188,9 @@ builder.Services.AddSingleton<TestOrchestrator>();
 builder.Services.AddSingleton<IRunTracker, RunTracker>();
 builder.Services.AddSingleton<IModuleRunTracker, ModuleRunTracker>();
 
+// ── Chat intent service (LLM-backed natural-language → structured action) ──
+builder.Services.AddSingleton<IChatIntentService, ChatIntentService>();
+
 // ── CORS ──
 builder.Services.AddCors(options =>
 {
@@ -242,11 +245,13 @@ if (!string.IsNullOrEmpty(envConfig.PlaywrightScreenshotDir))
 app.MapGroup("/api/modules").MapModuleEndpoints();
 app.MapGroup("/api/testsets").MapTestSetEndpoints();
 app.MapGroup("/api/runs").MapRunEndpoints();
+app.MapGroup("/api/chat").MapChatEndpoints();
 if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCase))
 {
     app.MapGroup("/api/users").MapUserEndpoints();
     app.MapGroup("/api/agents").MapAgentEndpoints();
     app.MapGroup("/api/queue").MapQueueEndpoints();
+    app.MapGroup("/api/recordings").MapRecordingEndpoints();
 }
 
 // ── Execution history (Runner API client) ──
@@ -302,6 +307,20 @@ app.MapGet("/api/config/environments", (IEnvironmentResolver envResolver) =>
         dataTeardownEnabled = envResolver.ResolveDataTeardownEnabled(k)
     }).ToList();
     return Results.Ok(new { environments, defaultEnvironment = defaultKey });
+});
+
+// ── Endpoint discovery — exposes Bravo aseXML EndPointCodes to the UI ──
+app.MapGet("/api/config/endpoints", async (IEndpointResolver endpointResolver) =>
+{
+    try
+    {
+        var codes = await endpointResolver.ListCodesAsync();
+        return Results.Ok(new { endpoints = codes });
+    }
+    catch (Exception ex)
+    {
+        return Results.Ok(new { endpoints = Array.Empty<string>(), error = ex.Message });
+    }
 });
 
 // ── API stack discovery — exposes configured stacks/modules to the UI ──

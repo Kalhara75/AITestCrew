@@ -81,6 +81,16 @@ Agents/
   Environment/
     EnvironmentResolver.cs        — Per-env override resolver (UI URLs, creds, WinForms path, Bravo DB, per-stack BaseUrls); falls back to top-level fields when a field isn't present in the active env block
     StepParameterSubstituter.cs   — Walks every step-definition / test-case type and applies {{Token}} substitution using TokenSubstituter (lenient); returns cloned objects so persisted state is never mutated
+  Recording/
+    IRecordingService.cs          — Contract with four methods: RecordCaseAsync / RecordSetupAsync /
+                                    RecordVerificationAsync / AuthSetupAsync. Shared by CLI flows
+                                    (--record, --record-setup, --record-verification, --auth-setup) and the
+                                    agent queue's recording JobKinds.
+    RecordingService.cs           — Implementation. Runs PlaywrightRecorder or DesktopRecorder, persists the
+                                    captured steps back into the test set, and returns a RecordingResult
+                                    with structured step summaries so the CLI can still render its step table.
+    RecordingRequests.cs          — Request DTOs (RecordCaseRequest etc.) serialized into
+                                    RunQueueEntry.RequestJson for recording jobs, plus RecordingResult.
   Base/
     BaseTestAgent.cs              — Shared LLM communication (delegates JSON utilities to LlmJsonHelper)
     LlmJsonHelper.cs              — Static JSON cleaning/parsing utilities (shared with WebApi endpoints)
@@ -412,10 +422,12 @@ CLI entry point. Wires up DI, handles argument parsing, drives the run, renders 
 
 ```
 Runner/
-  Program.cs                       — Top-level statements: arg parsing, DI, console output
-                                     Includes --record mode short-circuit (before DI host build):
-                                     slugifies module/testset IDs, calls PlaywrightRecorder.RecordAsync,
-                                     creates module manifest if missing, saves WebUiTestDefinition to test set
+  Program.cs                       — Top-level statements: arg parsing, DI, console output.
+                                     The --record / --record-setup / --record-verification / --auth-setup
+                                     short-circuits now call IRecordingService (Agents/Recording/) rather
+                                     than inlining the Playwright/FlaUI logic — the service is constructed
+                                     via a pre-host CreateRecordingService(loggerFactory) helper so it works
+                                     before the DI host is built.
   AnthropicChatCompletionService.cs — Bridges Anthropic.SDK to Semantic Kernel's IChatCompletionService
   FileLoggerProvider.cs            — Writes all log messages to a timestamped file in logs/
   RemoteRepositories/
@@ -427,9 +439,11 @@ Runner/
   appsettings.example.json         — Template with placeholder values for source control
 ```
 
-**`--record` mode** runs before the DI host is built (no Orchestrator or agents needed). It resolves the module ID and test set ID via `SlugHelper.ToSlug` so the saved file path matches what the WebApi expects, then creates the module manifest via `ModuleRepository` if it does not exist.
+**`--record` mode** runs before the DI host is built (no Orchestrator or agents needed). It resolves the module ID and test set ID via `SlugHelper.ToSlug` so the saved file path matches what the WebApi expects, then creates the module manifest via `ModuleRepository` if it does not exist. The actual recording + persistence logic lives in `IRecordingService.RecordCaseAsync` (`src/AiTestCrew.Agents/Recording/RecordingService.cs`), which is shared with the agent queue's `JobKind = Record` path.
 
-**`--record-setup` mode** also runs before the DI host. It reuses `PlaywrightRecorder.RecordAsync` but saves the captured steps into `PersistedTestSet.SetupSteps` and `SetupStartUrl` instead of creating a new `TestObjective`. These setup steps (typically login) run before every test case in the test set during replay.
+**`--record-setup` mode** also runs before the DI host. It delegates to `IRecordingService.RecordSetupAsync`, which invokes `PlaywrightRecorder.RecordAsync` and saves the captured steps into `PersistedTestSet.SetupSteps` and `SetupStartUrl` instead of creating a new `TestObjective`. These setup steps (typically login) run before every test case in the test set during replay.
+
+**`--record-verification` / `--auth-setup` modes** follow the same pattern — CLI validates args, builds the matching request record, and calls `IRecordingService`. The service is the single source of truth for all four flows, which is what lets the Phase 4 queue dispatch recording jobs to a remote agent without duplicating code.
 
 **Remote mode** — When `ServerUrl` is configured in `TestEnvironmentConfig`, Runner registers `ApiClient*Repository` implementations instead of file-based or SQLite repositories. All persistence operations (module CRUD, test set load/save/merge, execution history) are proxied over HTTP to the WebApi. The `ApiKey` config field is injected as `X-Api-Key` on every request via `RemoteHttpClient`. This enables headless Runner instances on separate machines to share a central WebApi server.
 
@@ -462,11 +476,20 @@ WebApi/
     TestSetEndpoints.cs            — Legacy flat test set endpoints (backward compat)
     RunEndpoints.cs                — POST /api/runs (trigger with optional objectiveId, apiStackKey, apiModule), GET /api/runs/{id}/status (poll)
     AuthEndpoints.cs               — GET /api/auth/status, user CRUD (GET/POST/DELETE /api/users/*)
+    AgentEndpoints.cs              — Agent register/heartbeat/deregister/list (Phase 4, SQLite only)
+    QueueEndpoints.cs              — /api/queue/* — agent claims jobs, reports progress/result; dashboard list + cancel (Phase 4, SQLite only)
+    ChatEndpoints.cs               — POST /api/chat/message — LLM-backed natural-language → structured ChatResponse (reply + actions)
+    RecordingEndpoints.cs          — POST /api/recordings — enqueues a recording/auth-setup job for a local agent (JobKind = Record | RecordSetup | RecordVerification | AuthSetup)
+  Models/
+    Chat/ChatModels.cs             — ChatMessage / ChatRequest / ChatResponse / ChatAction DTOs for the /api/chat/message contract
   Services/
     IRunTracker.cs                 — Interface for individual run tracking (HasActiveRunForTestSet)
     IModuleRunTracker.cs           — Interface for module-level composite run tracking (HasActiveModuleRunForModule)
     RunTracker.cs                  — In-memory IRunTracker implementation (ConcurrentDictionary)
     ModuleRunTracker.cs            — In-memory IModuleRunTracker implementation (ConcurrentDictionary)
+    AgentHeartbeatMonitor.cs       — BackgroundService that marks agents Offline when heartbeat goes stale
+    RunDispatchHelper.cs           — Decides whether a run must be enqueued for a local agent (UI targets) or run in-process
+    ChatIntentService.cs           — Builds live catalog (modules, test sets, envs, stacks, endpoints, agents, current-test-set objectives) + system prompt, calls IChatCompletionService, deserializes ChatResponse via LlmJsonHelper
   appsettings.example.json         — Template config
 ```
 
@@ -508,6 +531,10 @@ WebApi/
 | `GET` | `/api/runs/{runId}/status` | Poll run progress |
 | `GET` | `/api/runs/active` | Check for any active run (module-level or individual) — used for page-refresh recovery |
 | `GET` | `/api/config/api-stacks` | List configured API stacks and modules (for UI dropdowns) |
+| `GET` | `/api/config/environments` | List configured customer environments (key, display name, default flag, data-teardown opt-in) |
+| `GET` | `/api/config/endpoints` | List Bravo `EndPointCode`s via `IEndpointResolver.ListCodesAsync()`. Returns `{ endpoints, error? }` — the `error` field is populated (and `endpoints` is empty) when the Bravo DB is unreachable, so the chat catalog degrades gracefully instead of 500ing. |
+| `POST` | `/api/chat/message` | LLM-backed chat turn. Body: `{ messages[], context? }`. Returns `{ reply, actions[] }` where each action is `navigate` / `showData` / `confirmRun` / `confirmCreate` / `confirmRecord`. |
+| `POST` | `/api/recordings` | Enqueue a recording/auth-setup job for a local agent (SQLite-only). Kinds: `Record`, `RecordSetup`, `RecordVerification`, `AuthSetup`. Returns `202 { jobId, status: Queued, jobKind, targetType }`. |
 | `GET` | `/api/health` | Health check |
 | `GET` | `/screenshots/{filename}` | Serve Playwright failure screenshots (static files from `PlaywrightScreenshotDir`) |
 | `GET` | `/api/auth/status` | Check if auth is enabled (returns `{ enabled, hasUsers }`) |
@@ -1210,17 +1237,19 @@ The server cannot execute Web UI (Playwright) or Desktop UI (FlaUI) tests becaus
 
 ### Flow
 
-1. Dashboard triggers a run. WebApi looks at the test set's target types.
+1. Dashboard (or chat assistant) triggers a run. WebApi looks at the test set's target types.
 2. If the run needs a browser/desktop (`UI_Web_*`, `UI_Desktop_*`), the WebApi inserts a row into `run_queue` instead of executing in-process.
 3. A local Runner with matching capabilities claims the job atomically via `UPDATE ... WHERE status='Queued'` inside a transaction.
-4. The agent executes the job via the existing `TestOrchestrator.RunAsync` (same code path as the CLI), posts `/api/queue/{jobId}/progress` when it starts and `/api/queue/{jobId}/result` when done.
-5. Results are written to `execution_runs` via the existing Runner API-client flow, so the dashboard shows them like any other run.
+4. The agent executes the job via the existing `TestOrchestrator.RunAsync` (for `JobKind = Run`) or `IRecordingService.Record*Async` (for recording kinds) — same code path as the CLI — and posts `/api/queue/{jobId}/progress` when it starts and `/api/queue/{jobId}/result` when done.
+5. Results are written to `execution_runs` via the existing Runner API-client flow, so the dashboard shows them like any other run. Recording jobs save the captured steps directly to the shared module/test-set repository (SQLite or shared file dir) and report a success/failure outcome to the queue.
 
 ### New SQLite tables
 
 ```sql
 agents        -- Registered Runner instances, updated on heartbeat (30s)
 run_queue     -- Jobs pending/claimed/running/completed (target_type + capabilities match drives claim)
+              -- Includes a job_kind column: "Run" | "Record" | "RecordSetup" | "RecordVerification" | "AuthSetup"
+              -- Schema version 4 added job_kind via an idempotent ALTER (checks PRAGMA table_info before ADD COLUMN)
 ```
 
 ### New endpoints
@@ -1237,6 +1266,7 @@ run_queue     -- Jobs pending/claimed/running/completed (target_type + capabilit
 | `GET` | `/api/queue` | Dashboard queue list |
 | `DELETE` | `/api/queue/{jobId}` | Cancel a Queued job (fails if already claimed) |
 | `POST` | `/api/screenshots` | Multipart upload — agents push failure screenshots to the server's `PlaywrightScreenshotDir` so the dashboard's `/screenshots/{file}` static handler can serve them |
+| `POST` | `/api/recordings` | Enqueue a recording/auth-setup job (`JobKind = Record / RecordSetup / RecordVerification / AuthSetup`). Body discriminates on `kind`; optional `agentId` is pre-validated against `capabilities`. Returns `202 { jobId, status: Queued, jobKind, targetType }`. |
 
 ### Dispatch decision (`RunDispatchHelper`)
 
@@ -1251,6 +1281,14 @@ run_queue     -- Jobs pending/claimed/running/completed (target_type + capabilit
 When an agent captures a Playwright or FlaUI failure screenshot, the file lives on the agent's local disk — the server serving the dashboard can't see it. `RemoteScreenshotUploader.TryUploadAsync` (in `AiTestCrew.Agents/Shared/`) is invoked from `BaseWebUiTestAgent.CaptureScreenshotAsync` and `BaseDesktopUiTestAgent.CaptureScreenshot`. When `TestEnvironmentConfig.ServerUrl` is set (agent mode), it POSTs the file to `/api/screenshots`, which saves it into the server's `PlaywrightScreenshotDir`. The step detail line still reads `"...| Screenshot: <filename>"`, and the existing `/screenshots/{filename}` static handler resolves to the uploaded copy. When `ServerUrl` is empty (legacy local mode), the uploader is a no-op — the screenshot is served directly from the local dir.
 
 The endpoint strips directory components from the uploaded filename (`Path.GetFileName`) and rejects paths containing `..` to prevent traversal.
+
+### Recording dispatch
+
+Interactive recording (`--record`, `--record-setup`, `--record-verification`, `--auth-setup`) can't run on the server for the same reason Web/Desktop tests can't — it needs a live desktop session. The queue extends naturally: `RunQueueEntry.JobKind` distinguishes `"Run"` (existing path through `TestOrchestrator`) from `"Record"`, `"RecordSetup"`, `"RecordVerification"`, and `"AuthSetup"`. The WebApi's `POST /api/recordings` builds the matching request DTO, serializes it into `RequestJson`, and enqueues with `TargetType` set to a capability the agent already advertises — recording reuses the replay capability set (`UI_Web_MVC`, `UI_Web_Blazor`, `UI_Desktop_WinForms`), so no new capability strings were added.
+
+`JobExecutor.ExecuteAsync` branches on `JobKind`: `"Run"` → `TestOrchestrator.RunAsync` (returns `TestSuiteResult`); recording kinds → `IRecordingService.Record*Async` (returns `RecordingResult`). Both are normalized into a `JobOutcome(Success, Summary, Error?)` that `AgentRunner` reports to the queue.
+
+`IRecordingService` is the extracted form of what used to be ~600 lines of inline `--record*` code in `Runner/Program.cs`. The CLI now validates its args, opens a logger factory, and delegates to the service — so CLI and agent share exactly the same recording, persistence, and auto-parameterisation logic. The only caller-side differences are cosmetic (CLI prints a Spectre step table via `PrintRecordingResult`).
 
 ### Per-agent concurrency
 
@@ -1275,6 +1313,55 @@ Agents authenticate via the owning user's API key (the existing `X-Api-Key` midd
 | `AgentCapabilities` | (empty → all three UI targets) | Runner-side: comma-separated target types this agent accepts |
 | `AgentPollIntervalSeconds` | 10 | Runner-side: idle poll cadence |
 | `AgentHeartbeatIntervalSeconds` | 30 | Runner-side: heartbeat cadence |
+
+---
+
+## Chat Assistant
+
+The Assistant is a right-edge drawer in the React UI that translates natural-language test-engineering requests into structured actions the user confirms with a click. It reuses the existing LLM wrapper, endpoints, and dispatch infrastructure — it is a routing + presentation layer, not a new execution path.
+
+### Round trip
+
+1. User types a message in the drawer. The client maintains the conversation history in a `ChatContext` (in-memory only, cleared on refresh).
+2. `ChatDrawer` POSTs `{ messages[], context: { moduleId?, testSetId? } }` to `/api/chat/message`. The URL-derived `context` lets phrases like "run this" resolve without explicit IDs.
+3. `ChatIntentService` builds a **catalog snapshot** from the existing repositories / resolvers: modules + their test sets (with stack/env hints), configured environments, API stacks and modules, Bravo endpoint codes (via `IEndpointResolver.ListCodesAsync` — best-effort), registered agents + capabilities, and — if the request is scoped to a test-set page — that test set's `TestObjectives`. The snapshot is injected into the system prompt alongside the action schema.
+4. The LLM is asked to return a single `ChatResponse { reply, actions[] }` JSON. The prompt enumerates every action shape (see below) and forbids inventing IDs/keys that aren't in the catalog. `LlmJsonHelper.DeserializeLlmResponse<ChatResponse>` (shared with `BaseTestAgent`) strips markdown fences and tolerates JSON-with-preamble.
+5. The UI renders the reply as an assistant bubble and each action below it as a card.
+
+### Action kinds
+
+| Kind | Payload | Executed by |
+|---|---|---|
+| `navigate` | `{ path }` | Client — React Router `useNavigate(path)`; drawer closes |
+| `showData` | `{ title, data }` | Client — data is already resolved server-side; renders as a table (array of homogeneous objects), bulleted list (array of primitives), or JSON pretty-print |
+| `confirmRun` | `{ summary, data: RunRequest }` | Client — Execute button calls `POST /api/runs`, then pushes the returned `runId` into `ActiveRunContext` so the existing run banner + polling pick up the run |
+| `confirmCreate` | `{ summary, data: { target: "module"\|"testSet", name, moduleId?, description? } }` | Client — `POST /api/modules` or `POST /api/modules/{id}/testsets` then auto-navigate to the new entity |
+| `confirmRecord` | `{ summary, data: { recordingKind, target, moduleId?, testSetId?, caseName?, objectiveId?, verificationName?, waitBeforeSeconds?, deliveryStepIndex?, environmentKey? } }` | Client — dropdown of online agents with matching capability → `POST /api/recordings` → card morphs into a live progress view polling `/api/queue` |
+
+Discovery/read-only intents are resolved server-side during intent parsing (the catalog already has everything), so the action is `showData` with the pre-computed payload. Mutations never auto-execute; every create/run/record requires a card click.
+
+### Why the LLM doesn't call the DB/APIs directly
+
+There is intentionally no tool-calling layer. The server pre-computes the full catalog, prompt-injects it, and relies on the LLM to map the user's phrase to catalog entries. This keeps the loop a single round-trip (no follow-ups), bounds LLM authority (it can only emit actions from a small discriminated union), and avoids needing a separate MCP/function-calling path for every repository shape. The catalog is small — tens of KB in typical deployments — and is rebuilt per request, so it never goes stale.
+
+### Scope boundaries
+
+- **Normal-mode generation is not exposed via chat** — creating test cases from a free-form objective requires an orchestrator run that the chat doesn't trigger. Users still use `Run Objective` on the module page or the CLI.
+- **Chat history is client-only** — there is no server-side transcript store. Refreshing the page or clicking the drawer's "clear" button resets the conversation.
+- **Recording is dispatch-only** — the chat doesn't execute recording sessions itself; it enqueues them via `/api/recordings` for a user-selected agent. Running a Runner in `--agent` mode is still required.
+- **No tool calling / streaming** — the endpoint returns a single JSON response. Streaming and server-side persistence are deferred.
+
+### File map
+
+| File | Purpose |
+|---|---|
+| `src/AiTestCrew.WebApi/Endpoints/ChatEndpoints.cs` | `POST /api/chat/message` wrapper |
+| `src/AiTestCrew.WebApi/Services/ChatIntentService.cs` | Catalog build + system prompt + LLM call + response parse |
+| `src/AiTestCrew.WebApi/Models/Chat/ChatModels.cs` | Request/response/action DTOs |
+| `src/AiTestCrew.WebApi/Endpoints/RecordingEndpoints.cs` | `POST /api/recordings` — thin wrapper that validates + enqueues |
+| `ui/src/contexts/ChatContext.tsx` | Client-held message history + send function |
+| `ui/src/components/chat/ChatDrawer.tsx` | Drawer, message list, action-card renderers |
+| `ui/src/api/chat.ts` + `ui/src/api/recordings.ts` | API clients |
 
 ---
 
@@ -1371,6 +1458,15 @@ This section complements the "Where to extend" table in `CLAUDE.md` with archite
 - Requires a pre-pass in `RunAsync` before the parallel fanout: topological sort by `DependsOn`, then execute in waves rather than a flat `Task.WhenAll`.
 - Tasks can pass artefacts forward via `TestTask.Parameters` — a dependency resolver would inspect each predecessor's `TestResult.Metadata` and inject relevant keys into the dependent task.
 - Only pursue if a future test shape truly needs independent tasks rather than step-chaining inside one agent. Phase 3's sibling-dispatch model avoided this for verifications.
+
+### Adding a new chat action kind
+
+- **DTO**: `src/AiTestCrew.WebApi/Models/Chat/ChatModels.cs` — `ChatAction` is a flat shape with nullable fields (`Kind`, `Path`, `Title`, `Data`, `Summary`) to keep the LLM JSON simple. Add whatever field you need or reuse `Data` as the payload blob.
+- **System prompt**: `ChatIntentService.BuildSystemPrompt` — add a new "Kind — when to use" block documenting the shape and rules. The LLM follows this strictly; omitting a rule there is the most common source of misbehaviour.
+- **Catalog enrichment**: if the action depends on data the LLM can't otherwise see (e.g. per-user preferences, per-test-set objectives), add it to `BuildCatalogAsync`. Keep the snapshot small — anything over a few hundred KB starts costing latency.
+- **Client renderer**: `ui/src/components/chat/ChatDrawer.tsx` — extend the `ActionCard` switch and add a new card component. Mirror the existing pattern: idle → sending → done/error, with inline error display and no full-page redirects.
+- **Confirmation rule**: if the action is a mutation, *always* require an Execute click. If it calls the server, surface the response (or its error) inline on the card. Don't silently succeed.
+- **No new endpoint by default**: prefer reusing an existing WebApi endpoint the card calls from the client. Only add a new endpoint when the action needs server-side pre-validation (e.g. `/api/recordings` pre-validates the agent before enqueueing).
 
 ### Adding a new WebApi endpoint
 

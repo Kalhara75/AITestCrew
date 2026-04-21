@@ -84,20 +84,19 @@ internal sealed class AgentRunner
                 await SafeHeartbeatAsync(agentId, status);
                 nextHeartbeat = DateTime.UtcNow + heartbeatInterval;
 
+                var kindLabel = string.IsNullOrWhiteSpace(job.JobKind) || job.JobKind == "Run" ? job.Mode : job.JobKind;
                 AnsiConsole.MarkupLine($"[cyan]Claimed job[/] {Markup.Escape(job.JobId)} " +
-                    $"([bold]{Markup.Escape(job.TargetType)}[/] / {Markup.Escape(job.Mode)}) " +
+                    $"([bold]{Markup.Escape(job.TargetType)}[/] / {Markup.Escape(kindLabel)}) " +
                     $"testset=[yellow]{Markup.Escape(job.TestSetId)}[/]");
 
                 try
                 {
                     await _client.ReportProgressAsync(job.JobId);
-                    var suite = await _executor.ExecuteAsync(job, ct);
-                    var success = suite.AllPassed;
-                    var summary = suite.Summary;
-                    await _client.ReportResultAsync(job.JobId, success, success ? null : summary);
-                    AnsiConsole.MarkupLine(success
-                        ? $"[green]✓ Job {Markup.Escape(job.JobId)} completed[/] — {suite.Passed}/{suite.TotalObjectives} passed"
-                        : $"[red]✗ Job {Markup.Escape(job.JobId)} failed[/] — {suite.Passed}/{suite.TotalObjectives} passed");
+                    var outcome = await _executor.ExecuteAsync(job, ct);
+                    await _client.ReportResultAsync(job.JobId, outcome.Success, outcome.Error);
+                    AnsiConsole.MarkupLine(outcome.Success
+                        ? $"[green]✓ Job {Markup.Escape(job.JobId)} completed[/] — {Markup.Escape(outcome.Summary)}"
+                        : $"[red]✗ Job {Markup.Escape(job.JobId)} failed[/] — {Markup.Escape(outcome.Summary)}");
                 }
                 catch (Exception ex)
                 {

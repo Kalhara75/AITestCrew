@@ -1087,6 +1087,40 @@ Run progress is tracked globally across the UI, not in local component state. Th
 | `/testsets/{id}` | Legacy test set detail (backward compat) |
 | `/testsets/{id}/runs/{runId}` | Legacy execution detail (backward compat) |
 
+### Chat Assistant
+
+Every page has an **Assistant** button in the header that opens a right-edge drawer. The assistant turns natural-language requests into actions the user confirms with a single click — no CLI flag lookup, no digging through URLs for module/test-set IDs.
+
+**How it works:** each message is sent with the page's URL context (`moduleId`, `testSetId` if on a test-set page) and the client-held chat history to `POST /api/chat/message`. The server asks the LLM — with the full live catalog of modules, test sets, environments, API stacks, aseXML endpoints, and online agents in the system prompt — to emit a structured `ChatResponse { reply, actions }`. The UI renders the reply as an assistant bubble and each action below it as a card.
+
+**Action kinds:**
+
+| Kind | Card UI | Effect when user confirms |
+|---|---|---|
+| `navigate` | "Open /modules/foo" link | Router navigation (drawer closes) |
+| `showData` | Inline table / bulleted list / JSON pretty-print | Read-only — data already resolved server-side |
+| `confirmRun` | Resolved `RunRequest` (mode, module, test set, objective, env, stack) + Execute | `POST /api/runs`; `runId` pushed into `ActiveRunContext` so the existing run banner takes over |
+| `confirmCreate` | Resolved payload for a new module or test set + Execute | `POST /api/modules` or `POST /api/modules/{id}/testsets` then auto-navigate to the new entity |
+| `confirmRecord` | Resolved recording params + agent dropdown (online agents with matching capability) + Execute | `POST /api/recordings` enqueues the job. The card morphs into a live progress card that polls `/api/queue` and narrates Queued → Claimed → Running → Completed/Failed |
+
+**What the assistant can do today:**
+
+- **Discovery** — "list modules", "which environments are configured?", "show connected agents", "what endpoints are available?"
+- **Navigation** — "open the MFN delivery test set", "go to the retail module"
+- **Run triggers** — "reuse the MFN delivery against Sumo", "rebaseline the Deliver MFN objective", "verify-only for the latest delivery without waiting". Modes: Reuse / Rebaseline / VerifyOnly (Normal-mode generation from scratch is not exposed via chat yet).
+- **Module / test-set creation** — "create a module called Smoke Tests", "add a test set 'nmi-loads' to the sdr module"
+- **Recording dispatch** — "record a login for retail on Blazor", "record a verification for the MFN delivery on Legacy MVC", "do an auth-setup for AMS". The card's dropdown lists online agents that advertise the matching capability; clicking Execute enqueues the job for that agent via `POST /api/recordings`. The agent's Runner picks it up on its next poll and launches the interactive session on that machine's desktop.
+
+**What it won't do:**
+
+- Normal-mode generation from free-form objectives (use `Run Objective` on the module page or the CLI).
+- Mutations without a confirmation card — all creates, run triggers, and recording dispatches route through an Execute button.
+- Recording when no matching agent is online — the assistant declines and suggests starting an agent with `dotnet run --project src/AiTestCrew.Runner -- --agent --name "MyPC"`.
+
+**Catalog resolution:** the assistant only uses IDs, keys, and codes it finds literally in the server-provided catalog. Fuzzy phrases like "sumo" resolve to `sumo-retail` by name → substring → case-insensitive matching. If the request cannot be satisfied from the catalog, the assistant replies explaining why and emits no actions. When the user is on a test-set page, the catalog is enriched with that test set's `TestObjectives` so objective-level run scoping ("rebaseline the Deliver MFN objective") can resolve the objective id.
+
+Chat history is held client-side only (in-memory, cleared on page refresh or via the **clear** button in the drawer header). There is no server-side persistence of transcripts.
+
 ---
 
 ## Deleting Test Sets
@@ -1530,6 +1564,6 @@ Every flag the Runner CLI accepts, one row per flag. Scope column shows which ru
 | Blazor UI tests | `BraveCloudUiUrl`, `BraveCloudUiUsername`, `BraveCloudUiPassword`, `BraveCloudUiStorageStatePath`, optional `BraveCloudUiTotpSecret` — all per-env (falls back to top-level) |
 | WinForms UI tests | `WinFormsAppPath`, `WinFormsAppArgs` — per-env (falls back to top-level) |
 | aseXML Generate | `AseXml.TemplatesPath` (default `templates/asexml`), `AseXml.OutputPath` |
-| aseXML Deliver / `--list-endpoints` | `BravoDbConnectionString` per-env (falls back to top-level `AseXml.BravoDb.ConnectionString`) — never committed to `appsettings.example.json` |
+| aseXML Deliver / `--list-endpoints` / `GET /api/config/endpoints` | `BravoDbConnectionString` per-env (falls back to top-level `AseXml.BravoDb.ConnectionString`) — never committed to `appsettings.example.json`. The WebApi endpoint returns an empty list with an `error` hint when the DB is unreachable, so the chat catalog degrades gracefully. |
 | aseXML verification recording | Same as the matching UI target above; tip: run `--auth-setup --target <UI_*> --environment <envKey>` first to cache per-env auth state |
 | Multi-environment | `DefaultEnvironment`, `Environments.<key>.*` — omit to fall back to legacy single-env behaviour using top-level fields |

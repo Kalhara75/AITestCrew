@@ -101,6 +101,7 @@ public static class DatabaseMigrator
                 objective_id   TEXT,
                 target_type    TEXT NOT NULL,
                 mode           TEXT NOT NULL,
+                job_kind       TEXT NOT NULL DEFAULT 'Run',
                 requested_by   TEXT,
                 status         TEXT NOT NULL,
                 claimed_by     TEXT,
@@ -122,8 +123,35 @@ public static class DatabaseMigrator
                 value TEXT NOT NULL
             );
 
-            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '3');
+            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '4');
             """;
         cmd.ExecuteNonQuery();
+
+        // ── v3 → v4: add job_kind column to existing run_queue rows ──
+        // Idempotent: only runs ALTER when the column is missing.
+        if (!ColumnExists(conn, "run_queue", "job_kind"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE run_queue ADD COLUMN job_kind TEXT NOT NULL DEFAULT 'Run'";
+            alter.ExecuteNonQuery();
+        }
+
+        // Ensure schema_version reflects the latest applied migration even on upgraded DBs
+        using var bump = conn.CreateCommand();
+        bump.CommandText = "UPDATE schema_version SET value = '4' WHERE key = 'version' AND CAST(value AS INTEGER) < 4";
+        bump.ExecuteNonQuery();
+    }
+
+    private static bool ColumnExists(SqliteConnection conn, string table, string column)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"PRAGMA table_info({table})";
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 }

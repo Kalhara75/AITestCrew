@@ -17,7 +17,14 @@ public class RunQueueEntry
     /// <summary>Used to match against agent capabilities (e.g. "UI_Web_Blazor").</summary>
     public string TargetType { get; set; } = "";
 
-    /// <summary>Reuse | Rebaseline | VerifyOnly.</summary>
+    /// <summary>
+    /// Kind of job: "Run" (default, existing behaviour — runs via TestOrchestrator),
+    /// or one of "Record" / "RecordSetup" / "RecordVerification" / "AuthSetup"
+    /// for interactive sessions executed by <c>IRecordingService</c> on the agent.
+    /// </summary>
+    public string JobKind { get; set; } = "Run";
+
+    /// <summary>Reuse | Rebaseline | VerifyOnly for JobKind=Run. Unused for recording kinds.</summary>
     public string Mode { get; set; } = "";
 
     /// <summary>User.id of the person who triggered the run.</summary>

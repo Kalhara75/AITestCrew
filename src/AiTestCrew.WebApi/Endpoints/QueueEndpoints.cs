@@ -27,7 +27,7 @@ public static class QueueEndpoints
             return Results.Ok(new
             {
                 jobId = job.Id,
-                job.ModuleId, job.TestSetId, job.ObjectiveId, job.TargetType, job.Mode,
+                job.ModuleId, job.TestSetId, job.ObjectiveId, job.TargetType, job.Mode, job.JobKind,
                 requestJson = job.RequestJson
             });
         });
@@ -67,7 +67,7 @@ public static class QueueEndpoints
             var entries = await queueRepo.ListRecentAsync();
             return Results.Ok(entries.Select(e => new
             {
-                e.Id, e.ModuleId, e.TestSetId, e.ObjectiveId, e.TargetType, e.Mode,
+                e.Id, e.ModuleId, e.TestSetId, e.ObjectiveId, e.TargetType, e.Mode, e.JobKind,
                 e.Status, e.ClaimedBy, e.RequestedBy, e.ClaimedAt, e.CompletedAt,
                 e.CreatedAt, e.Error
             }));

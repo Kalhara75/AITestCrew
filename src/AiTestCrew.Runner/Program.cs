@@ -64,6 +64,45 @@ IExecutionHistoryRepository ResolveHistRepo()
     return new ExecutionHistoryRepository(AppContext.BaseDirectory);
 }
 
+// Pre-host helper for --record / --record-setup / --record-verification / --auth-setup.
+AiTestCrew.Agents.Recording.RecordingService CreateRecordingService(ILoggerFactory lf)
+{
+    var envResolver = new AiTestCrew.Agents.Environment.EnvironmentResolver(quickConfig);
+    return new AiTestCrew.Agents.Recording.RecordingService(
+        quickConfig, envResolver,
+        ResolveModuleRepo(), ResolveTsRepo(), ResolveHistRepo(),
+        lf, lf.CreateLogger<AiTestCrew.Agents.Recording.RecordingService>());
+}
+
+void PrintRecordingResult(AiTestCrew.Agents.Recording.RecordingResult r)
+{
+    if (!r.Success)
+    {
+        AnsiConsole.MarkupLine($"[red]{Markup.Escape(r.Error ?? r.Summary)}[/]");
+        return;
+    }
+    AnsiConsole.MarkupLine($"[green]{Markup.Escape(r.Summary)}[/]");
+    if (r.Steps is not { Count: > 0 }) return;
+
+    var hasSelector = r.Steps.Any(s => !string.IsNullOrEmpty(s.Selector));
+    var hasDesktop  = r.Steps.Any(s => !string.IsNullOrEmpty(s.AutomationId) || !string.IsNullOrEmpty(s.Name));
+    var t = new Table().Border(TableBorder.Rounded).AddColumn("[bold]#[/]").AddColumn("[bold]Action[/]");
+    if (hasSelector) t.AddColumn("[bold]Selector[/]");
+    if (hasDesktop)  { t.AddColumn("[bold]AutomationId[/]"); t.AddColumn("[bold]Name[/]"); }
+    t.AddColumn("[bold]Value[/]");
+    for (int i = 0; i < r.Steps.Count; i++)
+    {
+        var s = r.Steps[i];
+        var v = s.Value is null ? "-" : (s.Value.Length > 40 ? s.Value[..40] + "..." : s.Value);
+        var row = new List<string> { (i + 1).ToString(), Markup.Escape(s.Action) };
+        if (hasSelector) row.Add(Markup.Escape(s.Selector ?? "-"));
+        if (hasDesktop)  { row.Add(Markup.Escape(s.AutomationId ?? "-")); row.Add(Markup.Escape(s.Name ?? "-")); }
+        row.Add(Markup.Escape(v));
+        t.AddRow(row.ToArray());
+    }
+    AnsiConsole.Write(t);
+}
+
 // ── Short-circuit commands that don't need the LLM host ──
 if (cli.Mode == RunMode.List)
 {
@@ -228,7 +267,7 @@ if (cli.MigrateToSqlite)
     return;
 }
 
-// ── Record mode — human-driven capture, no LLM needed ──
+// ── Record mode — human-driven capture, delegates to RecordingService ──
 if (cli.RecordMode)
 {
     if (cli.ModuleId is null || cli.TestSetId is null)
@@ -241,207 +280,27 @@ if (cli.RecordMode)
         AnsiConsole.MarkupLine("[red]--record requires --case-name \"<name>\"[/]");
         return;
     }
+    var recTarget = cli.RecordTarget ?? "UI_Web_MVC";
+    AnsiConsole.MarkupLine($"[cyan]Recording[/] → {cli.ModuleId}/{cli.TestSetId}  case: [bold]{cli.CaseName}[/]");
+    AnsiConsole.MarkupLine($"[grey]Target: {recTarget}[/]\n");
 
-    // Load config to get base URL
-    var recordConfig = new ConfigurationBuilder()
-        .SetBasePath(AppContext.BaseDirectory)
-        .AddJsonFile("appsettings.json", optional: true)
-        .Build()
-        .GetSection("TestEnvironment")
-        .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
-    var recordEnvResolver = new AiTestCrew.Agents.Environment.EnvironmentResolver(recordConfig);
-    var recordEnvKey = recordEnvResolver.ResolveKey(cli.EnvironmentKey);
-
-    var targetType = cli.RecordTarget ?? "UI_Web_MVC";
-    var isDesktop = targetType.Equals("UI_Desktop_WinForms", StringComparison.OrdinalIgnoreCase);
-
-    using var loggerFactory = LoggerFactory.Create(b =>
+    using var recLoggerFactory = LoggerFactory.Create(b =>
         b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss "; })
          .AddFilter("AiTestCrew", LogLevel.Information));
-    var recLogger = loggerFactory.CreateLogger("Recorder");
-
-    // Resolve slugified IDs so the saved file matches what the WebApi/UI expects
-    var moduleId  = SlugHelper.ToSlug(cli.ModuleId);
-    var testSetId = SlugHelper.ToSlug(cli.TestSetId);
-
-    // Ensure the module and manifest exist (idempotent)
-    var modRepo = ResolveModuleRepo();
-    if (!modRepo.Exists(moduleId))
-        await modRepo.CreateAsync(cli.ModuleId);
-
-    // Save into the test set
-    var tsRepo = ResolveTsRepo();
-    var testSet = await tsRepo.LoadAsync(moduleId, testSetId)
-                  ?? await tsRepo.CreateEmptyAsync(moduleId, cli.TestSetId);
-
-    var objectiveId = $"recorded-{SlugHelper.ToSlug(cli.CaseName)}";
-
-    if (isDesktop)
-    {
-        // ── Desktop recording path ──
-        var desktopAppPath = recordEnvResolver.ResolveWinFormsAppPath(recordEnvKey);
-        var desktopAppArgs = recordEnvResolver.ResolveWinFormsAppArgs(recordEnvKey);
-        if (string.IsNullOrWhiteSpace(desktopAppPath))
-        {
-            AnsiConsole.MarkupLine($"[red]Application path not configured for environment '{recordEnvKey}' (or at the top level). Set 'WinFormsAppPath' in appsettings.json.[/]");
-            return;
-        }
-
-        AnsiConsole.MarkupLine($"[cyan]Recording[/] → {cli.ModuleId}/{cli.TestSetId}  case: [bold]{cli.CaseName}[/]");
-        AnsiConsole.MarkupLine($"[grey]Environment: {recordEnvResolver.ResolveDisplayName(recordEnvKey)} ({recordEnvKey})[/]");
-        AnsiConsole.MarkupLine($"[grey]Target: {targetType}  App: {desktopAppPath}[/]\n");
-
-        var desktopRecorded = await DesktopRecorder.RecordAsync(
-            desktopAppPath, desktopAppArgs,
-            cli.CaseName, recordConfig, recLogger);
-
-        if (desktopRecorded.Steps.Count == 0)
-        {
-            AnsiConsole.MarkupLine("[yellow]No steps were captured. Test case not saved.[/]");
-            return;
-        }
-
-        var desktopStep = DesktopUiTestDefinition.FromTestCase(desktopRecorded);
-        var existingIdx = testSet.TestObjectives.FindIndex(o => o.Id == objectiveId);
-
-        if (existingIdx >= 0)
-        {
-            testSet.TestObjectives[existingIdx].DesktopUiSteps.Add(desktopStep);
-        }
-        else
-        {
-            var testObj = new AiTestCrew.Agents.Persistence.TestObjective
-            {
-                Id              = objectiveId,
-                Name            = cli.CaseName,
-                ParentObjective = cli.CaseName,
-                AgentName       = "WinForms Desktop UI Agent",
-                TargetType      = targetType,
-                Source          = "Recorded",
-                DesktopUiSteps  = [desktopStep]
-            };
-            testSet.TestObjectives.Add(testObj);
-        }
-
-        if (!testSet.Objectives.Contains(cli.CaseName, StringComparer.OrdinalIgnoreCase))
-            testSet.Objectives.Add(cli.CaseName);
-
-        await tsRepo.SaveAsync(testSet, moduleId);
-
-        // Print captured steps
-        var stepTable = new Table()
-            .Border(TableBorder.Rounded)
-            .AddColumn("[bold]#[/]")
-            .AddColumn("[bold]Action[/]")
-            .AddColumn("[bold]AutomationId[/]")
-            .AddColumn("[bold]Name[/]")
-            .AddColumn("[bold]Value[/]");
-
-        for (int i = 0; i < desktopRecorded.Steps.Count; i++)
-        {
-            var s = desktopRecorded.Steps[i];
-            var displayValue = s.Value is null ? "-" : (s.Value.Length > 40 ? s.Value[..40] + "..." : s.Value);
-            stepTable.AddRow(
-                (i + 1).ToString(),
-                Markup.Escape(s.Action),
-                Markup.Escape(s.AutomationId ?? "-"),
-                Markup.Escape(s.Name ?? "-"),
-                Markup.Escape(displayValue)
-            );
-        }
-        AnsiConsole.Write(stepTable);
-        AnsiConsole.MarkupLine($"\n[green]Saved[/] {desktopRecorded.Steps.Count} steps -> {Markup.Escape(moduleId)}/{Markup.Escape(testSetId)}");
-        AnsiConsole.MarkupLine($"[grey]Replay: dotnet run -- --reuse {Markup.Escape(testSetId)}[/]");
-        return;
-    }
-
-    // ── Web recording path (existing) ──
-    var baseUrl = targetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
-        ? recordEnvResolver.ResolveBraveCloudUiUrl(recordEnvKey)
-        : recordEnvResolver.ResolveLegacyWebUiUrl(recordEnvKey);
-
-    if (string.IsNullOrWhiteSpace(baseUrl))
-    {
-        var key = targetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
-            ? "BraveCloudUiUrl" : "LegacyWebUiUrl";
-        AnsiConsole.MarkupLine($"[red]Base URL not configured for environment '{recordEnvKey}'. Set '{key}' in the env block (or at the top level).[/]");
-        return;
-    }
-
-    AnsiConsole.MarkupLine($"[cyan]Recording[/] → {cli.ModuleId}/{cli.TestSetId}  case: [bold]{cli.CaseName}[/]");
-    AnsiConsole.MarkupLine($"[grey]Environment: {recordEnvResolver.ResolveDisplayName(recordEnvKey)} ({recordEnvKey})[/]");
-    AnsiConsole.MarkupLine($"[grey]Target: {targetType}  Base URL: {baseUrl}[/]\n");
-
-    // For Blazor targets, pass the saved auth state so the recorder starts authenticated
-    var recordStorageState = targetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
-        ? recordEnvResolver.ResolveBraveCloudUiStorageStatePath(recordEnvKey) : null;
-    if (!string.IsNullOrEmpty(recordStorageState) && !Path.IsPathRooted(recordStorageState))
-        recordStorageState = Path.Combine(AppContext.BaseDirectory, recordStorageState);
-    var recorded = await PlaywrightRecorder.RecordAsync(baseUrl, cli.CaseName, recordConfig, recLogger, recordStorageState, targetType);
-
-    if (recorded.Steps.Count == 0)
-    {
-        AnsiConsole.MarkupLine("[yellow]No steps were captured. Test case not saved.[/]");
-        return;
-    }
-
-    var agentName = targetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
-                    ? "Brave Cloud UI Agent" : "Legacy Web UI Agent";
-
-    // Check if an objective with this ID already exists — update it, otherwise add
-    var webExistingIdx = testSet.TestObjectives.FindIndex(o => o.Id == objectiveId);
-    var uiStep = WebUiTestDefinition.FromTestCase(recorded);
-
-    if (webExistingIdx >= 0)
-    {
-        testSet.TestObjectives[webExistingIdx].WebUiSteps.Add(uiStep);
-    }
-    else
-    {
-        var testObj = new AiTestCrew.Agents.Persistence.TestObjective
-        {
-            Id              = objectiveId,
-            Name            = cli.CaseName,
-            ParentObjective = cli.CaseName,
-            AgentName       = agentName,
-            TargetType      = targetType,
-            Source          = "Recorded",
-            WebUiSteps      = [uiStep]
-        };
-        testSet.TestObjectives.Add(testObj);
-    }
-
-    if (!testSet.Objectives.Contains(cli.CaseName, StringComparer.OrdinalIgnoreCase))
-        testSet.Objectives.Add(cli.CaseName);
-
-    await tsRepo.SaveAsync(testSet, moduleId);
-
-    // Print captured steps
-    var stepTable2 = new Table()
-        .Border(TableBorder.Rounded)
-        .AddColumn("[bold]#[/]")
-        .AddColumn("[bold]Action[/]")
-        .AddColumn("[bold]Selector[/]")
-        .AddColumn("[bold]Value[/]");
-
-    for (int i = 0; i < recorded.Steps.Count; i++)
-    {
-        var s = recorded.Steps[i];
-        var displayValue = s.Value is null ? "-" : (s.Value.Length > 40 ? s.Value[..40] + "..." : s.Value);
-        stepTable2.AddRow(
-            (i + 1).ToString(),
-            Markup.Escape(s.Action),
-            Markup.Escape(s.Selector ?? "-"),
-            Markup.Escape(displayValue)
-        );
-    }
-    AnsiConsole.Write(stepTable2);
-    AnsiConsole.MarkupLine($"\n[green]Saved[/] {recorded.Steps.Count} steps -> {Markup.Escape(moduleId)}/{Markup.Escape(testSetId)}");
-    AnsiConsole.MarkupLine($"[grey]Replay: dotnet run -- --reuse {Markup.Escape(testSetId)}[/]");
+    var recSvc = CreateRecordingService(recLoggerFactory);
+    var recResult = await recSvc.RecordCaseAsync(new AiTestCrew.Agents.Recording.RecordCaseRequest(
+        ModuleId: cli.ModuleId!,
+        TestSetId: cli.TestSetId!,
+        CaseName: cli.CaseName!,
+        Target: recTarget,
+        EnvironmentKey: cli.EnvironmentKey));
+    PrintRecordingResult(recResult);
+    if (recResult.Success)
+        AnsiConsole.MarkupLine($"[grey]Replay: dotnet run -- --reuse {Markup.Escape(SlugHelper.ToSlug(cli.TestSetId))}[/]");
     return;
 }
 
-// ── Record-verification mode — Phase 3: capture UI steps and attach them to a delivery test case ──
+// ── Record-verification mode — delegates to RecordingService ──
 if (cli.RecordVerification)
 {
     if (cli.ModuleId is null || cli.TestSetId is null || cli.ObjectiveId is null)
@@ -455,301 +314,44 @@ if (cli.RecordVerification)
         return;
     }
     var verifyTarget = cli.RecordTarget ?? "UI_Web_Blazor";
-    if (verifyTarget is not ("UI_Web_MVC" or "UI_Web_Blazor" or "UI_Desktop_WinForms"))
-    {
-        AnsiConsole.MarkupLine($"[red]--target must be UI_Web_MVC, UI_Web_Blazor, or UI_Desktop_WinForms (got '{verifyTarget}').[/]");
-        return;
-    }
-
-    var verifyConfig = new ConfigurationBuilder()
-        .SetBasePath(AppContext.BaseDirectory)
-        .AddJsonFile("appsettings.json", optional: true)
-        .Build()
-        .GetSection("TestEnvironment")
-        .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
-    var verifyEnvResolver = new AiTestCrew.Agents.Environment.EnvironmentResolver(verifyConfig);
-    var verifyEnvKey = verifyEnvResolver.ResolveKey(cli.EnvironmentKey);
+    AnsiConsole.MarkupLine($"[cyan]Recording verification[/] for {Markup.Escape(cli.ObjectiveId!)} → target [bold]{verifyTarget}[/]\n");
 
     using var verifyLoggerFactory = LoggerFactory.Create(b =>
         b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss "; })
          .AddFilter("AiTestCrew", LogLevel.Information));
-    var verifyLogger = verifyLoggerFactory.CreateLogger("RecordVerification");
-
-    var vModuleId  = SlugHelper.ToSlug(cli.ModuleId);
-    var vTestSetId = SlugHelper.ToSlug(cli.TestSetId);
-
-    var vTsRepo = ResolveTsRepo();
-    var vHistRepo = ResolveHistRepo();
-    var vTestSet = await vTsRepo.LoadAsync(vModuleId, vTestSetId);
-    if (vTestSet is null)
-    {
-        AnsiConsole.MarkupLine($"[red]Test set '{vTestSetId}' not found in module '{vModuleId}'.[/]");
-        return;
-    }
-
-    // Match by Id (slug) first, then by Name (display name) case-insensitively —
-    // same convention as --reuse --objective so users can pass either form.
-    var targetObjective = vTestSet.TestObjectives.FirstOrDefault(o =>
-        string.Equals(o.Id, cli.ObjectiveId, StringComparison.OrdinalIgnoreCase))
-        ?? vTestSet.TestObjectives.FirstOrDefault(o =>
-            string.Equals(o.Name, cli.ObjectiveId, StringComparison.OrdinalIgnoreCase));
-    if (targetObjective is null)
-    {
-        var known = vTestSet.TestObjectives.Count > 0
-            ? string.Join("; ", vTestSet.TestObjectives.Select(o =>
-                string.IsNullOrWhiteSpace(o.Name) || o.Name == o.Id
-                    ? o.Id
-                    : $"{o.Id} (\"{o.Name}\")"))
-            : "(none)";
-        AnsiConsole.MarkupLine($"[red]Objective '{Markup.Escape(cli.ObjectiveId!)}' not found in test set. Available: {Markup.Escape(known)}[/]");
-        return;
-    }
-
-    if (targetObjective.AseXmlDeliverySteps.Count == 0)
-    {
-        AnsiConsole.MarkupLine(
-            $"[red]Objective '{targetObjective.Id}' is not an AseXml_Deliver objective; recording verifications is not supported for other targets.[/]");
-        return;
-    }
-    if (cli.DeliveryStepIndex < 0 || cli.DeliveryStepIndex >= targetObjective.AseXmlDeliverySteps.Count)
-    {
-        AnsiConsole.MarkupLine(
-            $"[red]--delivery-step-index {cli.DeliveryStepIndex} out of range (0..{targetObjective.AseXmlDeliverySteps.Count - 1}).[/]");
-        return;
-    }
-    var deliveryCase = targetObjective.AseXmlDeliverySteps[cli.DeliveryStepIndex];
-
-    // Build the recording context — user field values + latest successful delivery's MessageID/etc.
-    var context = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-    foreach (var (k, v) in deliveryCase.FieldValues)
-        if (!string.IsNullOrEmpty(v)) context[k] = v;
-
-    var historyCtx = await vHistRepo.GetLatestDeliveryContextAsync(vTestSetId, vModuleId, targetObjective.Id);
-    if (historyCtx is null)
-    {
-        AnsiConsole.MarkupLine(
-            $"[red]No successful delivery found for objective '{targetObjective.Id}'. " +
-            $"Run the delivery at least once first so the recorder has real data to reference.[/]");
-        return;
-    }
-    foreach (var (k, v) in historyCtx)
-        if (!string.IsNullOrEmpty(v)) context[k] = v;
-
-    AnsiConsole.MarkupLine($"[cyan]Recording verification[/] for {Markup.Escape(targetObjective.Id)} → target [bold]{verifyTarget}[/]");
-    AnsiConsole.MarkupLine($"[grey]Auto-parameterise context ({context.Count} key(s)):[/]");
-    foreach (var (k, v) in context.OrderBy(kv => kv.Key))
-        AnsiConsole.MarkupLine($"[grey]  {{{{{Markup.Escape(k)}}}}} = {Markup.Escape(v)}[/]");
-    AnsiConsole.WriteLine();
-
-    var waitSeconds = cli.VerificationWait ?? verifyConfig.AseXml.DefaultVerificationWaitSeconds;
-
-    var verifyStep = new AiTestCrew.Agents.AseXmlAgent.VerificationStep
-    {
-        Description = cli.VerificationName!,
-        Target = verifyTarget,
-        WaitBeforeSeconds = waitSeconds,
-    };
-
-    if (verifyTarget == "UI_Desktop_WinForms")
-    {
-        var verifyAppPath = verifyEnvResolver.ResolveWinFormsAppPath(verifyEnvKey);
-        var verifyAppArgs = verifyEnvResolver.ResolveWinFormsAppArgs(verifyEnvKey);
-        if (string.IsNullOrWhiteSpace(verifyAppPath))
-        {
-            AnsiConsole.MarkupLine($"[red]WinFormsAppPath not configured for environment '{verifyEnvKey}'.[/]");
-            return;
-        }
-        var dtRecorded = await DesktopRecorder.RecordAsync(
-            verifyAppPath, verifyAppArgs,
-            cli.VerificationName!, verifyConfig, verifyLogger);
-        if (dtRecorded.Steps.Count == 0)
-        {
-            AnsiConsole.MarkupLine("[yellow]No steps captured. Verification not saved.[/]");
-            return;
-        }
-        VerificationRecorderHelper.AutoParameteriseDesktopUi(dtRecorded, context, verifyLogger);
-        verifyStep.DesktopUi = DesktopUiTestDefinition.FromTestCase(dtRecorded);
-    }
-    else
-    {
-        var verifyBaseUrl = verifyTarget == "UI_Web_Blazor"
-            ? verifyEnvResolver.ResolveBraveCloudUiUrl(verifyEnvKey)
-            : verifyEnvResolver.ResolveLegacyWebUiUrl(verifyEnvKey);
-        if (string.IsNullOrWhiteSpace(verifyBaseUrl))
-        {
-            var key = verifyTarget == "UI_Web_Blazor" ? "BraveCloudUiUrl" : "LegacyWebUiUrl";
-            AnsiConsole.MarkupLine($"[red]Base URL not configured for environment '{verifyEnvKey}'. Set '{key}' in the env block (or at the top level).[/]");
-            return;
-        }
-        // Pass the matching cached auth state so the recorder starts authenticated.
-        // Run --auth-setup --target UI_Web_MVC|UI_Web_Blazor first to populate these.
-        var verifyStorageState = verifyTarget == "UI_Web_Blazor"
-            ? verifyEnvResolver.ResolveBraveCloudUiStorageStatePath(verifyEnvKey)
-            : verifyEnvResolver.ResolveLegacyWebUiStorageStatePath(verifyEnvKey);
-        if (!string.IsNullOrEmpty(verifyStorageState) && !Path.IsPathRooted(verifyStorageState))
-            verifyStorageState = Path.Combine(AppContext.BaseDirectory, verifyStorageState);
-        if (string.IsNullOrEmpty(verifyStorageState))
-        {
-            var setupKey = verifyTarget == "UI_Web_Blazor" ? "BraveCloudUiStorageStatePath" : "LegacyWebUiStorageStatePath";
-            AnsiConsole.MarkupLine(
-                $"[grey]No '{setupKey}' configured for env '{verifyEnvKey}' — recorder will start unauthenticated. " +
-                $"Run --auth-setup --target {verifyTarget} --environment {verifyEnvKey} first to skip the login flow during recording.[/]");
-        }
-        var webRecorded = await PlaywrightRecorder.RecordAsync(
-            verifyBaseUrl, cli.VerificationName!, verifyConfig, verifyLogger,
-            verifyStorageState, verifyTarget);
-        if (webRecorded.Steps.Count == 0)
-        {
-            AnsiConsole.MarkupLine("[yellow]No steps captured. Verification not saved.[/]");
-            return;
-        }
-        VerificationRecorderHelper.AutoParameteriseWebUi(webRecorded, context, verifyLogger);
-        verifyStep.WebUi = WebUiTestDefinition.FromTestCase(webRecorded);
-    }
-
-    deliveryCase.PostDeliveryVerifications.Add(verifyStep);
-    await vTsRepo.SaveAsync(vTestSet, vModuleId);
-
-    AnsiConsole.MarkupLine(
-        $"\n[green]Saved verification[/] '{Markup.Escape(cli.VerificationName!)}' to {Markup.Escape(targetObjective.Id)}");
-    AnsiConsole.MarkupLine(
-        $"[grey]Delivery case now has {deliveryCase.PostDeliveryVerifications.Count} verification(s). " +
-        $"Replay: dotnet run -- --reuse {Markup.Escape(vTestSetId)} --module {Markup.Escape(vModuleId)}[/]");
+    var verifySvc = CreateRecordingService(verifyLoggerFactory);
+    var verifyResult = await verifySvc.RecordVerificationAsync(new AiTestCrew.Agents.Recording.RecordVerificationRequest(
+        ModuleId: cli.ModuleId!,
+        TestSetId: cli.TestSetId!,
+        ObjectiveId: cli.ObjectiveId!,
+        VerificationName: cli.VerificationName!,
+        Target: verifyTarget,
+        WaitBeforeSeconds: cli.VerificationWait ?? 0,
+        DeliveryStepIndex: cli.DeliveryStepIndex,
+        EnvironmentKey: cli.EnvironmentKey));
+    PrintRecordingResult(verifyResult);
     return;
 }
 
-// ── Auth-setup mode — perform SSO login (with optional manual 2FA) and save browser auth state ──
+// ── Auth-setup mode — delegates to RecordingService ──
 if (cli.AuthSetupMode)
 {
-    var authConfig = new ConfigurationBuilder()
-        .SetBasePath(AppContext.BaseDirectory)
-        .AddJsonFile("appsettings.json", optional: true)
-        .Build()
-        .GetSection("TestEnvironment")
-        .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
+    var authTarget = cli.RecordTarget ?? "UI_Web_Blazor";
+    AnsiConsole.MarkupLine($"[cyan]Auth setup[/] — opening browser for {authTarget}");
+    AnsiConsole.MarkupLine("[grey]Complete the login (including 2FA if required). The session will be saved automatically.[/]\n");
 
-    var authEnvResolver = new AiTestCrew.Agents.Environment.EnvironmentResolver(authConfig);
-    var authEnvKey = authEnvResolver.ResolveKey(cli.EnvironmentKey);
-    var authEnvDisplay = authEnvResolver.ResolveDisplayName(authEnvKey);
-
-    var authTargetType = cli.RecordTarget ?? "UI_Web_Blazor";
-    var isLegacy = authTargetType.Equals("UI_Web_MVC", StringComparison.OrdinalIgnoreCase);
-    var authBaseUrl = isLegacy
-        ? authEnvResolver.ResolveLegacyWebUiUrl(authEnvKey)
-        : authEnvResolver.ResolveBraveCloudUiUrl(authEnvKey);
-    // Resolve relative path against bin dir so the file lands where the agent looks for it
-    var authStatePath = isLegacy
-        ? authEnvResolver.ResolveLegacyWebUiStorageStatePath(authEnvKey)
-        : authEnvResolver.ResolveBraveCloudUiStorageStatePath(authEnvKey);
-    var authMaxAgeHours = isLegacy ? authConfig.LegacyWebUiStorageStateMaxAgeHours : authConfig.BraveCloudUiStorageStateMaxAgeHours;
-    if (!string.IsNullOrEmpty(authStatePath) && !Path.IsPathRooted(authStatePath))
-        authStatePath = Path.Combine(AppContext.BaseDirectory, authStatePath);
-
-    var urlConfigKey = isLegacy ? "LegacyWebUiUrl" : "BraveCloudUiUrl";
-    var pathConfigKey = isLegacy ? "LegacyWebUiStorageStatePath" : "BraveCloudUiStorageStatePath";
-    if (string.IsNullOrWhiteSpace(authBaseUrl))
-    {
-        AnsiConsole.MarkupLine($"[red]{urlConfigKey} not configured for environment '{authEnvKey}' (or at the top level).[/]");
-        return;
-    }
-    if (string.IsNullOrWhiteSpace(authStatePath))
-    {
-        AnsiConsole.MarkupLine($"[red]{pathConfigKey} not configured for environment '{authEnvKey}' (or at the top level).[/]");
-        return;
-    }
-
-    var loginTarget = isLegacy ? "forms login" : "SSO login";
-    AnsiConsole.MarkupLine($"[cyan]Auth setup[/] — opening browser for {loginTarget}");
-    AnsiConsole.MarkupLine($"[grey]Environment: {authEnvDisplay} ({authEnvKey})[/]");
-    AnsiConsole.MarkupLine($"[grey]URL: {authBaseUrl}[/]");
-    AnsiConsole.MarkupLine($"[grey]Storage state → {Markup.Escape(authStatePath)}[/]");
-    AnsiConsole.MarkupLine("[grey]Complete the login (including 2FA if required), then the session will be saved automatically.[/]\n");
-
-    using var pw = await Microsoft.Playwright.Playwright.CreateAsync();
-    var authBrowser = await pw.Chromium.LaunchAsync(new Microsoft.Playwright.BrowserTypeLaunchOptions
-    {
-        Headless = false,
-        SlowMo = 50,
-        Args = ["--start-maximized"]
-    });
-
-    try
-    {
-        var authContext = await authBrowser.NewContextAsync(
-            new Microsoft.Playwright.BrowserNewContextOptions { ViewportSize = Microsoft.Playwright.ViewportSize.NoViewport });
-        var authPage = await authContext.NewPageAsync();
-
-        var navigateUrl = isLegacy
-            ? $"{authBaseUrl.TrimEnd('/')}{authConfig.LegacyWebUiLoginPath}"
-            : authBaseUrl;
-        await authPage.GotoAsync(navigateUrl,
-            new Microsoft.Playwright.PageGotoOptions { WaitUntil = Microsoft.Playwright.WaitUntilState.NetworkIdle });
-
-        AnsiConsole.MarkupLine("  Waiting for you to complete login (up to 3 minutes)...");
-        AnsiConsole.MarkupLine("[grey]  Do NOT close the browser — it will close automatically once login is captured.[/]");
-
-        try
-        {
-            // Poll page.Url instead of using WaitForURLAsync — the Playwright lifecycle
-            // events (Load, DOMContentLoaded) can miss ASP.NET MVC redirect chains
-            // (POST → 302 → GET) especially in an interactive auth-setup session.
-            // Capture the URL we navigated to so we can detect when it changes
-            var initialUrl = authPage.Url;
-            var loginPath = authConfig.LegacyWebUiLoginPath.TrimStart('/');
-
-            Func<string, bool> isLoggedIn = isLegacy
-                ? (string.IsNullOrEmpty(loginPath)
-                    // LoginPath not configured — detect any URL change from the initial page
-                    ? url => !string.Equals(url, initialUrl, StringComparison.OrdinalIgnoreCase)
-                             && !url.Equals("about:blank", StringComparison.OrdinalIgnoreCase)
-                    // LoginPath configured — detect URL no longer contains it
-                    : url => !url.Contains(loginPath, StringComparison.OrdinalIgnoreCase))
-                : url => url.StartsWith(authBaseUrl, StringComparison.OrdinalIgnoreCase)
-                         && !url.Contains("login.microsoftonline.com", StringComparison.OrdinalIgnoreCase);
-
-            var deadline = DateTime.UtcNow.AddMinutes(3);
-            while (DateTime.UtcNow < deadline)
-            {
-                if (isLoggedIn(authPage.Url))
-                    break;
-                await Task.Delay(500);
-            }
-
-            if (!isLoggedIn(authPage.Url))
-            {
-                AnsiConsole.MarkupLine("\n[red]Timed out waiting for login to complete.[/]");
-            }
-            else
-            {
-                // Brief pause to let cookies settle after the redirect
-                await Task.Delay(1000);
-
-                // Save auth state
-                var dir = Path.GetDirectoryName(authStatePath);
-                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-
-                await authContext.StorageStateAsync(
-                    new Microsoft.Playwright.BrowserContextStorageStateOptions { Path = authStatePath });
-
-                AnsiConsole.MarkupLine($"\n[green]Auth state saved[/] → {Markup.Escape(authStatePath)}");
-                AnsiConsole.MarkupLine($"[grey]Valid for {authMaxAgeHours} hours. Recordings and test runs will use this session automatically.[/]");
-            }
-        }
-        catch (Microsoft.Playwright.PlaywrightException ex) when (ex.Message.Contains("closed", StringComparison.OrdinalIgnoreCase))
-        {
-            AnsiConsole.MarkupLine("\n[red]Browser was closed before auth state could be saved.[/]");
-            AnsiConsole.MarkupLine("[yellow]Please run the command again and wait for the \"Auth state saved\" message before closing.[/]");
-        }
-    }
-    finally
-    {
-        if (authBrowser.IsConnected) await authBrowser.CloseAsync();
-    }
-
+    using var authLoggerFactory = LoggerFactory.Create(b =>
+        b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss "; })
+         .AddFilter("AiTestCrew", LogLevel.Information));
+    var authSvc = CreateRecordingService(authLoggerFactory);
+    var authResult = await authSvc.AuthSetupAsync(new AiTestCrew.Agents.Recording.AuthSetupRequest(
+        Target: authTarget,
+        EnvironmentKey: cli.EnvironmentKey));
+    PrintRecordingResult(authResult);
     return;
 }
 
-// ── Record-setup mode — capture reusable setup steps (e.g. login) for a test set ──
+// ── Record-setup mode — delegates to RecordingService ──
 if (cli.RecordSetupMode)
 {
     if (cli.ModuleId is null || cli.TestSetId is null)
@@ -757,93 +359,23 @@ if (cli.RecordSetupMode)
         AnsiConsole.MarkupLine("[red]--record-setup requires --module <id> and --testset <id>[/]");
         return;
     }
-
-    // Load config to get base URL
-    var setupConfig = new ConfigurationBuilder()
-        .SetBasePath(AppContext.BaseDirectory)
-        .AddJsonFile("appsettings.json", optional: true)
-        .Build()
-        .GetSection("TestEnvironment")
-        .Get<TestEnvironmentConfig>() ?? new TestEnvironmentConfig();
-    var setupEnvResolver = new AiTestCrew.Agents.Environment.EnvironmentResolver(setupConfig);
-    var setupEnvKey = setupEnvResolver.ResolveKey(cli.EnvironmentKey);
-
-    var setupTargetType = cli.RecordTarget ?? "UI_Web_MVC";
-    var setupBaseUrl = setupTargetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
-        ? setupEnvResolver.ResolveBraveCloudUiUrl(setupEnvKey)
-        : setupEnvResolver.ResolveLegacyWebUiUrl(setupEnvKey);
-
-    if (string.IsNullOrWhiteSpace(setupBaseUrl))
-    {
-        var key = setupTargetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
-            ? "BraveCloudUiUrl" : "LegacyWebUiUrl";
-        AnsiConsole.MarkupLine($"[red]Base URL not configured for environment '{setupEnvKey}'. Set '{key}' in the env block (or at the top level).[/]");
-        return;
-    }
-
+    var setupTarget = cli.RecordTarget ?? "UI_Web_MVC";
     AnsiConsole.MarkupLine($"[cyan]Recording setup steps[/] → {cli.ModuleId}/{cli.TestSetId}");
-    AnsiConsole.MarkupLine($"[grey]Environment: {setupEnvResolver.ResolveDisplayName(setupEnvKey)} ({setupEnvKey})[/]");
-    AnsiConsole.MarkupLine($"[grey]Target: {setupTargetType}  Base URL: {setupBaseUrl}[/]");
+    AnsiConsole.MarkupLine($"[grey]Target: {setupTarget}[/]");
     AnsiConsole.MarkupLine("[grey]Perform your login/setup steps in the browser, then click Save & Stop.[/]\n");
 
     using var setupLoggerFactory = LoggerFactory.Create(b =>
         b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss "; })
          .AddFilter("AiTestCrew", LogLevel.Information));
-    var setupRecLogger = setupLoggerFactory.CreateLogger("Recorder");
-
-    // For Blazor targets, pass the saved auth state so the recorder starts authenticated
-    var setupStorageState = setupTargetType.Equals("UI_Web_Blazor", StringComparison.OrdinalIgnoreCase)
-        ? setupEnvResolver.ResolveBraveCloudUiStorageStatePath(setupEnvKey) : null;
-    if (!string.IsNullOrEmpty(setupStorageState) && !Path.IsPathRooted(setupStorageState))
-        setupStorageState = Path.Combine(AppContext.BaseDirectory, setupStorageState);
-    var setupRecorded = await PlaywrightRecorder.RecordAsync(setupBaseUrl, "setup", setupConfig, setupRecLogger, setupStorageState, setupTargetType);
-
-    if (setupRecorded.Steps.Count == 0)
-    {
-        AnsiConsole.MarkupLine("[yellow]No steps were captured. Setup steps not saved.[/]");
-        return;
-    }
-
-    // Resolve slugified IDs
-    var setupModuleId  = SlugHelper.ToSlug(cli.ModuleId);
-    var setupTestSetId = SlugHelper.ToSlug(cli.TestSetId);
-
-    // Ensure module exists
-    var setupModRepo = ResolveModuleRepo();
-    if (!setupModRepo.Exists(setupModuleId))
-        await setupModRepo.CreateAsync(cli.ModuleId);
-
-    // Load or create the test set, then save setup steps into it
-    var setupTsRepo = ResolveTsRepo();
-    var setupTestSet = await setupTsRepo.LoadAsync(setupModuleId, setupTestSetId)
-                       ?? await setupTsRepo.CreateEmptyAsync(setupModuleId, cli.TestSetId);
-
-    setupTestSet.SetupStartUrl = setupRecorded.StartUrl;
-    setupTestSet.SetupSteps = setupRecorded.Steps;
-    await setupTsRepo.SaveAsync(setupTestSet, setupModuleId);
-
-    // Print captured steps
-    var setupTable = new Table()
-        .Border(TableBorder.Rounded)
-        .AddColumn("[bold]#[/]")
-        .AddColumn("[bold]Action[/]")
-        .AddColumn("[bold]Selector[/]")
-        .AddColumn("[bold]Value[/]");
-
-    for (int i = 0; i < setupRecorded.Steps.Count; i++)
-    {
-        var s = setupRecorded.Steps[i];
-        var displayValue = s.Value is null ? "-" : (s.Value.Length > 40 ? s.Value[..40] + "…" : s.Value);
-        setupTable.AddRow(
-            (i + 1).ToString(),
-            Markup.Escape(s.Action),
-            Markup.Escape(s.Selector ?? "-"),
-            Markup.Escape(displayValue)
-        );
-    }
-    AnsiConsole.Write(setupTable);
-    AnsiConsole.MarkupLine($"\n[green]Saved[/] {setupRecorded.Steps.Count} setup steps → {Markup.Escape(setupModuleId)}/{Markup.Escape(setupTestSetId)}");
-    AnsiConsole.MarkupLine("[grey]These steps will run before every test case in this test set during replay.[/]");
+    var setupSvc = CreateRecordingService(setupLoggerFactory);
+    var setupResult = await setupSvc.RecordSetupAsync(new AiTestCrew.Agents.Recording.RecordSetupRequest(
+        ModuleId: cli.ModuleId!,
+        TestSetId: cli.TestSetId!,
+        Target: setupTarget,
+        EnvironmentKey: cli.EnvironmentKey));
+    PrintRecordingResult(setupResult);
+    if (setupResult.Success)
+        AnsiConsole.MarkupLine("[grey]These steps will run before every test case in this test set during replay.[/]");
     return;
 }
 
@@ -1007,6 +539,9 @@ builder.Services.AddSingleton<ITeardownExecutor>(sp => new BravoTeardownExecutor
 builder.Services.AddSingleton(new AgentConcurrencyLimiter(envConfig.MaxParallelAgents));
 builder.Services.AddSingleton<TestOrchestrator>();
 
+// Shared recording service — used by CLI flows (--record etc.) and the agent queue
+builder.Services.AddSingleton<AiTestCrew.Agents.Recording.IRecordingService, AiTestCrew.Agents.Recording.RecordingService>();
+
 // ── Logging ──
 // All messages (debug and above) go to a timestamped log file.
 // The console only shows AiTestCrew-namespace messages at Info+ so the
@@ -1105,7 +640,8 @@ if (cli.AgentMode)
     var agentLogger = host.Services.GetRequiredService<ILogger<AiTestCrew.Runner.AgentMode.AgentRunner>>();
     var agentClient = new AiTestCrew.Runner.AgentMode.AgentClient(envConfig.ServerUrl, envConfig.ApiKey);
     var jobExecutor = new AiTestCrew.Runner.AgentMode.JobExecutor(
-        host.Services.GetRequiredService<TestOrchestrator>());
+        host.Services.GetRequiredService<TestOrchestrator>(),
+        host.Services.GetRequiredService<AiTestCrew.Agents.Recording.IRecordingService>());
     var agentRunner = new AiTestCrew.Runner.AgentMode.AgentRunner(
         agentClient, jobExecutor, envConfig, agentLogger, agentName, caps);
 

@@ -21,10 +21,10 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
         using var conn = _factory.CreateConnection();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO run_queue (id, module_id, test_set_id, objective_id, target_type, mode,
+            INSERT INTO run_queue (id, module_id, test_set_id, objective_id, target_type, mode, job_kind,
                                    requested_by, status, claimed_by, claimed_at, completed_at, error,
                                    request_json, created_at)
-            VALUES ($id, $moduleId, $tsId, $objId, $target, $mode, $requestedBy, $status,
+            VALUES ($id, $moduleId, $tsId, $objId, $target, $mode, $jobKind, $requestedBy, $status,
                     NULL, NULL, NULL, NULL, $requestJson, $createdAt)
             """;
         cmd.Parameters.AddWithValue("$id", entry.Id);
@@ -33,6 +33,7 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
         cmd.Parameters.AddWithValue("$objId", (object?)entry.ObjectiveId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$target", entry.TargetType);
         cmd.Parameters.AddWithValue("$mode", entry.Mode);
+        cmd.Parameters.AddWithValue("$jobKind", string.IsNullOrWhiteSpace(entry.JobKind) ? "Run" : entry.JobKind);
         cmd.Parameters.AddWithValue("$requestedBy", (object?)entry.RequestedBy ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$status", entry.Status);
         cmd.Parameters.AddWithValue("$requestJson", entry.RequestJson);
@@ -159,7 +160,7 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
     }
 
     private const string SelectSql = """
-        SELECT id, module_id, test_set_id, objective_id, target_type, mode,
+        SELECT id, module_id, test_set_id, objective_id, target_type, mode, job_kind,
                requested_by, status, claimed_by, claimed_at, completed_at, error,
                request_json, created_at
         FROM run_queue
@@ -173,13 +174,14 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
         ObjectiveId = r.IsDBNull(3) ? null : r.GetString(3),
         TargetType = r.GetString(4),
         Mode = r.GetString(5),
-        RequestedBy = r.IsDBNull(6) ? null : r.GetString(6),
-        Status = r.GetString(7),
-        ClaimedBy = r.IsDBNull(8) ? null : r.GetString(8),
-        ClaimedAt = r.IsDBNull(9) ? null : DateTime.Parse(r.GetString(9)).ToUniversalTime(),
-        CompletedAt = r.IsDBNull(10) ? null : DateTime.Parse(r.GetString(10)).ToUniversalTime(),
-        Error = r.IsDBNull(11) ? null : r.GetString(11),
-        RequestJson = r.GetString(12),
-        CreatedAt = DateTime.Parse(r.GetString(13)).ToUniversalTime()
+        JobKind = r.IsDBNull(6) ? "Run" : r.GetString(6),
+        RequestedBy = r.IsDBNull(7) ? null : r.GetString(7),
+        Status = r.GetString(8),
+        ClaimedBy = r.IsDBNull(9) ? null : r.GetString(9),
+        ClaimedAt = r.IsDBNull(10) ? null : DateTime.Parse(r.GetString(10)).ToUniversalTime(),
+        CompletedAt = r.IsDBNull(11) ? null : DateTime.Parse(r.GetString(11)).ToUniversalTime(),
+        Error = r.IsDBNull(12) ? null : r.GetString(12),
+        RequestJson = r.GetString(13),
+        CreatedAt = DateTime.Parse(r.GetString(14)).ToUniversalTime()
     };
 }

@@ -84,5 +84,6 @@ internal sealed class NextJobResponse
     public string? ObjectiveId { get; set; }
     public string TargetType { get; set; } = "";
     public string Mode { get; set; } = "";
+    public string JobKind { get; set; } = "Run";
     public string RequestJson { get; set; } = "";
 }
