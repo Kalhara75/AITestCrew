@@ -215,7 +215,36 @@ public static class PlaywrightRecorder
             // ── Selector builder ──────────────────────────────────────────────────
             // Builds the most specific, replay-stable CSS/Playwright selector.
             // Tailored for Kendo UI (PanelBar, Window, Grid) + Bootstrap stack.
+            //
+            // Post-processing: if the element lives inside a Kendo dropdown popup
+            // (ComboBox / DropDownList / AutoComplete / MultiSelect), the raw selector
+            // is prefixed with the owning listbox id (e.g. "#Endpoint_listbox >> ...").
+            // Without this scope, "text=Gateway SPARQ" or "li[role=option]" would match
+            // items across every combobox on the page and click the wrong option.
+            function findKendoListScope(el) {
+                if (!el || !el.closest) return null;
+                // Preferred: <ul id="X_listbox" role="listbox"> — the Kendo-standard
+                // pattern where the id is derived from the owning input's id.
+                var ul = el.closest('ul[id][role="listbox"]');
+                if (ul && ul.id) return '#' + ul.id;
+                // Fallback: the outer popup container (e.g. <div id="Endpoint-list"
+                // class="k-list-container k-popup" data-role="popup">).
+                var container = el.closest('.k-list-container[id], .k-popup[id][data-role="popup"]');
+                if (container && container.id) return '#' + container.id;
+                return null;
+            }
+
             function bestSelector(el) {
+                var raw = rawBestSelector(el);
+                if (!raw || typeof raw !== 'string') return raw;
+                // Don't scope icon-fingerprint sentinels, chained tr-selectors, or
+                // already-rooted id selectors.
+                if (raw.startsWith('__icon__') || raw.startsWith('#') || raw.indexOf(' >> ') !== -1) return raw;
+                var scope = findKendoListScope(el);
+                return scope ? (scope + ' >> ' + raw) : raw;
+            }
+
+            function rawBestSelector(el) {
                 if (!el || !el.tagName) return null;
                 const tag  = el.tagName.toLowerCase();
                 const id   = el.id;
@@ -235,7 +264,18 @@ public static class PlaywrightRecorder
                 if (type === 'submit') return tag + '[type="submit"]';
                 if (type && tag === 'input' && type !== 'button') return 'input[type="' + type + '"]';
 
-                // 4. aria-label — MudBlazor icon buttons, toolbar actions, etc.
+                // 4a. aria-controls — Kendo widget triggers (ComboBox arrow, DatePicker
+                //     calendar icon, etc.) set this to the popup's stable id (e.g.
+                //     "Endpoint_listbox", "CreatedFromDate_dateview"). Preferred over
+                //     aria-label because ARIA labels like "select" or "Open the date view"
+                //     are usually shared across every widget of the same type on the page.
+                var ariaControls = el.getAttribute('aria-controls');
+                if (ariaControls && ariaControls.length > 0 && ariaControls.length <= 80
+                    && document.querySelectorAll(tag + '[aria-controls="' + ariaControls + '"]').length === 1) {
+                    return tag + '[aria-controls="' + ariaControls + '"]';
+                }
+
+                // 4b. aria-label — MudBlazor icon buttons, toolbar actions, etc.
                 var ariaLabel = el.getAttribute('aria-label');
                 if (ariaLabel && ariaLabel.length <= 60
                     && !/^toggle /i.test(ariaLabel)) { // skip "Toggle CRM" etc. — use text instead
@@ -276,9 +316,14 @@ public static class PlaywrightRecorder
                     if (val) return tag + '[' + attr + '="' + val + '"]';
                 }
 
-                // 9. ARIA role (skip generic "menuitem" — too many in Kendo PanelBar)
+                // 9. ARIA role — skip non-distinctive roles that repeat across a page:
+                //    "menuitem"/"menu"/"group" appear on every Kendo PanelBar entry;
+                //    "option" appears on every Kendo ComboBox/DropDownList item across
+                //    every combobox on the page. Let those fall through to the option
+                //    text (priority 11), which the listbox scope wrapper (see end of
+                //    this function) then pins to the owning widget.
                 const role = el.getAttribute('role');
-                if (role && role !== 'menuitem' && role !== 'menu' && role !== 'group') {
+                if (role && role !== 'menuitem' && role !== 'menu' && role !== 'group' && role !== 'option') {
                     return tag + '[role="' + role + '"]';
                 }
 
@@ -566,6 +611,42 @@ public static class PlaywrightRecorder
                 send({ action: 'fill', selector: sel, value: el.value || '', timeoutMs: 5000 });
             }, true);
 
+            // ── Capture Kendo DatePicker / DateTimePicker / TimePicker commits ──
+            // Kendo fires 'change' only through jQuery's event system (via
+            // $(input).trigger('change')) after a popup date/time pick — no native
+            // DOM change event is dispatched, so document.addEventListener('change',...)
+            // above never sees it. Register a delegated jQuery listener instead so the
+            // committed value ("1/01/2026 12:00 AM") is recorded as a single `fill`
+            // step on the owning input (e.g. #CreatedFromDate). Playwright's
+            // FillAsync dispatches input+change which Kendo parses back into the
+            // widget model at replay time.
+            //
+            // jQuery loads after our init script, so we poll briefly until it
+            // appears, then attach once per page load.
+            (function attachKendoPickerListener() {
+                var tries = 0;
+                var iv = setInterval(function () {
+                    tries++;
+                    if (window.jQuery && window.jQuery.fn && window.jQuery.fn.on) {
+                        clearInterval(iv);
+                        window.jQuery(document).on(
+                            'change.__aitc_kpicker',
+                            'input[data-role="datepicker"], input[data-role="datetimepicker"], input[data-role="timepicker"]',
+                            function () {
+                                if (__pickMode) return;
+                                if (isOverlayEl(this)) return;
+                                var sel = bestSelector(this);
+                                if (!sel) return;
+                                send({ action: 'fill', selector: sel, value: this.value || '', timeoutMs: 5000 });
+                            }
+                        );
+                    } else if (tries > 40) {
+                        // Give up after ~20s — jQuery likely isn't on this page
+                        clearInterval(iv);
+                    }
+                }, 500);
+            })();
+
             // ── Capture clicks ──
             // Uses click (not mousedown) to preserve correct ordering with change events:
             // when a user fills a field then clicks a button, change fires on blur BEFORE
@@ -585,6 +666,24 @@ public static class PlaywrightRecorder
 
                 // Skip focus-clicks on form fields — fill events handle these
                 if (isFormField(target)) return;
+
+                // ── Special case: Kendo DatePicker / DateTimePicker / TimePicker popup ──
+                // These popups render outside the input wrapper in a floating
+                // .k-animation-container with a stable id suffix (_dateview / _timeview).
+                // Internal elements (month/year header, month cells, day cells, clock hands)
+                // use selectors like a[role="button"] and a[data-value="..."] that repeat
+                // across both From/To pickers and other Kendo widgets, so every element
+                // inside is non-unique globally. Suppress these clicks entirely — the
+                // 'change' event handler above records the committed value as a single
+                // reliable `fill` step on the owning input (which has a stable id like
+                // #CreatedFromDate).
+                var kendoPickerPopup = target.closest('.k-animation-container');
+                if (kendoPickerPopup && kendoPickerPopup.id && /_(date|time)view$/.test(kendoPickerPopup.id)) {
+                    return;
+                }
+                if (target.closest('.k-calendar, .k-calendar-container')) {
+                    return;
+                }
 
                 // ── Special case: Kendo PanelBar group header (expand/collapse) ──
                 // These are <span class="k-link k-header"> containing <span>GroupName</span>.
@@ -640,6 +739,16 @@ public static class PlaywrightRecorder
                             break;
                         }
                         // Skip this <a> — it's a Kendo widget wrapper, not a real link
+                    }
+                    // Kendo/ARIA popup trigger — e.g. <span class="k-select" role="button"
+                    // aria-controls="Endpoint_listbox">. The actual click target is often
+                    // an inner chevron icon (<span class="k-icon k-i-arrow-60-down">),
+                    // which has no selectable attributes and would otherwise get dropped.
+                    // Walk up to the controlling element so bestSelector picks its
+                    // stable aria-controls attribute.
+                    if (cursor.getAttribute && cursor.getAttribute('aria-controls')) {
+                        el = cursor;
+                        break;
                     }
                     cursor = cursor.parentElement;
                 }

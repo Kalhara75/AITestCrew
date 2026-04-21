@@ -708,6 +708,8 @@ Rebuild the Runner package and redistribute the zip/folder. The Runner is statel
 
 ## Troubleshooting
 
+> **Recording issues** (selectors not capturing, popup dates not saving, non-unique selectors, Kendo widget quirks) have their own dedicated guide with a diagnostic playbook and live-DOM inspection workflow: see [`recording-troubleshooting.md`](recording-troubleshooting.md).
+
 | Problem | Solution |
 |---|---|
 | `unable to open database file` | The parent directory for the SQLite file doesn't exist. The app creates it automatically — check the path is valid. |
@@ -729,3 +731,7 @@ Rebuild the Runner package and redistribute the zip/folder. The Runner is statel
 | Agent-claimed Web/Desktop run shows "View Screenshot" but the image fails to load | The agent couldn't upload to `/api/screenshots` after capture. Check the agent terminal for `Screenshot upload failed: ...`. Usually an expired API key, the Docker container restarted between capture and upload, or `PlaywrightScreenshotDir` isn't writable inside the container. |
 | Legacy MVC test set: many objectives fail at `Timeout 15000ms exceeded` when "Re-run Tests" on a whole set | The legacy MVC backend can't handle concurrent authenticated sessions. The agent already serializes `UI_Web_MVC` objectives inside its process, but if you run multiple test sets in parallel (module-level run) each still gets one browser per test set. Either run test sets one at a time or set `MaxParallelAgents: 1` on the **agent's** `appsettings.json`. |
 | Dashboard heading shows the parent test-set objective instead of the filtered single test case | Fixed in the orchestrator — single-objective runs now display the objective's own name. Old persisted runs keep the previous heading; only new runs will look right. |
+| Recorded step on a Kendo combobox option shows empty `value` or clicks the wrong option on replay | `li[role="option"]` is non-unique across comboboxes. Re-record — the recorder now scopes to the listbox id (`#Endpoint_listbox >> text="..."`). See [`recording-troubleshooting.md`](recording-troubleshooting.md). |
+| Date picker calendar popup clicks got recorded but replay lands on the wrong date / wrong picker | `a[role="button"]` and `a[data-value="..."]` inside the popup are non-unique — repeat across From/To pickers. Re-record — popup clicks are now suppressed and Kendo's jQuery-only `change` commit is captured as a single `fill` step. See [`recording-troubleshooting.md`](recording-troubleshooting.md). |
+| DateTimePicker popup commit produces no step at all | Kendo fires `change` only through jQuery (`$(el).trigger('change')`); native DOM listeners never see it. The recorder now attaches a jQuery-delegated listener for `input[data-role*="picker"]`. Re-record after a recorder update. |
+| Kendo Grid hyperlink selector never matches on replay | Grid `<a>` hrefs are placeholders at page load; `mousedown` rewrites them just before click. The recorder already skips href-based selection inside `.k-grid` and uses cell text instead. If you see this, the selector likely came from an older recording — re-record. |

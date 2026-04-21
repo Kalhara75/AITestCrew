@@ -264,19 +264,26 @@ During replay, elements are searched across progressively wider scopes: primary 
 - Calls `page.AddInitScriptAsync(...)` — re-injects event listeners and overlay panel on every page load (deferred via `DOMContentLoaded` so `document.body` is ready)
 
 **Event capture:**
-- **`input` events** on form fields (→ `fill`) — captured as the user types (not on blur), ensuring fills are recorded before any subsequent click. `change` events are used only for `<select>` elements.
-- **`click` events** (→ `click`) — with Kendo PanelBar-aware handling: group header clicks (e.g. "Standing Data") are resolved to `text="GroupName"` selectors via `bestSelectorForPanelBarHeader()`. Kendo Window close buttons are recorded as `press Escape` for simpler replay.
+- **`input` events** on form fields (→ `fill`) — captured as the user types (not on blur), ensuring fills are recorded before any subsequent click. Native `change` is used only for `<select>` elements.
+- **jQuery-delegated `change`** on `input[data-role="(date|datetime|time)picker"]` (→ `fill`) — Kendo commits DatePicker/DateTimePicker/TimePicker values via `$(el).trigger('change')`, which does **not** dispatch a native DOM change event. A polled `window.jQuery(document).on('change', 'input[data-role*="picker"]', …)` listener captures the formatted text (e.g. `"1/01/2026 12:00 AM"`) so Playwright's `FillAsync` can parse it back into the widget on replay.
+- **`click` events** (→ `click`) — with Kendo-aware special cases: PanelBar group header clicks resolve to `text="GroupName"` via `bestSelectorForPanelBarHeader()`; Kendo Window close buttons become `press Escape`; clicks inside a DatePicker popup (`.k-animation-container[id$="_dateview"]` / `_timeview`, `.k-calendar`, `.k-calendar-container`) are **suppressed** — the jQuery picker listener above records the final committed value as a single `fill` step on the input.
 - **`keydown` events** — captures Escape key presses (modal dismissal).
 
 **Selector computation** uses `bestSelector(el)` with an extended fallback chain:
-`#stableId → tag[name] → tag[type="submit"] → tag[aria-label] → tag[title] → a[href*="rawHref"] → MudBlazor text → tag[data-*] → tag[role] → tag.uniqueClass → text="ownText" → text="innerText" → grid row context → SVG icon fingerprint → tag`.
+`#stableId → tag[name] → tag[type="submit"] → tag[aria-controls] → tag[aria-label] → tag[title] → a[href*="rawHref"] → MudBlazor text → tag[data-*] → tag[role] → tag.uniqueClass → text="ownText" → text="innerText" → grid row context → SVG icon fingerprint → tag`.
 - IDs matching dynamic/stateful patterns (`_active`, `_pb_`, `_wnd_`, GUIDs) are skipped.
-- `aria-label` is checked early (priority #4) — MudBlazor icon buttons like "Notifications", "Sort", "Column options" use this. Labels starting with "Toggle " are skipped (nav group headers use text instead).
+- `aria-controls` is checked at priority #4a (before `aria-label`) and required to be globally unique. Kendo widget triggers (ComboBox arrow, DatePicker calendar icon) set this to the popup's stable id — e.g. `aria-controls="Endpoint_listbox"` or `aria-controls="CreatedFromDate_dateview"` — which uniquely identifies the owning widget. Generic `aria-label` values like `"select"` or `"Open the date view"` repeat across every widget of the same type and would collide.
+- `aria-label` is checked at priority #4b — MudBlazor icon buttons like "Notifications", "Sort", "Column options" use this. Labels starting with "Toggle " are skipped (nav group headers use text instead).
 - Link selectors use the **raw `getAttribute('href')`** value (not resolved URL) because CSS `[href*=]` matches raw attributes. Blazor renders relative hrefs (e.g. `./Security/UserSearch`).
 - MudBlazor text detection checks `.mud-nav-link-text` and `.mud-button-label` child elements.
+- Priority #9 (role) skips `menuitem`, `menu`, `group`, and **`option`** — all four repeat across the page (every PanelBar entry, every ComboBox item). Letting `option` fall through to text (priority #11) combined with the listbox scope wrapper (below) gives stable unique selectors like `#Endpoint_listbox >> text="Gateway SPARQ (GatewaySPARQ)"`.
 - Grid row action buttons use Playwright chained selectors: `tr:has-text("rowId") >> td[data-label="Actions"] >> button >> nth=N`.
 - Icon-only buttons (no text, no label) use SVG path fingerprinting via `click-icon` action with occurrence index.
 - MudBlazor state classes (`mud-ripple`, `mud-expanded`, `mud-nav-link`, `mud-icon`, `mud-svg`) and Kendo state classes (`k-state-*`) are excluded from class-based selectors.
+
+**Kendo listbox scope wrapper** — after `bestSelector` computes a raw selector, if the element lives inside `ul[id][role="listbox"]` (e.g. `#Endpoint_listbox`) or `.k-list-container[id]` / `.k-popup[id][data-role="popup"]`, the selector is prefixed with the container id: `#Endpoint_listbox >> text="Gateway SPARQ"`. Without this scope, `li[role="option"]` and option text match items across every ComboBox/DropDownList on the page, so replay clicks the wrong option. Skipped when the raw selector is already an id (`#id`), an icon sentinel (`__icon__…`), or already chained (`>>`).
+
+**Click walker** — walks up from the click target to the nearest meaningful interactive element: `<button>` / `<input>`, `<a>` with a real href, or any element with `[aria-controls]` (Kendo widget triggers — the inner chevron icon inside an arrow span resolves to the controlling `[aria-controls]` element so the trigger click gets captured). Falls back to the original target if no interactive ancestor is found.
 
 **MudBlazor click shortcut** — Before the general walk-up logic, clicks on or inside `.mud-nav-link-text`, `.mud-button-label`, or `.mud-treeview-item-body` are captured immediately as `text="Label"` selectors, bypassing the ancestor traversal.
 
