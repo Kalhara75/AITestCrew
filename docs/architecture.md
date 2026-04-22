@@ -1263,8 +1263,9 @@ run_queue     -- Jobs pending/claimed/running/completed (target_type + capabilit
 
 | Method | Route | Purpose |
 |---|---|---|
-| `POST` | `/api/agents/register` | Register or re-register a Runner as an agent |
-| `POST` | `/api/agents/{id}/heartbeat` | Keep-alive; returns the job the server thinks this agent is running |
+| `POST` | `/api/agents/register` | Register or re-register a Runner as an agent. Clears any pending `force_quit_requested` flag — a fresh process must not re-fire a stale signal. |
+| `POST` | `/api/agents/{id}/heartbeat` | Keep-alive; returns `{ status, activeJobId, activeJobStatus, shouldExit }`. When `shouldExit = true` the agent self-terminates via `Environment.Exit(1)`. |
+| `POST` | `/api/agents/{id}/force-quit` | Dashboard-initiated kill. Sets `force_quit_requested = 1`, pins status to `Offline`, and marks any in-flight queue entry Failed so the queue doesn't wedge. |
 | `DELETE` | `/api/agents/{id}` | Graceful deregister (Ctrl+C on Runner) |
 | `GET` | `/api/agents` | Dashboard list — name, status, capabilities, owner, current job |
 | `GET` | `/api/queue/next?agentId=&capabilities=` | Atomic claim-oldest-matching, returns `204 No Content` if none |
@@ -1282,6 +1283,17 @@ run_queue     -- Jobs pending/claimed/running/completed (target_type + capabilit
 ### Heartbeat monitor
 
 `AgentHeartbeatMonitor` is a `BackgroundService` that runs every 30s and marks agents Offline when their `last_seen_at` is older than `AgentHeartbeatTimeoutSeconds` (default 120). No cleanup is done for completed queue entries — they stay for audit/debug.
+
+### Parallel heartbeat loop + force-quit
+
+Inside the Runner, `AgentRunner.RunAsync` starts two independent loops:
+
+- The **polling loop** (main `async` method) claims queued jobs and runs them via `JobExecutor.ExecuteAsync`. While a job is executing, this loop is blocked — recording sessions in particular block on `Playwright`/`FlaUI` waits that don't observe the cancellation token.
+- The **heartbeat loop** (`Task.Run`) POSTs to `/api/agents/{id}/heartbeat` every `AgentHeartbeatIntervalSeconds` on its own task, reading the current status from a shared `volatile string _currentStatus`. Because it's not interleaved with job execution, heartbeats keep flowing even when a recording is stuck.
+
+The heartbeat response shape is `{ status, activeJobId, activeJobStatus, shouldExit }`. When `shouldExit` is true, the agent logs the event and calls `Environment.Exit(1)` — deliberately abrupt so the OS reaps any child Playwright browser or FlaUI window.
+
+This is what the dashboard's **Force quit** button on the Agents panel relies on. The `/api/agents/{id}/force-quit` endpoint sets `force_quit_requested = 1` and pins the agent to `Offline` in the same SQL update; the heartbeat handler then short-circuits (skips `HeartbeatAsync`, returns `shouldExit = true`) so the dying agent's final heartbeats can't bump status back up to Online / Busy. The `force_quit_requested` column is added by migration v5 (idempotent ALTER) and is cleared on the next `UpsertAsync` (re-registration), so a fresh process always starts with a clean slate.
 
 ### Screenshot forwarding
 
@@ -1353,7 +1365,7 @@ There is intentionally no tool-calling layer. The server pre-computes the full c
 
 ### Scope boundaries
 
-- **Normal-mode generation is not exposed via chat** — creating test cases from a free-form objective requires an orchestrator run that the chat doesn't trigger. Users still use `Run Objective` on the module page or the CLI.
+- **Normal-mode is API-only in chat** — the assistant will emit `confirmRun` with `mode=Normal` when the user asks to generate/create an API test (e.g. "generate a test for SDR legacy API `api/v1/...` GET"). The LLM resolves `apiStackKey` + `apiModule` from phrases like "legacy" / "BraveCloud" / "SDR" against the catalog's `apiStacks` and refuses to invent keys. UI / aseXML Normal-mode generation stays out of scope — the prompt explicitly forbids it and routes UI intents to `confirmRecord` instead.
 - **Chat history is client-only** — there is no server-side transcript store. Refreshing the page or clicking the drawer's "clear" button resets the conversation.
 - **Recording is dispatch-only** — the chat doesn't execute recording sessions itself; it enqueues them via `/api/recordings` for a user-selected agent. Running a Runner in `--agent` mode is still required.
 - **No tool calling / streaming** — the endpoint returns a single JSON response. Streaming and server-side persistence are deferred.

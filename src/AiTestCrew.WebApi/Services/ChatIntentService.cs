@@ -208,16 +208,17 @@ public class ChatIntentService : IChatIntentService
               Data display — the user asked to list / show structured data:
               { "kind": "showData", "title": "Environments", "data": <any JSON value> }
 
-              Run trigger — the user asked to run / rerun / replay / verify a test set or objective:
+              Run trigger — the user asked to run / rerun / replay / verify a test set or objective, OR to generate a NEW API test case from a natural-language objective:
               { "kind": "confirmRun", "summary": "Reuse mfn-delivery on sumo-retail", "data": {
-                  "mode": "Reuse" | "Rebaseline" | "VerifyOnly",
+                  "mode": "Normal" | "Reuse" | "Rebaseline" | "VerifyOnly",
+                  "objective": "<required for Normal/Rebaseline — the natural-language objective the LLM test-generator will expand into API test cases>",
+                  "objectiveName": "<optional short display name for the new objective in Normal mode>",
                   "moduleId": "<from catalog>",
                   "testSetId": "<from catalog>",
-                  "objectiveId": "<optional, only if user scoped to one objective>",
-                  "objectiveName": "<optional alternative to objectiveId>",
+                  "objectiveId": "<optional, only if user scoped an existing objective>",
                   "environmentKey": "<optional, omit to use the test set's stored env or default>",
-                  "apiStackKey": "<optional>",
-                  "apiModule": "<optional>",
+                  "apiStackKey": "<for Normal API generation: required, must be a key of catalog.apiStacks>",
+                  "apiModule": "<for Normal API generation: required, must be a key of catalog.apiStacks[apiStackKey].modules>",
                   "verificationWaitOverride": <optional integer seconds, only for VerifyOnly>
                 }
               }
@@ -252,9 +253,10 @@ public class ChatIntentService : IChatIntentService
               }
 
             Run-trigger rules:
-            - Never use mode "Normal" — generating new test cases from scratch is not supported yet.
+            - "Normal" generates NEW API test cases from a natural-language objective and runs them. ONLY use Normal when the user is clearly asking to generate / create an API test (keywords: "generate", "create", "add a test for", combined with an API path, HTTP method, or "API"). Normal is ONLY supported for API tests — never emit Normal for UI/Blazor/MVC/Desktop/aseXML work; for UI tests the user must record (use confirmRecord instead).
             - "Reuse" replays every test case in the test set; "Rebaseline" regenerates AI-generated test cases and reruns them; "VerifyOnly" skips delivery and re-runs post-delivery UI verifications (requires objectiveId, only valid for aseXML delivery objectives).
-            - If the user scopes to an objective ("run the Deliver MFN objective"), only set objectiveId / objectiveName when the objective is visible in catalog.currentTestSet.objectives. Do NOT invent objective ids from free-form user phrases.
+            - For Normal mode you MUST populate: objective (verbatim from the user, cleaned up), moduleId, testSetId, apiStackKey, apiModule. Resolve apiStackKey + apiModule from the user's words ("legacy", "Legacy API" → the stack whose key suggests legacy; "BraveCloud", "cloud" → the cloud stack; module "SDR" → apiModule "sdr" if present under the chosen stack). Only use keys that appear literally in catalog.apiStacks. If the user did not specify a module/testSetId, prefer the current page context; otherwise pick the single best match from the catalog or ask for clarification (emit reply only, no actions).
+            - If the user scopes to an existing objective ("run the Deliver MFN objective"), only set objectiveId / objectiveName when the objective is visible in catalog.currentTestSet.objectives. Do NOT invent objective ids from free-form user phrases.
             - When the user says "run this" on a test-set page, read moduleId + testSetId from the current page context.
             - When the user says "run the <name> test set" without a module, match against catalog.modules[*].testSets[*] — prefer exact name/id match.
 

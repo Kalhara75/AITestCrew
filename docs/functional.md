@@ -674,12 +674,13 @@ dotnet run --project src/AiTestCrew.Runner -- --agent --name "Alice-PC"
 dotnet run --project src/AiTestCrew.Runner -- --agent --capabilities UI_Web_Blazor,UI_Web_MVC
 ```
 
-`--name` defaults to the machine's hostname (`$env:COMPUTERNAME`). `--capabilities` defaults to all three UI targets (`UI_Web_Blazor,UI_Web_MVC,UI_Desktop_WinForms`). The agent registers, sends heartbeats every 30s, polls the job queue every 10s, and deregisters gracefully on Ctrl+C. Requires `TestEnvironment.ServerUrl` and `ApiKey` to be set so it can reach the shared server. See `docs/deployment.md#local-agent-setup-phase-4` for the team setup.
+`--name` defaults to the machine's hostname (`$env:COMPUTERNAME`). `--capabilities` defaults to all three UI targets (`UI_Web_Blazor,UI_Web_MVC,UI_Desktop_WinForms`). The agent registers, sends heartbeats every 30s on a dedicated task, polls the job queue every 10s, and deregisters gracefully on Ctrl+C. Requires `TestEnvironment.ServerUrl` and `ApiKey` to be set so it can reach the shared server. See `docs/deployment.md#local-agent-setup-phase-4` for the team setup.
 
 **Behaviour notes:**
 - **Screenshots** captured by the Web UI or Desktop UI agents (on step failure) are saved locally first, then uploaded to the server via `POST /api/screenshots` so the dashboard's execution-detail page can render them. Upload is silent on success; failures are logged as warnings but don't fail the run.
 - **Legacy MVC serialization** — `UI_Web_MVC` objectives run sequentially inside one agent process via a static semaphore in `LegacyWebUiTestAgent`. This avoids 15-second Playwright timeouts caused by single-session enforcement on the legacy backend when multiple objectives in a set run concurrently. Blazor, API, aseXML, and Desktop agents still parallelize up to `MaxParallelAgents`.
 - **Single-objective heading** — when the dashboard triggers a single test case (Run button on one row, not "Re-run Tests" on the whole set), the execution-detail heading shows that specific objective's name rather than the parent test set's original objective.
+- **Force quit from dashboard** — the Agents panel on the dashboard exposes a red **Force quit** button next to each Online / Busy agent. Clicking it calls `POST /api/agents/{id}/force-quit`, which flags the agent and marks any in-flight job Failed. The agent's parallel heartbeat loop receives `shouldExit = true` on its next heartbeat (within ~30s) and calls `Environment.Exit(1)` — terminating the Runner process immediately, even when the main polling loop is blocked inside a stuck recording. Use this when a Playwright / FlaUI session hangs and Ctrl+C on the Runner machine is not draining. The agent row shows **Offline** in the dashboard the moment the endpoint returns, and the row stays that way until the Runner re-registers on next startup.
 
 ---
 
@@ -1107,13 +1108,14 @@ Every page has an **Assistant** button in the header that opens a right-edge dra
 
 - **Discovery** — "list modules", "which environments are configured?", "show connected agents", "what endpoints are available?"
 - **Navigation** — "open the MFN delivery test set", "go to the retail module"
-- **Run triggers** — "reuse the MFN delivery against Sumo", "rebaseline the Deliver MFN objective", "verify-only for the latest delivery without waiting". Modes: Reuse / Rebaseline / VerifyOnly (Normal-mode generation from scratch is not exposed via chat yet).
+- **Run triggers** — "reuse the MFN delivery against Sumo", "rebaseline the Deliver MFN objective", "verify-only for the latest delivery without waiting". Modes: Normal / Reuse / Rebaseline / VerifyOnly.
+- **API test generation (Normal mode)** — "generate a test case for the SDR legacy API `api/v1/DataSourceManagement/DataSources` GET method". The assistant resolves the stack (`legacy` / `bravecloud`) and API module (e.g. `sdr`) from the user's words by matching against `catalog.apiStacks`, fills in the target module + test set (from page context or catalog match), and emits a `confirmRun` card with `mode=Normal`. Clicking Execute kicks off an in-process LLM run that generates fresh API test cases and saves them into the target test set. Normal mode is restricted to API targets — UI test generation still goes through recording.
 - **Module / test-set creation** — "create a module called Smoke Tests", "add a test set 'nmi-loads' to the sdr module"
 - **Recording dispatch** — "record a login for retail on Blazor", "record a verification for the MFN delivery on Legacy MVC", "do an auth-setup for AMS". The card's dropdown lists online agents that advertise the matching capability; clicking Execute enqueues the job for that agent via `POST /api/recordings`. The agent's Runner picks it up on its next poll and launches the interactive session on that machine's desktop.
 
 **What it won't do:**
 
-- Normal-mode generation from free-form objectives (use `Run Objective` on the module page or the CLI).
+- Normal-mode generation for UI or aseXML targets — these still require the recorder (`confirmRecord`) or the relevant CLI flow.
 - Mutations without a confirmation card — all creates, run triggers, and recording dispatches route through an Execute button.
 - Recording when no matching agent is online — the assistant declines and suggests starting an agent with `dotnet run --project src/AiTestCrew.Runner -- --agent --name "MyPC"`.
 

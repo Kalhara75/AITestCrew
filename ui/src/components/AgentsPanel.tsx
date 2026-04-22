@@ -1,5 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
-import { fetchAgents } from '../api/agents';
+import { useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { fetchAgents, forceQuitAgent } from '../api/agents';
 import type { AgentSummary } from '../types';
 
 const STATUS_COLOURS: Record<string, { bg: string; fg: string; dot: string }> = {
@@ -59,6 +60,30 @@ export function AgentsPanel() {
 
 function AgentRow({ agent }: { agent: AgentSummary }) {
   const colour = STATUS_COLOURS[agent.status] ?? STATUS_COLOURS.Offline;
+  const queryClient = useQueryClient();
+  const [forcing, setForcing] = useState(false);
+  const [forceError, setForceError] = useState<string | null>(null);
+  const canForceQuit = agent.status === 'Online' || agent.status === 'Busy';
+
+  async function handleForceQuit() {
+    const confirmMsg = agent.currentJob
+      ? `Force-quit ${agent.name}? Its current job (${agent.currentJob.testSetId}) will be marked failed and the agent process terminated.`
+      : `Force-quit ${agent.name}? The agent process will terminate on its next heartbeat (within ~30s).`;
+    if (!window.confirm(confirmMsg)) return;
+    setForcing(true);
+    setForceError(null);
+    try {
+      await forceQuitAgent(agent.id);
+      // Refresh immediately so the row reflects any cancelled job + Offline drop.
+      await queryClient.invalidateQueries({ queryKey: ['agents'] });
+      await queryClient.invalidateQueries({ queryKey: ['queue'] });
+    } catch (err) {
+      setForceError(err instanceof Error ? err.message : 'Force-quit failed.');
+    } finally {
+      setForcing(false);
+    }
+  }
+
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 12,
@@ -88,6 +113,9 @@ function AgentRow({ agent }: { agent: AgentSummary }) {
             <span key={c} style={capPill}>{c}</span>
           ))}
         </div>
+        {forceError && (
+          <div style={{ fontSize: 12, color: '#991b1b', marginTop: 4 }}>{forceError}</div>
+        )}
       </div>
       <div style={{ textAlign: 'right', fontSize: 12, color: '#94a3b8' }}>
         {agent.currentJob ? (
@@ -99,6 +127,20 @@ function AgentRow({ agent }: { agent: AgentSummary }) {
           </>
         ) : (
           <div>Seen {formatAge(agent.lastSeenAt)}</div>
+        )}
+        {canForceQuit && (
+          <button
+            onClick={handleForceQuit}
+            disabled={forcing}
+            style={{
+              ...forceBtnStyle,
+              opacity: forcing ? 0.6 : 1,
+              cursor: forcing ? 'wait' : 'pointer',
+            }}
+            title="Terminate the agent process (use when a recording is stuck)"
+          >
+            {forcing ? 'Terminating…' : 'Force quit'}
+          </button>
         )}
       </div>
     </div>
@@ -126,6 +168,13 @@ const countPill: React.CSSProperties = {
 const capPill: React.CSSProperties = {
   fontSize: 11, color: '#334155', background: '#f1f5f9',
   padding: '2px 8px', borderRadius: 6, fontWeight: 500,
+};
+
+const forceBtnStyle: React.CSSProperties = {
+  marginTop: 6,
+  background: '#fef2f2', color: '#991b1b',
+  border: '1px solid #fecaca', borderRadius: 6,
+  padding: '3px 10px', fontSize: 11, fontWeight: 600,
 };
 
 const codeStyle: React.CSSProperties = {

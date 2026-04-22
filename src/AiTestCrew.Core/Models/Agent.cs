@@ -26,4 +26,11 @@ public class Agent
 
     /// <summary>Run queue entry currently claimed by this agent, if any. Populated on read only.</summary>
     public string? CurrentJobId { get; set; }
+
+    /// <summary>
+    /// When true, the agent should terminate itself on the next heartbeat response.
+    /// Set by the <c>POST /api/agents/{id}/force-quit</c> endpoint so a stuck recording
+    /// can be killed remotely from the dashboard. Cleared on the next successful registration.
+    /// </summary>
+    public bool ForceQuitRequested { get; set; }
 }

@@ -30,6 +30,11 @@ internal sealed class AgentRunner
         _agentIdFilePath = Path.Combine(AppContext.BaseDirectory, ".agent-id");
     }
 
+    // Shared between the polling loop and the parallel heartbeat loop.
+    // The heartbeat loop reads it to report the right status while a job is executing,
+    // and writes to it isn't needed from heartbeat's side — only the poll loop mutates it.
+    private volatile string _currentStatus = "Online";
+
     public async Task RunAsync(CancellationToken ct)
     {
         var version = typeof(AgentRunner).Assembly.GetName().Version?.ToString() ?? "1.0.0";
@@ -46,21 +51,16 @@ internal sealed class AgentRunner
             ? _config.AgentHeartbeatIntervalSeconds : 30);
         var pollInterval = TimeSpan.FromSeconds(_config.AgentPollIntervalSeconds > 0
             ? _config.AgentPollIntervalSeconds : 10);
-        var nextHeartbeat = DateTime.UtcNow + heartbeatInterval;
 
-        var status = "Online";
+        // Parallel heartbeat loop — keeps ticking even when the polling loop is blocked
+        // inside a stuck recording. This is what makes force-quit from the dashboard work:
+        // a stuck agent still calls heartbeat, sees shouldExit=true, and self-terminates.
+        _ = Task.Run(() => HeartbeatLoopAsync(agentId, heartbeatInterval, ct), ct);
 
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                // Heartbeat if due
-                if (DateTime.UtcNow >= nextHeartbeat)
-                {
-                    await SafeHeartbeatAsync(agentId, status);
-                    nextHeartbeat = DateTime.UtcNow + heartbeatInterval;
-                }
-
                 NextJobResponse? job;
                 try
                 {
@@ -69,7 +69,7 @@ internal sealed class AgentRunner
                 catch (Exception ex)
                 {
                     _logger.LogWarning("Poll failed: {Message}", ex.Message);
-                    await Task.Delay(pollInterval, ct);
+                    try { await Task.Delay(pollInterval, ct); } catch (OperationCanceledException) { break; }
                     continue;
                 }
 
@@ -80,9 +80,7 @@ internal sealed class AgentRunner
                 }
 
                 // Claimed a job — execute
-                status = "Busy";
-                await SafeHeartbeatAsync(agentId, status);
-                nextHeartbeat = DateTime.UtcNow + heartbeatInterval;
+                _currentStatus = "Busy";
 
                 var kindLabel = string.IsNullOrWhiteSpace(job.JobKind) || job.JobKind == "Run" ? job.Mode : job.JobKind;
                 AnsiConsole.MarkupLine($"[cyan]Claimed job[/] {Markup.Escape(job.JobId)} " +
@@ -107,9 +105,7 @@ internal sealed class AgentRunner
                 }
                 finally
                 {
-                    status = "Online";
-                    await SafeHeartbeatAsync(agentId, status);
-                    nextHeartbeat = DateTime.UtcNow + heartbeatInterval;
+                    _currentStatus = "Online";
                 }
             }
         }
@@ -127,10 +123,29 @@ internal sealed class AgentRunner
         }
     }
 
-    private async Task SafeHeartbeatAsync(string agentId, string status)
+    // Runs on its own task so a blocked Playwright/FlaUI session cannot stop heartbeats.
+    // This is the only reliable way to receive a "shouldExit" signal while a recording hangs.
+    private async Task HeartbeatLoopAsync(string agentId, TimeSpan interval, CancellationToken ct)
     {
-        try { await _client.HeartbeatAsync(agentId, status); }
-        catch (Exception ex) { _logger.LogWarning("Heartbeat failed: {Message}", ex.Message); }
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var res = await _client.HeartbeatAsync(agentId, _currentStatus);
+                if (res.ShouldExit)
+                {
+                    AnsiConsole.MarkupLine("\n[red]Force-quit received from dashboard — terminating now.[/]");
+                    _logger.LogWarning("Agent {AgentId} force-quit from server; Environment.Exit(1)", agentId);
+                    Environment.Exit(1);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Heartbeat failed: {Message}", ex.Message);
+            }
+
+            try { await Task.Delay(interval, ct); } catch (OperationCanceledException) { break; }
+        }
     }
 
     private string? ReadAgentId()

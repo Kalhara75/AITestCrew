@@ -38,6 +38,20 @@ public static class AgentEndpoints
             var existing = await repo.GetByIdAsync(id);
             if (existing is null) return Results.NotFound(new { error = $"Agent '{id}' not registered" });
 
+            // Pending force-quit: do NOT bump last_seen_at or status — the agent is about
+            // to call Environment.Exit on receiving shouldExit=true, and we want the
+            // dashboard to keep showing it as Offline until (or if) it re-registers.
+            if (existing.ForceQuitRequested)
+            {
+                return Results.Ok(new
+                {
+                    status = "Offline",
+                    activeJobId = (string?)null,
+                    activeJobStatus = (string?)null,
+                    shouldExit = true
+                });
+            }
+
             var status = string.IsNullOrWhiteSpace(request.Status) ? "Online" : request.Status;
             await repo.HeartbeatAsync(id, status);
 
@@ -47,8 +61,27 @@ public static class AgentEndpoints
             {
                 status,
                 activeJobId = activeJob?.Id,
-                activeJobStatus = activeJob?.Status
+                activeJobStatus = activeJob?.Status,
+                shouldExit = false
             });
+        });
+
+        // POST /api/agents/{id}/force-quit — flag agent to self-terminate on next heartbeat.
+        // Fails any in-flight job so the queue doesn't wedge on a dead agent.
+        group.MapPost("/{id}/force-quit", async (string id, IAgentRepository repo, IRunQueueRepository queueRepo) =>
+        {
+            var existing = await repo.GetByIdAsync(id);
+            if (existing is null) return Results.NotFound(new { error = $"Agent '{id}' not registered" });
+
+            await repo.SetForceQuitAsync(id, true);
+
+            var activeJob = await queueRepo.GetActiveForAgentAsync(id);
+            if (activeJob is not null)
+            {
+                await queueRepo.MarkCompletedAsync(activeJob.Id, success: false,
+                    error: "Agent force-quit from dashboard.");
+            }
+            return Results.Ok(new { forceQuitRequested = true, cancelledJobId = activeJob?.Id });
         });
 
         // DELETE /api/agents/{id} — graceful deregister (Ctrl+C on Runner)

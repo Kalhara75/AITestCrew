@@ -27,4 +27,10 @@ public interface IAgentRepository
     /// Called periodically by <c>AgentHeartbeatMonitor</c>.
     /// </summary>
     Task<int> MarkStaleOfflineAsync(TimeSpan timeout);
+
+    /// <summary>
+    /// Sets or clears the force-quit flag. When set, the agent's next heartbeat response
+    /// carries <c>shouldExit = true</c> and the Runner terminates via <c>Environment.Exit</c>.
+    /// </summary>
+    Task SetForceQuitAsync(string id, bool requested);
 }

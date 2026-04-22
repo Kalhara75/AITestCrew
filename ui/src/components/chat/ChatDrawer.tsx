@@ -302,6 +302,7 @@ function ConfirmRunCard({ summary, data }: { summary?: string; data: unknown }) 
     try {
       const req: TriggerRunRequest = {
         mode: payload.mode,
+        objective: payload.objective,
         moduleId: payload.moduleId,
         testSetId: payload.testSetId,
         objectiveId: payload.objectiveId,
@@ -354,7 +355,7 @@ function ConfirmRunCard({ summary, data }: { summary?: string; data: unknown }) 
         ['mode', payload.mode],
         ['module', payload.moduleId],
         ['test set', payload.testSetId],
-        ['objective', payload.objectiveId ?? payload.objectiveName],
+        ['objective', payload.objectiveId ?? payload.objectiveName ?? payload.objective],
         ['environment', payload.environmentKey],
         ['stack', payload.apiStackKey],
         ['api module', payload.apiModule],

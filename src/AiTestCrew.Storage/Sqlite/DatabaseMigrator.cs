@@ -84,14 +84,15 @@ public static class DatabaseMigrator
             );
 
             CREATE TABLE IF NOT EXISTS agents (
-                id            TEXT PRIMARY KEY,
-                name          TEXT NOT NULL,
-                user_id       TEXT,
-                capabilities  TEXT NOT NULL,
-                version       TEXT,
-                status        TEXT NOT NULL,
-                last_seen_at  TEXT NOT NULL,
-                registered_at TEXT NOT NULL
+                id                    TEXT PRIMARY KEY,
+                name                  TEXT NOT NULL,
+                user_id               TEXT,
+                capabilities          TEXT NOT NULL,
+                version               TEXT,
+                status                TEXT NOT NULL,
+                last_seen_at          TEXT NOT NULL,
+                registered_at         TEXT NOT NULL,
+                force_quit_requested  INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS run_queue (
@@ -123,7 +124,7 @@ public static class DatabaseMigrator
                 value TEXT NOT NULL
             );
 
-            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '4');
+            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '5');
             """;
         cmd.ExecuteNonQuery();
 
@@ -136,9 +137,17 @@ public static class DatabaseMigrator
             alter.ExecuteNonQuery();
         }
 
+        // ── v4 → v5: add force_quit_requested column to agents ──
+        if (!ColumnExists(conn, "agents", "force_quit_requested"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE agents ADD COLUMN force_quit_requested INTEGER NOT NULL DEFAULT 0";
+            alter.ExecuteNonQuery();
+        }
+
         // Ensure schema_version reflects the latest applied migration even on upgraded DBs
         using var bump = conn.CreateCommand();
-        bump.CommandText = "UPDATE schema_version SET value = '4' WHERE key = 'version' AND CAST(value AS INTEGER) < 4";
+        bump.CommandText = "UPDATE schema_version SET value = '5' WHERE key = 'version' AND CAST(value AS INTEGER) < 5";
         bump.ExecuteNonQuery();
     }
 

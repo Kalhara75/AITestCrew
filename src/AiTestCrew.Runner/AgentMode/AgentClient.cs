@@ -35,11 +35,13 @@ internal sealed class AgentClient
         return payload.AgentId;
     }
 
-    public async Task HeartbeatAsync(string agentId, string status)
+    public async Task<HeartbeatResponse> HeartbeatAsync(string agentId, string status)
     {
         var res = await _http.PostAsJsonAsync($"api/agents/{agentId}/heartbeat",
             new { status }, JsonOpts);
         res.EnsureSuccessStatusCode();
+        return await res.Content.ReadFromJsonAsync<HeartbeatResponse>(JsonOpts)
+            ?? new HeartbeatResponse();
     }
 
     public async Task DeregisterAsync(string agentId)
@@ -74,6 +76,14 @@ internal sealed class AgentClient
     }
 
     private record RegisterResponse(string AgentId);
+}
+
+internal sealed class HeartbeatResponse
+{
+    public string? Status { get; set; }
+    public string? ActiveJobId { get; set; }
+    public string? ActiveJobStatus { get; set; }
+    public bool ShouldExit { get; set; }
 }
 
 internal sealed class NextJobResponse
