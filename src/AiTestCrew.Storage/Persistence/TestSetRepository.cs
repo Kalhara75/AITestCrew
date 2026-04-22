@@ -373,6 +373,14 @@ public class TestSetRepository : ITestSetRepository
         if (!string.IsNullOrWhiteSpace(objectiveName))
             dest.ObjectiveNames[objective] = objectiveName;
 
+        // Inherit targeting metadata from source when destination is unset.
+        // Prevents silent URL drift when objectives are moved into an empty
+        // test set that has no ApiStackKey/ApiModule/EnvironmentKey/EndpointCode.
+        if (string.IsNullOrWhiteSpace(dest.ApiStackKey))   dest.ApiStackKey   = source.ApiStackKey;
+        if (string.IsNullOrWhiteSpace(dest.ApiModule))     dest.ApiModule     = source.ApiModule;
+        if (string.IsNullOrWhiteSpace(dest.EnvironmentKey)) dest.EnvironmentKey = source.EnvironmentKey;
+        if (string.IsNullOrWhiteSpace(dest.EndpointCode))  dest.EndpointCode  = source.EndpointCode;
+
         await SaveAsync(dest, destModuleId);
     }
 

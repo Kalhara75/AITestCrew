@@ -87,11 +87,19 @@ public class ApiTargetResolver : IApiTargetResolver
         if (!string.IsNullOrEmpty(stackKey) && _config.ApiStacks.ContainsKey(stackKey))
             return stackKey;
 
+        if (!string.IsNullOrEmpty(stackKey))
+            throw new InvalidOperationException(
+                $"Unknown API stack '{stackKey}'. Configured stacks: " +
+                $"{string.Join(", ", _config.ApiStacks.Keys)}.");
+
         if (!string.IsNullOrEmpty(_config.DefaultApiStack)
             && _config.ApiStacks.ContainsKey(_config.DefaultApiStack))
             return _config.DefaultApiStack;
 
-        return _config.ApiStacks.Keys.First();
+        throw new InvalidOperationException(
+            "Cannot resolve API stack: no ApiStackKey supplied, no DefaultApiStack configured " +
+            $"in TestEnvironment. Set ApiStackKey on the test set, or set TestEnvironment.DefaultApiStack " +
+            $"(configured stacks: {string.Join(", ", _config.ApiStacks.Keys)}).");
     }
 
     private ApiStackConfig ResolveStack(string? stackKey)
@@ -105,11 +113,19 @@ public class ApiTargetResolver : IApiTargetResolver
         if (!string.IsNullOrEmpty(moduleKey) && stack.Modules.TryGetValue(moduleKey, out var mod))
             return mod;
 
+        if (!string.IsNullOrEmpty(moduleKey))
+            throw new InvalidOperationException(
+                $"Unknown API module '{moduleKey}' for stack. Configured modules: " +
+                $"{string.Join(", ", stack.Modules.Keys)}.");
+
         if (!string.IsNullOrEmpty(_config.DefaultApiModule)
             && stack.Modules.TryGetValue(_config.DefaultApiModule, out var defMod))
             return defMod;
 
-        return stack.Modules.Values.First();
+        throw new InvalidOperationException(
+            "Cannot resolve API module: no ApiModule supplied, no DefaultApiModule configured " +
+            $"in TestEnvironment. Set ApiModule on the test set, or set TestEnvironment.DefaultApiModule " +
+            $"(configured modules for this stack: {string.Join(", ", stack.Modules.Keys)}).");
     }
 
     private static string BuildLoginUrl(string rawBaseUrl, ApiStackConfig stack)

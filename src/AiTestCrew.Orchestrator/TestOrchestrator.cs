@@ -371,12 +371,26 @@ public class TestOrchestrator
             // ── Normal / Rebaseline: decompose via LLM ──
             tasks = await DecomposeObjectiveAsync(objective, ct);
 
+            // When targeting an existing module-scoped test set, fall back to its persisted
+            // targeting metadata if the caller didn't override it. Without this, Normal /
+            // Rebaseline runs against an already-configured test set would lose its stack /
+            // module / endpoint / env and the API resolver would refuse to pick a URL.
+            PersistedTestSet? targetSaved = null;
+            if (isModuleScoped)
+                targetSaved = await _testSetRepo.LoadAsync(moduleId!, targetTestSetId!);
+
+            var effectiveStack = apiStackKey ?? targetSaved?.ApiStackKey;
+            var effectiveModule = apiModule ?? targetSaved?.ApiModule;
+            var effectiveEndpoint = !string.IsNullOrWhiteSpace(endpointCode)
+                ? endpointCode
+                : targetSaved?.EndpointCode;
+
             // Inject API stack+module into each task so the agent targets the right stack
             foreach (var t in tasks)
             {
-                if (apiStackKey is not null) t.Parameters["ApiStackKey"] = apiStackKey;
-                if (apiModule is not null) t.Parameters["ApiModule"] = apiModule;
-                if (!string.IsNullOrWhiteSpace(endpointCode)) t.Parameters["EndpointCode"] = endpointCode;
+                if (effectiveStack is not null) t.Parameters["ApiStackKey"] = effectiveStack;
+                if (effectiveModule is not null) t.Parameters["ApiModule"] = effectiveModule;
+                if (!string.IsNullOrWhiteSpace(effectiveEndpoint)) t.Parameters["EndpointCode"] = effectiveEndpoint!;
                 t.Parameters["EnvironmentKey"] = effectiveEnv;
             }
 
