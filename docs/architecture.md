@@ -514,7 +514,7 @@ WebApi/
 | `POST` | `/api/modules` | Create a module |
 | `GET` | `/api/modules/{id}` | Module detail |
 | `PUT` | `/api/modules/{id}` | Update module name/description |
-| `DELETE` | `/api/modules/{id}` | Delete empty module |
+| `DELETE` | `/api/modules/{id}` | Delete module (cascades: removes every test set + its execution runs, then the module). `409` if a module run is active. |
 | `GET` | `/api/modules/{id}/testsets` | List test sets in module |
 | `POST` | `/api/modules/{id}/testsets` | Create empty test set |
 | `GET` | `/api/modules/{id}/testsets/{tsId}` | Test set detail |

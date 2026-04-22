@@ -86,14 +86,25 @@ public static class ModuleEndpoints
             return Results.Ok(module);
         });
 
-        // DELETE /api/modules/{moduleId} — delete empty module
-        group.MapDelete("/{moduleId}", async (string moduleId, IModuleRepository moduleRepo) =>
+        // DELETE /api/modules/{moduleId} — cascade delete module, its test sets, and their execution history
+        group.MapDelete("/{moduleId}", async (string moduleId,
+            IModuleRepository moduleRepo, ITestSetRepository tsRepo,
+            IExecutionHistoryRepository historyRepo, IModuleRunTracker moduleRunTracker) =>
         {
             if (!moduleRepo.Exists(moduleId))
                 return Results.NotFound(new { error = $"Module '{moduleId}' not found" });
 
+            if (moduleRunTracker.HasActiveModuleRunForModule(moduleId))
+                return Results.Conflict(new { error = $"Module '{moduleId}' has an active run; wait for it to finish before deleting." });
+
             try
             {
+                foreach (var ts in tsRepo.ListByModule(moduleId))
+                {
+                    await historyRepo.DeleteRunsForTestSetAsync(ts.Id);
+                    await tsRepo.DeleteAsync(moduleId, ts.Id);
+                }
+
                 await moduleRepo.DeleteAsync(moduleId);
                 return Results.NoContent();
             }

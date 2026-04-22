@@ -1,19 +1,40 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { fetchModule, fetchModuleTestSets } from '../api/modules';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { fetchModule, fetchModuleTestSets, deleteModule } from '../api/modules';
 import { TestSetCard } from '../components/TestSetCard';
 import { CreateTestSetDialog } from '../components/CreateTestSetDialog';
 import { RunObjectiveDialog } from '../components/RunObjectiveDialog';
 import { ModuleRunBanner } from '../components/ModuleRunBanner';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useActiveRun } from '../contexts/ActiveRunContext';
 
 export function ModuleDetailPage() {
   const { moduleId } = useParams<{ moduleId: string }>();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [showCreateTestSet, setShowCreateTestSet] = useState(false);
   const [showRunObjective, setShowRunObjective] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const { moduleRun, isModuleRunning, startModuleRun, error: runError } = useActiveRun();
   const isRunning = moduleId ? isModuleRunning(moduleId) : false;
+
+  const handleDeleteModule = async () => {
+    if (!moduleId) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteModule(moduleId);
+      queryClient.invalidateQueries({ queryKey: ['modules'] });
+      navigate('/');
+    } catch (err) {
+      setDeleting(false);
+      setShowDeleteConfirm(false);
+      setDeleteError((err as Error).message || 'Failed to delete module');
+    }
+  };
 
   const { data: module, isLoading: loadingModule, error: moduleError } = useQuery({
     queryKey: ['module', moduleId],
@@ -177,6 +198,17 @@ export function ModuleDetailPage() {
             >
               Run All
             </button>
+            <button
+              onClick={() => { setDeleteError(null); setShowDeleteConfirm(true); }}
+              disabled={isRunning}
+              style={{
+                ...btnStyle('#dc2626'),
+                opacity: isRunning ? 0.5 : 1,
+                cursor: isRunning ? 'not-allowed' : 'pointer',
+              }}
+            >
+              Delete Module
+            </button>
           </div>
         </div>
       </div>
@@ -193,6 +225,16 @@ export function ModuleDetailPage() {
           padding: '10px 16px', marginBottom: 16, fontSize: 13, color: '#dc2626',
         }}>
           {runError}
+        </div>
+      )}
+
+      {/* Delete error */}
+      {deleteError && (
+        <div style={{
+          background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8,
+          padding: '10px 16px', marginBottom: 16, fontSize: 13, color: '#dc2626',
+        }}>
+          {deleteError}
         </div>
       )}
 
@@ -343,6 +385,17 @@ export function ModuleDetailPage() {
           onClose={() => setShowRunObjective(false)}
         />
       )}
+
+      <ConfirmDialog
+        open={showDeleteConfirm}
+        title="Delete Module"
+        message={`This will permanently delete "${module.name}" and all ${module.testSetCount} test set${module.testSetCount === 1 ? '' : 's'} along with their execution history. This action cannot be undone.`}
+        confirmLabel="Delete"
+        confirmDestructive
+        loading={deleting}
+        onConfirm={handleDeleteModule}
+        onCancel={() => setShowDeleteConfirm(false)}
+      />
     </div>
   );
 }

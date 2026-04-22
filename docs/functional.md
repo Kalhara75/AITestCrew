@@ -1137,6 +1137,21 @@ A confirmation dialog is shown before deletion. This action cannot be undone.
 
 ---
 
+## Deleting Modules
+
+A module can be deleted from the module detail page by clicking the **Delete Module** button. This is a cascading destructive action that:
+
+1. Deletes all execution history (runs) for every test set in the module
+2. Deletes every test set file in the module
+3. Deletes the module directory / row itself
+4. Redirects back to the module list
+
+A confirmation dialog shows the module name and the number of test sets that will be removed. The button is disabled while a module-level run is in progress, and the API returns `409 Conflict` if a run is active at the moment of deletion. This action cannot be undone.
+
+**API:** `DELETE /api/modules/{moduleId}`
+
+---
+
 ## Moving Objectives
 
 An objective (and all its associated steps) can be moved from one test set to another, including across modules. This is useful for reorganising test cases after they've been generated.
