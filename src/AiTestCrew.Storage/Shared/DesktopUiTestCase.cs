@@ -104,4 +104,32 @@ public class DesktopUiStep
 
     /// <summary>Per-step timeout in milliseconds. Defaults to 5000 ms.</summary>
     public int TimeoutMs { get; set; } = 5000;
+
+    /// <summary>
+    /// Screen X of the recorded click, relative to the main window's top-left.
+    /// Used as a coordinate-based fallback when the element cannot be resolved
+    /// via UIA (e.g. legacy WinForms CheckedComboBox popups that render
+    /// visually but do not expose their items in the UI Automation tree).
+    /// Null for steps that weren't captured via a mouse click (fills, asserts,
+    /// keypresses) and for pre-existing recordings made before this field existed.
+    /// </summary>
+    public int? WindowRelativeX { get; set; }
+
+    /// <summary>
+    /// Screen Y of the recorded click, relative to the main window's top-left.
+    /// See <see cref="WindowRelativeX"/> for usage.
+    /// </summary>
+    public int? WindowRelativeY { get; set; }
+
+    /// <summary>
+    /// Milliseconds the user paused on this step during recording (delta
+    /// from the previous step's capture time). Replay honours this delay
+    /// *before* executing the step, so recorded pacing — e.g. waiting for
+    /// a search to complete or a menu to animate in — is preserved
+    /// automatically without needing explicit wait steps.
+    /// Null for pre-existing recordings made before this field existed;
+    /// the executor treats null as "no delay".
+    /// Capped at a sane maximum on replay to avoid pathological hangs.
+    /// </summary>
+    public int? DelayBeforeMs { get; set; }
 }

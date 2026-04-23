@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Input;
@@ -32,6 +33,20 @@ public static class DesktopStepExecutor
     {
         var label = $"{testCaseName} [{stepIndex + 1}/{totalSteps}] {step.Action}";
         var sw = Stopwatch.StartNew();
+
+        // Honour recorded pacing — if the user paused between actions during
+        // recording (waiting for search, menu animation, etc.), reproduce
+        // that pause at replay. Capped at a sane maximum so a weirdly-long
+        // recording pause doesn't hang CI for minutes. Skips the delay on
+        // the very first step (no previous step to delay from).
+        if (stepIndex > 0 && step.DelayBeforeMs is int delayMs && delayMs > 0)
+        {
+            var clamped = Math.Min(delayMs, 30_000);
+            logger.LogInformation(
+                "[DesktopStepExecutor] Honouring recorded delay: {Ms}ms before step '{Action}'",
+                clamped, step.Action);
+            Thread.Sleep(clamped);
+        }
 
         try
         {
@@ -129,7 +144,11 @@ public static class DesktopStepExecutor
 
     private static void ExecuteClick(Window window, DesktopUiStep step, UIA3Automation automation, ILogger logger)
     {
-        var element = ResolveElement(window, step, automation, logger);
+        logger.LogWarning(
+            "[DesktopStepExecutor] click step — Name='{Name}' Aid='{Aid}' Coords=({X},{Y})",
+            step.Name ?? "", step.AutomationId ?? "",
+            step.WindowRelativeX?.ToString() ?? "null",
+            step.WindowRelativeY?.ToString() ?? "null");
 
         // Remember current window count before clicking — buttons like OK/Cancel/Submit
         // can close dialogs or open new windows.
@@ -142,8 +161,55 @@ public static class DesktopStepExecutor
         }
         catch { windowCountBefore = -1; }
 
-        ClickElement(element, logger);
-        Wait.UntilInputIsProcessed(TimeSpan.FromMilliseconds(200));
+        // Strategy:
+        //   1. If the step has recorded coordinates, prefer a raw mouse click
+        //      at those coordinates. UIA element lookup is still performed but
+        //      only as a readiness probe (wait for name-match) — not as the
+        //      click target. This is critical for WinForms controls that aren't
+        //      exposed to UIA (ribbon buttons, CheckedCombo popup items) where
+        //      clicking the UIA parent is a no-op but a raw pixel click still
+        //      triggers the underlying control's handler.
+        //   2. If no coords, fall back to UIA element click with full strategy
+        //      stack (ExpandCollapse / InvokePattern / element.Click / Mouse.Click).
+        var hasCoords = step.WindowRelativeX.HasValue && step.WindowRelativeY.HasValue;
+
+        if (hasCoords)
+        {
+            // Run the lookup — its job here is to wait until the UI is ready
+            // (name-match polling) and to provide diagnostics. We ignore the
+            // element itself and click the recorded pixel.
+            _ = TryFindWithFallback(window, step, automation, logger);
+            if (!TryCoordinateClick(window, step, logger))
+            {
+                LogSearchFailureDiagnostics(window, step, automation, logger);
+                throw new InvalidOperationException(
+                    $"Coordinate click failed — no reference window rect for step '{step.Name ?? step.AutomationId ?? "(none)"}'");
+            }
+        }
+        else
+        {
+            // No recorded coords — fall back to UIA element resolution + click.
+            var element = TryFindWithFallback(window, step, automation, logger);
+            if (element is not null)
+            {
+                ClickElement(element, logger);
+            }
+            else
+            {
+                LogSearchFailureDiagnostics(window, step, automation, logger);
+                var selectorDesc = step.AutomationId ?? step.Name ?? step.TreePath ?? "(none)";
+                throw new InvalidOperationException(
+                    $"Element not found: {selectorDesc} (timeout {step.TimeoutMs}ms)");
+            }
+        }
+
+        // Give UI time to settle — ribbon menus, context menus, and dropdown
+        // popups typically need a few hundred ms to animate in before the next
+        // click can reliably land on them. 200ms was too tight and caused
+        // subsequent clicks to hit under-animating menus (i.e. whatever pixel
+        // was there before the menu appeared).
+        Wait.UntilInputIsProcessed(TimeSpan.FromMilliseconds(500));
+        Thread.Sleep(300);
 
         // If the click changed the window count (dialog closed / new window opened),
         // give the app extra time to settle before the next step.
@@ -180,32 +246,80 @@ public static class DesktopStepExecutor
 
     /// <summary>
     /// Click an element using multiple strategies — handles ToolStrip buttons, ribbon items,
-    /// and other WinForms controls that don't respond to a simple coordinate Click.
+    /// combo-box dropdowns, and other WinForms controls that don't respond to a simple
+    /// coordinate Click at the element's centre.
     /// </summary>
     private static void ClickElement(AutomationElement element, ILogger logger)
     {
-        // 1. InvokePattern — most reliable for buttons, toolbar items, menu items.
-        //    Triggers the control's default action without needing coordinates.
+        var controlType = element.Properties.ControlType.ValueOrDefault;
+
+        // 1. ExpandCollapsePattern — use this for combo boxes / dropdown-capable
+        //    controls so the popup actually appears. Clicking the centre of a
+        //    combo Pane often lands on the display text instead of the arrow and
+        //    does not toggle the dropdown; ExpandCollapse invokes the dropdown
+        //    programmatically via UIA.
         try
         {
-            if (element.Patterns.Invoke.IsSupported)
+            if (element.Patterns.ExpandCollapse.IsSupported)
             {
-                element.Patterns.Invoke.Pattern.Invoke();
-                logger.LogDebug("Clicked via InvokePattern");
-                return;
+                var state = element.Patterns.ExpandCollapse.Pattern.ExpandCollapseState.Value;
+                if (state == FlaUI.Core.Definitions.ExpandCollapseState.Collapsed)
+                {
+                    element.Patterns.ExpandCollapse.Pattern.Expand();
+                    logger.LogDebug("Clicked via ExpandCollapse.Expand (was Collapsed)");
+                    return;
+                }
+                // PartiallyExpanded / LeafNode — fall through. Expanded is left alone
+                // because a user click would toggle it closed, which is almost never
+                // what the recorded step intends (subsequent steps operate inside the
+                // popup).
             }
         }
         catch { /* fall through */ }
 
-        // 2. Standard Click — works for most interactive elements
+        // Container control types (Pane, Window, Group, Custom) often report
+        // InvokePattern as supported but the invoke action does nothing or
+        // differs from a real user click — e.g. a WinForms CheckedComboBox
+        // wrapper Pane will "succeed" on Invoke but the dropdown popup never
+        // opens. For these, skip straight to a coordinate-based click which
+        // runs the control's real click handler.
+        var skipInvokePattern = controlType is
+            FlaUI.Core.Definitions.ControlType.Pane or
+            FlaUI.Core.Definitions.ControlType.Window or
+            FlaUI.Core.Definitions.ControlType.Group or
+            FlaUI.Core.Definitions.ControlType.Custom;
+
+        // 2. InvokePattern — most reliable for buttons, toolbar items, menu items.
+        //    Triggers the control's default action without needing coordinates.
+        if (!skipInvokePattern)
+        {
+            try
+            {
+                if (element.Patterns.Invoke.IsSupported)
+                {
+                    element.Patterns.Invoke.Pattern.Invoke();
+                    logger.LogDebug("Clicked via InvokePattern");
+                    return;
+                }
+            }
+            catch { /* fall through */ }
+        }
+
+        // 3. Coordinate click. For wide container controls (Pane with dropdown-like
+        //    proportions), click near the right edge where the dropdown arrow lives
+        //    rather than the centre which is usually on the display text.
         try
         {
+            if (controlType == FlaUI.Core.Definitions.ControlType.Pane
+                && TryClickDropdownArrow(element, logger))
+                return;
+
             element.Click();
             return;
         }
         catch { /* fall through */ }
 
-        // 3. Mouse.Click at the element's clickable point — last resort
+        // 4. Mouse.Click at the element's clickable point — last resort
         try
         {
             var point = element.GetClickablePoint();
@@ -216,6 +330,36 @@ public static class DesktopStepExecutor
         {
             logger.LogWarning("All click strategies failed: {Msg}", ex.Message);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// For Pane controls shaped like a combo box (significantly wider than tall),
+    /// click near the right edge where the dropdown arrow typically is. WinForms
+    /// ComboBox / CheckedComboBox wrappers do not expose the arrow as a separate
+    /// AutomationElement, so the recorder captures the whole Pane — but a click
+    /// at the Pane's centre lands on the display text and does not open the popup.
+    /// Returns true on success.
+    /// </summary>
+    private static bool TryClickDropdownArrow(AutomationElement element, ILogger logger)
+    {
+        try
+        {
+            var rect = element.BoundingRectangle;
+            if (rect.Width <= 0 || rect.Height <= 0) return false;
+            // Combo-box-shaped: meaningfully wider than tall.
+            if (rect.Width < rect.Height * 2) return false;
+
+            // Dropdown arrow sits roughly one button-height in from the right edge.
+            var arrowX = (int)(rect.Right - rect.Height / 2);
+            var arrowY = (int)(rect.Top + rect.Height / 2);
+            Mouse.Click(new System.Drawing.Point(arrowX, arrowY));
+            logger.LogDebug("Pane click routed to dropdown-arrow position ({X},{Y})", arrowX, arrowY);
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -585,11 +729,416 @@ public static class DesktopStepExecutor
         var element = FindElementWithRetry(window, step, automation, logger);
         if (element is null)
         {
+            LogSearchFailureDiagnostics(window, step, automation, logger);
             var selectorDesc = step.AutomationId ?? step.Name ?? step.TreePath ?? "(none)";
             throw new InvalidOperationException(
                 $"Element not found: {selectorDesc} (timeout {step.TimeoutMs}ms)");
         }
         return element;
+    }
+
+    /// <summary>
+    /// Find the element for a recorded step. When coordinates are present they
+    /// are preferred over UIA tree search because:
+    ///   1. They disambiguate name collisions (e.g. multiple "Open" buttons
+    ///      in a ribbon, where UIA's first-match wins the wrong one).
+    ///   2. They work for controls that aren't exposed in the UIA tree at all
+    ///      (legacy CheckedCombo popup items, custom-drawn dropdowns).
+    ///
+    /// Critically, <c>FromPoint</c> is polled for up to the step's timeout
+    /// until the hit element's Name matches the recorded Name. This lets
+    /// the replay wait for slow operations (search completing, menus
+    /// animating in, disabled buttons becoming enabled) without per-step
+    /// timing hacks — we only click once the target is actually ready.
+    ///
+    /// UIA-by-name is still used as a fallback for cases where the window
+    /// has been moved far enough that <c>FromPoint</c> misses the target.
+    /// </summary>
+    private static AutomationElement? TryFindWithFallback(
+        Window window, DesktopUiStep step, UIA3Automation automation, ILogger logger)
+    {
+        // 1. Coordinate-first lookup with name-match polling.
+        if (step.WindowRelativeX is int relX && step.WindowRelativeY is int relY
+            && TryGetReferenceRect(window, out var refRect))
+        {
+            var screenX = refRect.Left + relX;
+            var screenY = refRect.Top + relY;
+            var expected = step.Name ?? "";
+            var sw = Stopwatch.StartNew();
+            AutomationElement? lastHit = null;
+            string lastHitName = "", lastHitCt = "";
+            var matchedName = false;
+
+            while (sw.ElapsedMilliseconds < step.TimeoutMs)
+            {
+                try
+                {
+                    var hit = automation.FromPoint(new System.Drawing.Point(screenX, screenY));
+                    if (hit is not null)
+                    {
+                        lastHit = hit;
+                        try { lastHitName = hit.Properties.Name.ValueOrDefault ?? ""; } catch { lastHitName = ""; }
+                        try { lastHitCt = hit.Properties.ControlType.ValueOrDefault.ToString(); } catch { lastHitCt = ""; }
+
+                        // Accept if recorded Name is empty (e.g. text fields, anonymous
+                        // panes), or if the hit element's Name matches the recorded
+                        // one. Ampersand-mnemonics like "&Yes" are stripped for the
+                        // compare because UIA sometimes returns them and sometimes
+                        // doesn't depending on the control.
+                        if (string.IsNullOrEmpty(expected)
+                            || NameMatches(lastHitName, expected))
+                        {
+                            matchedName = true;
+                            break;
+                        }
+                    }
+                }
+                catch { }
+                Thread.Sleep(200);
+            }
+
+            if (lastHit is not null)
+            {
+                logger.LogWarning(
+                    "[DesktopStepExecutor] FromPoint({X},{Y}) hit Ct='{Ct}' Name='{HitName}' (recorded Name='{Expected}') match={Match} after {Ms}ms",
+                    screenX, screenY, lastHitCt, lastHitName, expected,
+                    matchedName ? "yes" : "no (timeout — using last hit)", sw.ElapsedMilliseconds);
+                return lastHit;
+            }
+        }
+
+        // 2. Fall back to UIA tree search (works when window moved / no coords).
+        return FindElementWithRetry(window, step, automation, logger);
+    }
+
+    /// <summary>
+    /// Case-insensitive Name match with ampersand-mnemonic tolerance —
+    /// recorded "&amp;Yes" should match UIA "Yes" at replay time.
+    /// </summary>
+    private static bool NameMatches(string actual, string expected)
+    {
+        static string Strip(string s) => s.Replace("&", "").Trim();
+        return string.Equals(Strip(actual), Strip(expected), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Last-resort click: bypass UIA entirely and drive the mouse at the
+    /// recorded screen coordinates (translated via the main window's current
+    /// position so the click still lands correctly if the window was moved
+    /// since recording). Used only when every UIA approach has failed.
+    /// Returns true if coordinates were usable and the click was dispatched.
+    /// </summary>
+    private static bool TryCoordinateClick(Window window, DesktopUiStep step, ILogger logger)
+    {
+        if (step.WindowRelativeX is not int relX || step.WindowRelativeY is not int relY)
+        {
+            logger.LogWarning(
+                "[DesktopStepExecutor] Coordinate fallback skipped — step has no recorded coordinates (X={X} Y={Y})",
+                step.WindowRelativeX?.ToString() ?? "null",
+                step.WindowRelativeY?.ToString() ?? "null");
+            return false;
+        }
+
+        if (!TryGetReferenceRect(window, out var refRect))
+        {
+            logger.LogWarning("[DesktopStepExecutor] Coordinate fallback skipped — no reference window rect");
+            return false;
+        }
+
+        try
+        {
+            var screenX = refRect.Left + relX;
+            var screenY = refRect.Top + relY;
+            Mouse.Click(new System.Drawing.Point(screenX, screenY));
+            logger.LogWarning(
+                "[DesktopStepExecutor] UIA resolution failed for '{Sel}' — clicked at recorded coordinates screen=({X},{Y}) rel=({Rx},{Ry}) ref=({RefL},{RefT})",
+                step.AutomationId ?? step.Name ?? step.TreePath ?? "(none)",
+                screenX, screenY, relX, relY, refRect.Left, refRect.Top);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning("[DesktopStepExecutor] Coordinate-click fallback failed: {Msg}", ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Returns the screen rect of the process's largest visible window — the
+    /// same reference the recorder uses when saving window-relative coords,
+    /// so record and replay stay in sync even when the app has multiple
+    /// top-level windows (main form + hidden helpers, popups, etc.).
+    /// </summary>
+    private static bool TryGetReferenceRect(Window window, out ReferenceRect rect)
+    {
+        rect = default;
+        try
+        {
+            uint pid = 0;
+            try { pid = (uint)window.Properties.ProcessId.Value; } catch { }
+            if (pid == 0) return false;
+
+            var hwnd = FindLargestVisibleWindow(pid);
+            if (hwnd != IntPtr.Zero && GetWindowRect(hwnd, out var r))
+            {
+                rect = new ReferenceRect(r.Left, r.Top, r.Right, r.Bottom);
+                return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    private readonly record struct ReferenceRect(int Left, int Top, int Right, int Bottom);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hWnd, out Win32Rect lpRect);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Win32Rect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    private static IntPtr FindLargestVisibleWindow(uint processId)
+    {
+        var largest = IntPtr.Zero;
+        long largestArea = 0;
+
+        EnumWindows((hwnd, _) =>
+        {
+            if (!IsWindowVisible(hwnd)) return true;
+            GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid != processId) return true;
+            if (!GetWindowRect(hwnd, out var rect)) return true;
+            long w = rect.Right - rect.Left;
+            long h = rect.Bottom - rect.Top;
+            if (w <= 0 || h <= 0) return true;
+            long area = w * h;
+            if (area > largestArea)
+            {
+                largestArea = area;
+                largest = hwnd;
+            }
+            return true;
+        }, IntPtr.Zero);
+
+        return largest;
+    }
+
+    /// <summary>
+    /// When an element cannot be located, dump forensic data about what IS present in
+    /// the automation tree so the recorded selector can be reconciled with the live UI.
+    /// Logs at Warning so it appears in the agent console without needing a debug flag.
+    /// </summary>
+    private static void LogSearchFailureDiagnostics(
+        Window window, DesktopUiStep step, UIA3Automation automation, ILogger logger)
+    {
+        try
+        {
+            logger.LogWarning(
+                "[Diag] Selector not resolved — AutomationId='{Aid}' Name='{Name}' ClassName='{Cls}' ControlType='{Ct}' TreePath='{Tp}'",
+                step.AutomationId, step.Name, step.ClassName, step.ControlType, step.TreePath);
+
+            // 1. All top-level windows owned by the target process
+            try
+            {
+                var allWindows = Application.Attach(window.Properties.ProcessId.Value)
+                    .GetAllTopLevelWindows(automation);
+                logger.LogWarning("[Diag] Process top-level windows: {Count}", allWindows.Length);
+                foreach (var w in allWindows)
+                {
+                    var title = w.Title ?? "";
+                    var cls = w.ClassName ?? "";
+                    logger.LogWarning("[Diag]   Window: title='{Title}' class='{Cls}'", title, cls);
+                }
+            }
+            catch (Exception ex) { logger.LogWarning("[Diag] Process window enum failed: {Msg}", ex.Message); }
+
+            // 2. Desktop-level popup windows that are NOT part of the process's window list
+            //    but might host the popup (e.g. when a ToolStripDropDown shows up as a
+            //    child of the desktop rather than the owning window).
+            try
+            {
+                var desktop = automation.GetDesktop();
+                var topLevel = desktop.FindAllChildren();
+                var popupsNearby = topLevel
+                    .Where(w =>
+                    {
+                        try
+                        {
+                            var cls = w.ClassName ?? "";
+                            return cls.Contains("DropDown", StringComparison.OrdinalIgnoreCase)
+                                || cls.Contains("Popup", StringComparison.OrdinalIgnoreCase)
+                                || cls.Contains("ToolStrip", StringComparison.OrdinalIgnoreCase);
+                        }
+                        catch { return false; }
+                    })
+                    .Take(10)
+                    .ToList();
+                if (popupsNearby.Count > 0)
+                {
+                    logger.LogWarning("[Diag] Desktop popup-like windows: {Count}", popupsNearby.Count);
+                    foreach (var w in popupsNearby)
+                    {
+                        logger.LogWarning("[Diag]   Popup: class='{Cls}' name='{Name}'",
+                            w.ClassName ?? "", w.Name ?? "");
+                    }
+                }
+            }
+            catch (Exception ex) { logger.LogWarning("[Diag] Desktop popup enum failed: {Msg}", ex.Message); }
+
+            // 3. If a Name was expected, list descendants with a similar name across
+            //    the primary window + desktop, to catch record-vs-replay mismatches
+            //    (leading whitespace, parens, trailing ellipsis, etc.).
+            if (!string.IsNullOrEmpty(step.Name))
+            {
+                var needle = step.Name.Trim('(', ')', ' ', '\t');
+                LogNameMatches("primary", window, needle, logger);
+                try { LogNameMatches("desktop", automation.GetDesktop(), needle, logger); }
+                catch { }
+            }
+
+            // 4. For control-type-based diagnostics, list all elements of the target
+            //    control type in the primary window and any visible popups.
+            if (!string.IsNullOrEmpty(step.ControlType)
+                && Enum.TryParse<FlaUI.Core.Definitions.ControlType>(step.ControlType, true, out var ct))
+            {
+                try
+                {
+                    var cf = window.ConditionFactory;
+                    var matches = window.FindAllDescendants(cf.ByControlType(ct)).Take(15).ToList();
+                    logger.LogWarning("[Diag] {Ct} descendants in primary window: {Count}",
+                        ct, matches.Count);
+                    foreach (var m in matches)
+                    {
+                        string n = "", aid = "", cls = "";
+                        try { n = m.Properties.Name.ValueOrDefault ?? ""; } catch { }
+                        try { aid = m.Properties.AutomationId.ValueOrDefault ?? ""; } catch { }
+                        try { cls = m.Properties.ClassName.ValueOrDefault ?? ""; } catch { }
+                        logger.LogWarning("[Diag]   {Ct}: Name='{N}' Aid='{A}' Class='{C}'",
+                            ct, n, aid, cls);
+                    }
+                }
+                catch (Exception ex) { logger.LogWarning("[Diag] ControlType enum failed: {Msg}", ex.Message); }
+            }
+
+            // 5. RawView walker — ControlView filters out elements with
+            //    IsControlElement=false. Some custom controls' popup items live in
+            //    RawView only. Walk the raw tree looking for a Name match.
+            if (!string.IsNullOrEmpty(step.Name))
+            {
+                try
+                {
+                    var rawHit = FindFirstInRawView(window, step.Name, maxNodes: 5000);
+                    logger.LogWarning("[Diag] RawView Name='{Name}' match: {Found}",
+                        step.Name, rawHit ? "YES (element exists but ControlView excludes it)" : "NO (not in UIA tree at all)");
+                }
+                catch (Exception ex) { logger.LogWarning("[Diag] RawView scan failed: {Msg}", ex.Message); }
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning("[Diag] Diagnostic logging itself failed: {Msg}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Walks the RawView tree (all UIA elements, including those excluded from
+    /// ControlView by IsControlElement=false) looking for an exact Name match.
+    /// Returns true if such an element exists anywhere under <paramref name="root"/>.
+    /// Capped at <paramref name="maxNodes"/> to keep diagnostics bounded.
+    /// </summary>
+    private static bool FindFirstInRawView(AutomationElement root, string name, int maxNodes)
+    {
+        try
+        {
+            var walker = root.Automation.TreeWalkerFactory.GetRawViewWalker();
+            var stack = new Stack<AutomationElement>();
+            stack.Push(root);
+            var scanned = 0;
+
+            while (stack.Count > 0 && scanned < maxNodes)
+            {
+                var current = stack.Pop();
+                scanned++;
+                try
+                {
+                    var elName = current.Properties.Name.ValueOrDefault ?? "";
+                    if (string.Equals(elName, name, StringComparison.Ordinal))
+                        return true;
+                }
+                catch { }
+
+                try
+                {
+                    var child = walker.GetFirstChild(current);
+                    while (child is not null)
+                    {
+                        stack.Push(child);
+                        child = walker.GetNextSibling(child);
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    private static void LogNameMatches(string scopeLabel, AutomationElement root, string needle, ILogger logger)
+    {
+        try
+        {
+            var all = root.FindAllDescendants();
+            var matches = all
+                .Where(e =>
+                {
+                    try
+                    {
+                        var name = e.Name ?? "";
+                        return name.Contains(needle, StringComparison.OrdinalIgnoreCase);
+                    }
+                    catch { return false; }
+                })
+                .Take(10)
+                .ToList();
+            logger.LogWarning("[Diag] Name~'{Needle}' in {Scope}: {Count} candidates",
+                needle, scopeLabel, matches.Count);
+            foreach (var m in matches)
+            {
+                try
+                {
+                    logger.LogWarning("[Diag]   {Scope}: Ct={Ct} Name='{N}' Aid='{A}'",
+                        scopeLabel,
+                        m.Properties.ControlType.ValueOrDefault,
+                        m.Name ?? "",
+                        m.AutomationId ?? "");
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning("[Diag] {Scope} name scan failed: {Msg}", scopeLabel, ex.Message);
+        }
     }
 
     /// <summary>

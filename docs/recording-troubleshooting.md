@@ -1,6 +1,53 @@
 # AITestCrew — Recording Troubleshooting Guide
 
-This guide captures hard-won lessons from real recording defects in **Bravo Web (Kendo UI / jQuery)** and **Bravo Cloud (Blazor / MudBlazor)**, and a diagnostic playbook to fast-track future fixes. Consult this before modifying `PlaywrightRecorder.cs` or debugging a broken recording.
+This guide captures hard-won lessons from real recording defects in **Bravo Web (Kendo UI / jQuery)**, **Bravo Cloud (Blazor / MudBlazor)**, and **Bravo Desktop (WinForms / UIA)**. Consult this before modifying `PlaywrightRecorder.cs` / `DesktopRecorder.cs` or debugging a broken recording.
+
+For deep dives:
+- Web — `.claude/commands/bravo-web-reference.md` / `blazor-cloud-reference.md`
+- Desktop — `.claude/commands/desktop-winui-reference.md`
+
+---
+
+## Desktop (WinForms / UIA) — quick diagnosis
+
+The desktop recorder and replay engine use a **coord-first strategy**: every click captures the pixel relative to the process's largest visible window, and replay clicks that exact pixel via `Mouse.Click`. UIA element lookup exists but is only a readiness probe (waits for the right element to appear under the pixel before clicking). The recorder also auto-captures **inter-step delay** (`DelayBeforeMs`) so your recording pace is reproduced at replay.
+
+### Why this design
+
+Legacy WinForms apps (especially those using Infragistics / DevExpress or custom-drawn controls) **don't fully expose themselves to UI Automation**:
+
+- Ribbon buttons often don't exist as individual `Button` elements — only the parent `ToolBar` is visible to UIA.
+- `CheckedComboBox` popup items render on screen but aren't in the UIA tree at all (ControlView *or* RawView).
+- Disabled controls are skipped by `FromPoint` hit-testing; UIA returns the parent instead of the disabled child.
+
+WinForms still processes raw mouse events at the pixel level, though — so a `Mouse.Click` at the right coordinates fires the underlying control's handler regardless of UIA. That's why the replay is coord-first.
+
+### Desktop symptoms → root cause
+
+| Symptom | Likely root cause | Fix |
+|---|---|---|
+| Replay clicks ribbon button but nothing happens | UIA only sees the `ToolBar` parent; clicking the ToolBar centre is a no-op | Confirm `Coords=(X,Y)` is non-null in the log. If yes, coord-first path should work. If no, re-record — the old recording predates coord capture |
+| `Coords=(null,null)` on every click except the first | Recorder using stale `mainWindow` reference (captured at Login window, dead after login transition) | Recorder now uses `FindLargestVisibleWindow(processId)` refreshed per click — verify this in `DesktopRecorder.cs` |
+| Coords wildly large (e.g. X=5080 on a sensible window) | Reference window was a tiny helper at (0,0) (e.g. `Process.MainWindowHandle` picked the wrong one) | Ensure `FindLargestVisibleWindow` filters by `IsWindowVisible` + largest area of the target process |
+| Coords relative to a popup, not main window | Reference was `GetForegroundWindow()` — returned the popup | Never use foreground window; always `FindLargestVisibleWindow` |
+| `(Select All)` / combo popup checkbox "Element not found" | Popup items not in UIA tree at all | Coord-first path handles this via `Mouse.Click` at the recorded pixel |
+| Recorded step shows `Name='Invoice Actions'` / `ControlType='ToolBar'` when user intended a ribbon button | Button was disabled at click time, or click missed the icon by a few pixels — UIA returned the container | `RefineContainerHit` in the recorder walks descendants for actionable children whose `BoundingRectangle` contains the click pixel. Re-record clicking squarely on the icon if refinement can't find it (control genuinely not in tree) |
+| Replay fires clicks faster than recording — button clicked before search returns | Inter-step delay not preserved | Recorder stores `DelayBeforeMs` per step (delta from previous step). Executor sleeps that long before each step, capped at 30,000 ms. Null on old recordings |
+| New `DesktopUiStep` field disappears between agent and DB | Docker-hosted WebApi is older build; `System.Text.Json` silently drops unknown fields | Rebuild Docker image (`docker compose build && up -d`) whenever `DesktopUiStep` schema changes. See `desktop-winui-reference.md` "Changing the schema" checklist |
+
+### Desktop diagnostic flow
+
+1. **Look at the `[DesktopStepExecutor] click step — Name='X' Aid='Y' Coords=(N,M)` log line** for the failing step.
+   - `Coords=(null,null)` → recorder didn't capture. Either legacy recording or `FindLargestVisibleWindow` returned 0. Re-record.
+   - `Coords=(huge,...)` → wrong reference window. Check for regressions.
+2. **Look at the `FromPoint(X,Y) hit Ct='C' Name='N' (recorded Name='R') match=yes/no` line.**
+   - `match=yes` → right element under the pixel. If the click doesn't fire the expected action, the recorded `ControlType` is likely a container (`ToolBar`/`Pane`) — re-record clicking squarely on the intended child.
+   - `match=no` → upstream state is wrong: a menu didn't open or a search didn't complete. Usually a missing / too-short `DelayBeforeMs` on the preceding step, or a recorded step that hit a container instead of a trigger button.
+3. **Verify recording quality in the UI editor**: every click has `Coords`, `ControlType` is a specific actionable type (`Button`/`Hyperlink`/`MenuItem`/`CheckBox` — not `ToolBar`/`Pane`), `DelayBeforeMs` reflects reality.
+
+---
+
+## Web recording (Kendo / MudBlazor) — see sections below.
 
 ---
 

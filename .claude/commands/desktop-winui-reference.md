@@ -31,17 +31,51 @@ This is a **read-only reference** — do not modify this file as part of a task.
 
 ---
 
+## Design principle: coordinates are the source of truth for clicks
+
+Read this before touching click execution logic. It will save you hours.
+
+**Legacy WinForms apps (Infragistics, DevExpress, Bravo's custom controls, etc.) do not fully expose their UI to UI Automation.** Specifically:
+
+- **Ribbon/toolbar buttons** are often drawn visually but the group (e.g. `ToolBar` named "Invoice Actions") is the only thing in the UIA tree. Individual `Button` children don't exist.
+- **`CheckedComboBox` popups** render visible checkboxes that are *not* in the UIA tree (neither ControlView nor RawView). Hit-testing via `FromPoint` can see them; tree traversal via `FindFirstDescendant` cannot.
+- **Disabled controls** are skipped by UIA hit-testing — `FromPoint` returns the parent container instead.
+- **Custom-drawn menus, popup panels, owner-draw controls** frequently aren't in the tree.
+
+Meanwhile, **WinForms always processes raw mouse input at the pixel level** regardless of UIA. A `Mouse.Click` at the right coordinates fires the underlying control's handler even when UIA has no idea that control exists.
+
+**Because of this, replay is coord-first**: every captured click stores `WindowRelativeX`/`Y`, and the executor clicks those pixels via `Mouse.Click`. UIA is used only as a readiness probe (waiting for the UI to settle), not to locate the click target. This single rule dissolves most failure modes at once:
+
+| Broken control class | Why UIA-based click fails | Why coord click works |
+|---|---|---|
+| Ribbon button | Not in UIA tree — clicking the ToolBar parent is a no-op | Pixel click fires button's mouse handler |
+| CheckedCombo popup item | Not in UIA tree at all | Pixel click hits the rendered checkbox |
+| Disabled-at-click-time ribbon button | `FromPoint` returns parent; can't find element | Pixel click works once the button enables (after `DelayBeforeMs`) |
+| Multiple elements with same `Name` (e.g. several "Open") | UIA's first-match is typically the wrong one | Pixel click is unambiguous |
+| Stale `TreePath` | Tree shifts after login / MDI | Pixel click doesn't use the tree |
+
+UIA tree lookup is still the fallback for pre-existing recordings that have no `WindowRelativeX`/`Y`.
+
+---
+
 ## Element selector model
 
 Desktop steps use **composite selectors** — five fields with cascading priority, unlike web UI's single CSS selector string.
 
 ```
 DesktopUiStep {
-  AutomationId   // Priority 1 — maps to Control.Name in WinForms code
-  Name           // Priority 2 — visible text/label of the control
-  ClassName      // Priority 3 — e.g. "WindowsForms10.EDIT.app.0.141b42a_r6_ad1"
-  ControlType    // Priority 3 — e.g. "Button", "Edit", "ComboBox", "TreeItem"
-  TreePath       // Priority 4 — positional path: "Pane[0]/Edit[3]"
+  AutomationId      // Priority 1 — maps to Control.Name in WinForms code
+  Name              // Priority 2 — visible text/label of the control
+  ClassName         // Priority 3 — e.g. "WindowsForms10.EDIT.app.0.141b42a_r6_ad1"
+  ControlType       // Priority 3 — e.g. "Button", "Edit", "ComboBox", "TreeItem"
+  TreePath          // Priority 4 — positional path: "Pane[0]/Edit[3]"
+
+  // Coordinate-based fallback (preferred at replay when present):
+  WindowRelativeX   // screen X minus main-window Left (pixels)
+  WindowRelativeY   // screen Y minus main-window Top  (pixels)
+
+  // Recording pacing (auto-captured delay from previous step):
+  DelayBeforeMs     // ms to sleep before this step executes; capped at 30,000
 }
 ```
 
@@ -106,7 +140,20 @@ The mouse hook (`mouseProc`) applies these filters in order:
 2. **Element resolution**: `automation.FromPoint(cursorPosition)` → resolves the UI Automation element at click coordinates
 3. **Window chrome filter** (`IsWindowChrome`): Skip `TitleBar`, `ScrollBar`, `Thumb` control types
 4. **System UI filter** (`IsSystemElement`): Skip taskbar buttons (`TaskListButton` class), shell tray (`Shell_*` class), UWP app IDs (`*!App` pattern in AutomationId)
-5. **Selector building**: `DesktopElementResolver.BuildSelector(element, mainWindow)`
+5. **Container refinement** (`RefineContainerHit`): if `FromPoint` landed on a generic container (`ToolBar`/`Pane`/`Group`/`Custom`), walk its descendants looking for an actionable child (`Button`/`MenuItem`/`Hyperlink`/`CheckBox`/`SplitButton`/`RadioButton`) whose bounding rect contains the click pixel. Captures the specific child even if it was disabled and hit-test-invisible at click time.
+6. **Selector building**: `DesktopElementResolver.BuildSelector(refined, mainWindow)`
+7. **Coordinate capture**: relative to `FindLargestVisibleWindow(targetProcessId)` — see below.
+8. **Delay capture**: `DelayBeforeMs = now - lastStepUtc` on the new step; `lastStepUtc = now` afterward.
+
+### Why `FindLargestVisibleWindow`, not `Process.MainWindowHandle` or `GetForegroundWindow`
+
+The coordinate reference window must be consistent across record and replay.
+
+- `Process.MainWindowHandle` is cached per `Process` instance and frequently picks tiny helper windows at `(0,0)` for WinForms apps with multiple top-level windows — coordinates become nearly-absolute-screen values that don't translate at replay.
+- `GetForegroundWindow()` returns whatever is topmost *at that moment*, which for a click on a dropdown popup is the popup itself — a small window with its own origin. Coords relative to it make no sense at replay (the popup won't be open yet).
+- `FindLargestVisibleWindow(pid)` enumerates every top-level window, filters to visible ones owned by the target process, and returns the largest by area. The app's main form is always the largest window — stable across login transitions, unaffected by transient popups.
+
+Both recorder and executor use the same `FindLargestVisibleWindow` implementation so offsets round-trip exactly.
 
 ### Keyboard hook — Ctrl+V paste handling
 
@@ -136,13 +183,32 @@ Clipboard must be read on an STA thread (`Thread.SetApartmentState(ApartmentStat
 
 ## Replay architecture
 
-### Click execution (DesktopStepExecutor.ClickElement)
+### Per-step delay (DelayBeforeMs)
 
-Three strategies in priority order:
+Before executing any step (except the first), the executor sleeps `step.DelayBeforeMs` milliseconds, capped at 30,000. This reproduces the pacing the user had during recording — pauses for search to complete, menus to animate in, modal dialogs to load. **This replaces the need for manual `wait` steps in most cases.** Null on old recordings means "no delay"; the executor degrades gracefully.
 
-1. **InvokePattern** — `element.Patterns.Invoke.Pattern.Invoke()` — most reliable for ToolStrip buttons, ribbon items, toolbar buttons. Triggers the control's built-in action without coordinates.
-2. **element.Click()** — standard FlaUI coordinate-based click
-3. **Mouse.Click(clickablePoint)** — raw Win32 mouse click at element's clickable point
+### Click execution
+
+Two paths, gated on whether the step carries recorded coordinates:
+
+**Path A — step has coords (modern recordings):**
+
+1. `TryFindWithFallback` runs as a **readiness probe only**: it polls `FromPoint` at the recorded screen position until the hit element's `Name` matches the recorded `Name` (or the step's `TimeoutMs` expires). This lets the replay wait for slow operations (search completing, disabled buttons becoming enabled) without per-step hacks.
+2. **Click executes via `Mouse.Click(screenX, screenY)`** at the translated recorded pixel. The UIA element is *not* used for the click itself — that's critical for controls outside UIA (ribbon buttons, custom popups). WinForms processes the raw mouse event and the control's handler fires.
+
+**Path B — no coords (legacy recordings):**
+
+Falls back to the classic UIA-element click strategy in `ClickElement(AutomationElement)`:
+
+1. **ExpandCollapsePattern** — if supported and element is collapsed, call `Expand()`. Opens combo dropdowns programmatically, avoiding centre-of-Pane-misses-the-arrow pitfalls.
+2. **InvokePattern** — reliable for Button/Hyperlink/MenuItem/ToolBar items. **Skipped for `Pane`/`Window`/`Group`/`Custom` control types** — these often report Invoke as supported but the invoke action is a no-op or differs from a real user click (e.g. a CheckedComboBox Pane doesn't open its popup on Invoke).
+3. **`TryClickDropdownArrow`** — for `Pane` controls shaped like a combo (`Width > Height * 2`), click near the right edge where the dropdown arrow lives rather than the centre (which is on the display text).
+4. **`element.Click()`** — standard FlaUI coordinate-based click.
+5. **`Mouse.Click(clickablePoint)`** — raw Win32 click at the element's clickable point.
+
+### Readiness probe name-matching
+
+`NameMatches(actual, expected)` is case-insensitive and strips ampersand mnemonics so recorded `"&Yes"` matches UIA's `"Yes"`. An empty `expected` (text fields, anonymous panes) matches any hit.
 
 ### Window transition detection
 
@@ -206,8 +272,50 @@ Critical for container elements (Pane, Group) where the visible text lives in a 
 | Assert finds element but text is empty | Container element (Pane) | `GetElementText` must search children and Text descendants |
 | Assert-text always gets stale text | `FindElementAcrossWindows` consumes full timeout | Use `QuickFindElement` (single-attempt) in polling loop |
 | Numeric AutomationId (window handle) | Changes every launch | `IsAutoGeneratedId` skips pure numeric strings |
-| Ribbon/toolbar button click doesn't work | `element.Click()` fails on ToolStrip | `ClickElement` tries InvokePattern first |
 | Element not found in MDI app | Only searching primary window | Search all windows → desktop root fallback |
+| Replay clicks ribbon button but nothing happens | UIA sees only the ToolBar parent; `element.Click()` clicks the ToolBar centre which is a no-op | Coord-first path — `Mouse.Click(WindowRelativeX, Y)`. If coords are missing, re-record; disabled-at-click-time means UIA returned the container at record time and `RefineContainerHit` should pick up the Button child if it's in the tree |
+| Replay fails on combo-dropdown checkbox (`(Select All)`, etc.) with "Element not found" | Popup items are rendered visually but not in UIA tree (ControlView or RawView) | Coord-first path handles this; `FromPoint` hit-tests through where tree enumeration can't |
+| All coords are `null` on non-first clicks of a legacy recording | Recorder used a stale `mainWindow` (captured at the Login window) for the offset; after login transition the reference is dead and `BoundingRectangle` throws | Use `FindLargestVisibleWindow(targetProcessId)` — a fresh enum scan each click, not a cached Window reference |
+| Recorded coords are absurd (e.g. X=5080 on a reasonable-sized window) | `Process.MainWindowHandle` returned a tiny helper window at `(0,0)`, so "relative" ≈ absolute screen coord | Same — `FindLargestVisibleWindow` filters to the largest-area visible window of the process |
+| Coords relative to dropdown popup, not main window | `GetForegroundWindow()` returned the transient popup | Never use `GetForegroundWindow` as the reference; always `FindLargestVisibleWindow` |
+| Clicks fire too fast — search hasn't completed before next click | No inter-step delay | Recorder writes `DelayBeforeMs` (delta from previous step); executor honours it. Cap at 30,000 ms |
+| New `DesktopUiStep` field works on PC but disappears at replay | Docker-hosted WebApi is running older build; `System.Text.Json` silently drops unknown fields on deserialisation before persisting to SQLite | Rebuild the Docker image (`docker compose build && docker compose up -d`) whenever `DesktopUiStep` / `DesktopUiTestDefinition` schema changes. The schema lives in `AiTestCrew.Storage` which is compiled into the WebApi image |
+| Recorded step shows `Name='Invoice Actions' ControlType='ToolBar'` instead of the Button the user clicked | Button was either disabled at click time (UIA hit-test skips disabled) or the click landed a few pixels off the button icon | `RefineContainerHit` in the recorder walks the ToolBar's descendants for any Button/MenuItem/Hyperlink/CheckBox/SplitButton whose `BoundingRectangle` contains the click pixel and captures that instead. If the child button doesn't exist in the UIA tree at all (Infragistics custom ribbon), the recorder can't do better — coord-first replay compensates |
+| Replay hits the wrong "Open" button (name collision) | Multiple buttons share the name; `FindFirstDescendant(ByName)` returns the first one | Coord-first: `Mouse.Click` at the recorded pixel is unambiguous by definition |
+| `FromPoint` hits wrong element at replay (e.g. grid row instead of menu item) | Menu wasn't open at replay because a preceding step (container click) did nothing | Inspect `[DesktopStepExecutor] FromPoint(...) hit Ct='X' Name='Y' (recorded Name='Z')` in the logs. If hit differs from recorded, the UI state upstream is wrong — usually a missing `DelayBeforeMs` or a recorded click on a generic container — the fix is at the recording, not the executor |
+
+---
+
+## Debugging playbook — recording/replay failures
+
+Use this before making any code change when a test fails. It prevents whack-a-mole patching.
+
+1. **Look at the per-step `[DesktopStepExecutor] click step — Name='X' Aid='Y' Coords=(N,M)` line** for each failing step:
+   - `Coords=(null,null)` → recorder didn't capture coords. Either the recording pre-dates the feature, or `FindLargestVisibleWindow` returned 0 at record time (rare — process has no visible window). Re-record.
+   - `Coords=(huge_X, ...)` → the coord reference is wrong. Verify recorder and executor both use `FindLargestVisibleWindow`; check for regressions to `Process.MainWindowHandle` or `GetForegroundWindow`.
+2. **Look at the `FromPoint(X,Y) hit Ct='C' Name='N' (recorded Name='R') match=yes/no` line.**
+   - `match=yes` → the right element is under the click pixel at replay. If the click doesn't fire the expected action, the step captured the wrong element at record time (typically a `ToolBar`/`Pane` container when the user intended a child button). Inspect the step's `ControlType`: if it's `ToolBar`/`Pane`/`Group`/`Custom`, re-record clicking squarely on the intended control.
+   - `match=no` (timeout) → the UI isn't in the expected state at this point of the test. Something upstream didn't happen: a menu didn't open, a search didn't complete, a dialog didn't appear. Usually fixed by increasing `DelayBeforeMs` on the preceding step or adding an intermediate step that was missed during recording.
+3. **Check recording quality in the UI editor** (`EditDesktopUiTestCaseDialog`):
+   - Every click should have `Coords` populated.
+   - `ControlType` should ideally be a specific actionable type (`Button`/`Hyperlink`/`MenuItem`/`CheckBox`), not a container.
+   - `DelayBeforeMs` should reflect reality — if a step fires right after a search button click, expect 5,000–15,000 ms here; if less, re-record with a natural pause.
+4. **Check the Docker image version.** If you added a field to `DesktopUiStep` and values are arriving as `null` at the agent despite being captured correctly, the Docker-hosted WebApi is an older build stripping them. Rebuild the image.
+
+---
+
+## Changing the `DesktopUiStep` schema
+
+A checklist — forgetting any one of these causes silent round-trip data loss, which takes hours to diagnose:
+
+1. Add the field to `src/AiTestCrew.Storage/Shared/DesktopUiTestCase.cs` (the C# model).
+2. Add it to `ui/src/types/index.ts` (TypeScript interface).
+3. Update `emptyStep()` in `ui/src/components/EditDesktopUiTestCaseDialog.tsx` so newly-added steps include the field.
+4. Surface it in the dialog UI if it's human-meaningful.
+5. Update `DesktopRecorder.cs` to populate it at capture time.
+6. Update `DesktopStepExecutor.cs` to honour it at replay time.
+7. **Rebuild the Docker image** (`cd ui && npx vite build && cd .. && docker compose build && docker compose up -d`) — the WebApi hosted there holds the server-side copy of the schema, and `System.Text.Json` will silently drop unknown fields on the way into the SQLite DB without this rebuild.
+8. Re-record any tests whose saved JSON was written by the old WebApi — the field will be `null` on those steps and cannot be back-filled.
 
 ---
 

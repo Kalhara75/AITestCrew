@@ -64,6 +64,12 @@ export interface DesktopUiStep {
   menuPath: string | null;
   windowTitle: string | null;
   timeoutMs: number;
+  /** Captured click X relative to the process main window. Null on pre-existing recordings. */
+  windowRelativeX: number | null;
+  /** Captured click Y relative to the process main window. Null on pre-existing recordings. */
+  windowRelativeY: number | null;
+  /** Recorded pause (ms) before this step during recording — honoured at replay. */
+  delayBeforeMs: number | null;
 }
 
 export interface DesktopUiTestDefinition {

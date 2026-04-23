@@ -64,6 +64,121 @@ public static class DesktopRecorder
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
     [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    /// <summary>
+    /// Scan all top-level windows and return the handle of the largest visible one
+    /// owned by <paramref name="processId"/>. This is a robust way to identify a
+    /// WinForms app's main form — <c>Process.MainWindowHandle</c> often picks tiny
+    /// helper windows at (0,0), which gives useless coordinate references.
+    /// </summary>
+    /// <summary>
+    /// When <see cref="FlaUI.Core.AutomationElement.FromPoint"/> returns a generic
+    /// container (ribbon <c>ToolBar</c>, a layout <c>Pane</c>, a <c>Group</c>,
+    /// <c>Custom</c>), walk its descendants looking for an actual clickable
+    /// control (<c>Button</c>, <c>MenuItem</c>, <c>Hyperlink</c>,
+    /// <c>CheckBox</c>, <c>SplitButton</c>) whose bounding rectangle contains
+    /// the clicked pixel. That child is almost always what the user intended
+    /// to click — UIA's hit-test just skipped it because it was disabled
+    /// (e.g. ribbon buttons that only enable after a row is selected). Capturing
+    /// the child instead of the container makes the recorded step meaningful.
+    /// </summary>
+    private static FlaUI.Core.AutomationElements.AutomationElement RefineContainerHit(
+        FlaUI.Core.AutomationElements.AutomationElement hit,
+        int screenX, int screenY, ILogger logger)
+    {
+        try
+        {
+            var ct = hit.Properties.ControlType.ValueOrDefault;
+            if (ct != FlaUI.Core.Definitions.ControlType.ToolBar
+                && ct != FlaUI.Core.Definitions.ControlType.Pane
+                && ct != FlaUI.Core.Definitions.ControlType.Group
+                && ct != FlaUI.Core.Definitions.ControlType.Custom)
+            {
+                return hit; // Already a specific element
+            }
+
+            var descendants = hit.FindAllDescendants();
+            foreach (var d in descendants)
+            {
+                try
+                {
+                    var dct = d.Properties.ControlType.ValueOrDefault;
+                    if (dct != FlaUI.Core.Definitions.ControlType.Button
+                        && dct != FlaUI.Core.Definitions.ControlType.MenuItem
+                        && dct != FlaUI.Core.Definitions.ControlType.Hyperlink
+                        && dct != FlaUI.Core.Definitions.ControlType.CheckBox
+                        && dct != FlaUI.Core.Definitions.ControlType.SplitButton
+                        && dct != FlaUI.Core.Definitions.ControlType.RadioButton)
+                        continue;
+
+                    var rect = d.BoundingRectangle;
+                    if (rect.Width <= 0 || rect.Height <= 0) continue;
+                    if (screenX < rect.Left || screenX > rect.Right) continue;
+                    if (screenY < rect.Top || screenY > rect.Bottom) continue;
+
+                    var name = "";
+                    try { name = d.Properties.Name.ValueOrDefault ?? ""; } catch { }
+                    logger.LogDebug(
+                        "[DesktopRecorder] Refined container hit to {Ct} Name='{Name}'",
+                        dct, name);
+                    return d;
+                }
+                catch { }
+            }
+        }
+        catch { }
+
+        return hit;
+    }
+
+    private static IntPtr FindLargestVisibleWindow(uint processId)
+    {
+        var largest = IntPtr.Zero;
+        long largestArea = 0;
+
+        EnumWindows((hwnd, _) =>
+        {
+            if (!IsWindowVisible(hwnd)) return true;
+            GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid != processId) return true;
+            if (!GetWindowRect(hwnd, out var rect)) return true;
+            long w = rect.Right - rect.Left;
+            long h = rect.Bottom - rect.Top;
+            if (w <= 0 || h <= 0) return true;
+            long area = w * h;
+            if (area > largestArea)
+            {
+                largestArea = area;
+                largest = hwnd;
+            }
+            return true;
+        }, IntPtr.Zero);
+
+        return largest;
+    }
+
+    [DllImport("user32.dll")]
     private static extern short GetKeyState(int nVirtKey);
 
     [DllImport("user32.dll")]
@@ -163,6 +278,10 @@ public static class DesktopRecorder
         CancellationToken ct = default)
     {
         var steps = new List<DesktopUiStep>();
+        // Track the wall-clock of the last captured step so we can save the
+        // inter-step delay on the next one. This preserves the user's recorded
+        // pacing (pauses for search/load/animation) at replay.
+        var lastStepUtc = (DateTime?)null;
         var stopSignal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         logger.LogInformation("[DesktopRecorder] Starting recording for '{Name}' — launching {App}",
@@ -289,7 +408,16 @@ public static class DesktopRecorder
                                     }
                                     else
                                     {
-                                    var selector = DesktopElementResolver.BuildSelector(element, mainWindow);
+                                    // Refine: if FromPoint landed on a generic container (ToolBar /
+                                    // Pane / Group / Custom), look for a specific actionable child
+                                    // (Button, MenuItem, Hyperlink, CheckBox) whose rect contains the
+                                    // click pixel and use that instead. This catches cases where the
+                                    // user clicked a *disabled* button — UIA hit-testing skips disabled
+                                    // elements and returns the parent, which makes the recorded step a
+                                    // no-op at replay. Refining to the child captures the intended
+                                    // Name / AutomationId / ControlType.
+                                    var refined = RefineContainerHit(element, pt.X, pt.Y, logger);
+                                    var selector = DesktopElementResolver.BuildSelector(refined, mainWindow);
                                     var action = msg switch
                                     {
                                         WM_RBUTTONDOWN => "right-click",
@@ -298,6 +426,33 @@ public static class DesktopRecorder
                                     };
 
                                     selector.Action = action;
+
+                                    // Capture click coordinates relative to the process's current
+                                    // main window — not the foreground window, which may be a
+                                    // transient popup (e.g. a combo dropdown) whose rect has
+                                    // nothing to do with the Bravo main form. We re-query
+                                    // MainWindowHandle each click so login → main-form transitions
+                                    // are picked up correctly. Replay translates with the same
+                                    // reference (the executor's `window` parameter is the main
+                                    // Bravo window), so the offsets stay valid even if the window
+                                    // has been moved.
+                                    try
+                                    {
+                                        var mainHwnd = FindLargestVisibleWindow(targetProcessId);
+                                        if (mainHwnd != IntPtr.Zero && GetWindowRect(mainHwnd, out var mainRect))
+                                        {
+                                            selector.WindowRelativeX = pt.X - mainRect.Left;
+                                            selector.WindowRelativeY = pt.Y - mainRect.Top;
+                                        }
+                                    }
+                                    catch { /* best effort — leave null */ }
+
+                                    // Preserve recorded pacing: delay from the previous captured step.
+                                    var now = DateTime.UtcNow;
+                                    if (lastStepUtc is DateTime prev)
+                                        selector.DelayBeforeMs = (int)Math.Max(0, (now - prev).TotalMilliseconds);
+                                    lastStepUtc = now;
+
                                     steps.Add(selector);
                                     logger.LogDebug("[DesktopRecorder] Captured {Action}: {Id}",
                                         action, selector.AutomationId ?? selector.Name ?? selector.TreePath);

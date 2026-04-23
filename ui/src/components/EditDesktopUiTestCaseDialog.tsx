@@ -20,6 +20,7 @@ function emptyStep(): DesktopUiStep {
     action: 'click', automationId: null, name: null, className: null,
     controlType: null, treePath: null, value: null, menuPath: null,
     windowTitle: null, timeoutMs: 5000,
+    windowRelativeX: null, windowRelativeY: null, delayBeforeMs: null,
   };
 }
 
@@ -218,6 +219,27 @@ export function EditDesktopUiTestCaseDialog({
                     <input placeholder="TreePath" value={s.treePath ?? ''}
                       onChange={e => setStep(i, { ...s, treePath: e.target.value || null })}
                       style={{ ...inputStyle, flex: 1, minWidth: 0, color: '#94a3b8' }} title="TreePath fallback (priority 4)" />
+                  </div>
+                )}
+
+                {/* Row 2b: Recorded coordinates + pre-step delay (captured by the recorder).
+                    Coords are relative to the process's main window and used for
+                    pixel-accurate replay. DelayBeforeMs is the recorded pause
+                    before this step (so menu animations / searches reproduce).
+                    Shown read-only-ish (editable for power users / null to clear). */}
+                {!noElement && (s.windowRelativeX != null || s.windowRelativeY != null || s.delayBeforeMs != null) && (
+                  <div style={{ ...stepRowStyle, paddingLeft: 34, gap: 6, fontSize: 12, color: '#64748b' }}>
+                    <span style={{ flexShrink: 0 }}>Coords (window-relative):</span>
+                    <input type="number" placeholder="X" value={s.windowRelativeX ?? ''}
+                      onChange={e => setStep(i, { ...s, windowRelativeX: e.target.value === '' ? null : Number(e.target.value) })}
+                      style={{ ...inputStyle, width: 70, flexShrink: 0 }} title="WindowRelativeX (pixels, from main window top-left)" />
+                    <input type="number" placeholder="Y" value={s.windowRelativeY ?? ''}
+                      onChange={e => setStep(i, { ...s, windowRelativeY: e.target.value === '' ? null : Number(e.target.value) })}
+                      style={{ ...inputStyle, width: 70, flexShrink: 0 }} title="WindowRelativeY (pixels, from main window top-left)" />
+                    <span style={{ flexShrink: 0, marginLeft: 12 }}>Pre-step delay (ms):</span>
+                    <input type="number" placeholder="ms" value={s.delayBeforeMs ?? ''}
+                      onChange={e => setStep(i, { ...s, delayBeforeMs: e.target.value === '' ? null : Number(e.target.value) })}
+                      style={{ ...inputStyle, width: 90, flexShrink: 0 }} title="Milliseconds to wait before this step at replay (recorded automatically; capped at 30000ms)" />
                   </div>
                 )}
 
