@@ -452,6 +452,59 @@ Open the test set detail page (`http://localhost:5173` → module → test set).
 - Only delivery objectives (`AseXml_Deliver`) support verifications. Attempting to attach a verification to another target fails with a clear error.
 - Manual edits to the saved JSON are supported — unknown tokens at playback are left as literals (with a WARN) rather than failing silently.
 
+#### Deferred post-delivery verification (by default)
+
+Waiting 120–180 s for Bravo to process each delivered file used to mean the executing agent sat idle for the whole window. Post-delivery verifications longer than 30 s are now **queued instead of blocking the agent slot**: the delivery returns immediately after upload, the verification runs when it's due, and retries happen at regular intervals inside the configured wait window. No code or test-set changes are required — the behaviour is on by default in SQLite storage mode.
+
+**What you see on the dashboard**
+
+| Phase | Test-case row pill | Step in the run detail |
+|---|---|---|
+| Uploading | blue spinner · "Running tests..." | `render` / `resolve-endpoint` / `upload` |
+| Verification queued | **cyan "Awaiting" pill** (no spinner — nothing is running) | `verify[1.1] scheduled — first attempt at HH:MM:SS, deadline HH:MM:SS (target)` with a live countdown |
+| Verification running | blue spinner · "Running tests..." | normal Playwright/FlaUI steps |
+| Finalised | green Passed / red Failed | rollup step: `N attempt(s); final status Passed` |
+
+The run detail auto-refreshes every 3 s during execution and stops polling once terminal. The test set page's status column updates without a manual refresh.
+
+**Retry model**
+
+With the defaults and a verification `WaitBeforeSeconds = 120`:
+
+- **t = 60 s** — first attempt (`VerificationEarlyStartFraction = 0.5`)
+- **every 30 s** after a failure — retry (`VerificationRetryIntervalSeconds = 30`)
+- **t = 150 s** — absolute deadline (`wait + VerificationGraceSeconds = 120 + 30`); a final attempt is clamped to this moment
+- past deadline → verification marked Failed, run finalises as Failed
+
+Only the successful attempt's steps (or the deadline-exceeded attempt's steps) are persisted on the parent run, plus a single rollup step summarising attempt count. Intermediate failed attempts don't clutter the run view.
+
+**Tuning**
+
+In `TestEnvironment.AseXml` in `appsettings.json`:
+
+```jsonc
+"AseXml": {
+  "DeferVerifications": true,                 // master switch (default true). false = legacy inline Task.Delay
+  "VerificationDeferThresholdSeconds": 30,    // waits <= this run inline regardless (queue overhead isn't worth it)
+  "VerificationEarlyStartFraction": 0.5,      // first attempt at wait × fraction
+  "VerificationRetryIntervalSeconds": 30,     // gap between failed attempts
+  "VerificationGraceSeconds": 30,             // deadline = wait + grace. Set to 0 for a hard wait ceiling.
+  "VerificationMaxLatencySeconds": 3600,      // janitor: fail if no agent claims within this long
+  "DeferredPollCliIntervalSeconds": 10        // CLI live-view cadence
+}
+```
+
+**CLI**
+
+`dotnet run -- --reuse ... --no-defer-verifications` forces the old synchronous `Task.Delay` path for a single invocation (useful for local debugging without needing an agent). When the deferred path is taken, the CLI enters a block-and-poll loop showing per-verification countdowns and exits when every pending row is terminal.
+
+**Requirements**
+
+- `TestEnvironment.StorageProvider = "Sqlite"`. File storage doesn't have the coordination tables and falls back to inline execution with a grey step row explaining why.
+- An agent must be running for the capability (`UI_Web_Blazor` / `UI_Web_MVC` / `UI_Desktop_WinForms`) — same as any other UI test dispatch. For Docker deployments (WebApi in a container + agent on a PC), the Runner in `--agent` mode polls the server over REST; coordination state never leaves the server's DB.
+
+If an "Awaiting" verification never claims within `VerificationMaxLatencySeconds` (default 1 h), the server-side janitor marks it Failed with a `deferred-verify-timeout` step and finalises the parent run, so a run never sits Awaiting forever.
+
 ---
 
 ### Record (Web UI only)

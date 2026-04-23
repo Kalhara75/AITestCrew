@@ -410,6 +410,13 @@ if (!string.IsNullOrEmpty(envConfig.LegacyWebUiStorageStatePath)
     envConfig.LegacyWebUiStorageStatePath = Path.Combine(AppContext.BaseDirectory, envConfig.LegacyWebUiStorageStatePath);
 }
 
+// Honour --no-defer-verifications: force synchronous path even if config says otherwise.
+if (cli.NoDeferVerifications)
+{
+    envConfig.AseXml.DeferVerifications = false;
+    AnsiConsole.MarkupLine("[grey]--no-defer-verifications → running verifications inline for this invocation.[/]");
+}
+
 builder.Services.AddSingleton(envConfig);
 
 // Semantic Kernel — provider chosen by LlmProvider config value
@@ -507,19 +514,25 @@ builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AseXmlDeli
 // Test set persistence + execution history + modules
 if (!string.IsNullOrWhiteSpace(envConfig.ServerUrl))
 {
-    // Remote mode: call the WebApi over HTTP
+    // Remote mode: call the WebApi over HTTP for EVERYTHING including queue + pending
+    // coordination. The DB lives with the server; the agent never touches it directly.
     var remoteHttp = new AiTestCrew.Runner.RemoteRepositories.RemoteHttpClient(envConfig.ServerUrl, envConfig.ApiKey);
     builder.Services.AddSingleton<ITestSetRepository>(new AiTestCrew.Runner.RemoteRepositories.ApiClientTestSetRepository(remoteHttp));
     builder.Services.AddSingleton<IExecutionHistoryRepository>(new AiTestCrew.Runner.RemoteRepositories.ApiClientExecutionHistoryRepository(remoteHttp));
     builder.Services.AddSingleton<IModuleRepository>(new AiTestCrew.Runner.RemoteRepositories.ApiClientModuleRepository(remoteHttp));
+    builder.Services.AddSingleton<IRunQueueRepository>(new AiTestCrew.Runner.RemoteRepositories.ApiClientRunQueueRepository(remoteHttp));
+    builder.Services.AddSingleton<IPendingVerificationRepository>(new AiTestCrew.Runner.RemoteRepositories.ApiClientPendingVerificationRepository(remoteHttp));
     AnsiConsole.MarkupLine($"[grey]Remote mode → {envConfig.ServerUrl}[/]");
 }
 else if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCase))
 {
     var connFactory = new AiTestCrew.Agents.Persistence.Sqlite.SqliteConnectionFactory(envConfig.SqliteConnectionString);
+    builder.Services.AddSingleton(connFactory);
     builder.Services.AddSingleton<ITestSetRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteTestSetRepository(connFactory));
     builder.Services.AddSingleton<IExecutionHistoryRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteExecutionHistoryRepository(connFactory, envConfig.MaxExecutionRunsPerTestSet));
     builder.Services.AddSingleton<IModuleRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteModuleRepository(connFactory));
+    builder.Services.AddSingleton<IRunQueueRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteRunQueueRepository(connFactory));
+    builder.Services.AddSingleton<IPendingVerificationRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqlitePendingVerificationRepository(connFactory));
 }
 else
 {
@@ -723,6 +736,9 @@ AnsiConsole.WriteLine();
 var orchestrator = host.Services.GetRequiredService<TestOrchestrator>();
 TestSuiteResult? suiteResult = null;
 
+// Pre-generate the RunId so we can poll for it after AwaitingVerification.
+var cliRunId = Guid.NewGuid().ToString("N")[..12];
+
 await AnsiConsole.Status()
     .Spinner(Spinner.Known.Dots)
     .StartAsync("Running test suite...", async ctx =>
@@ -735,6 +751,7 @@ await AnsiConsole.Status()
             ctx.Status("Decomposing objective...");
 
         suiteResult = await orchestrator.RunAsync(objective, cli.Mode, cli.ReuseId,
+            externalRunId: cliRunId,
             moduleId: cli.ModuleId, targetTestSetId: effectiveTestSetId,
             objectiveName: cli.ObjectiveName,
             objectiveId: cli.ObjectiveId,  // reuse-mode / verify-only filter to a single test case
@@ -745,6 +762,99 @@ await AnsiConsole.Status()
             teardownDryRun: cli.TeardownDryRun,
             skipTeardown: cli.SkipTeardown);
     });
+
+// ── Block-and-poll for deferred verifications ──
+// If any objective returned AwaitingVerification, the delivery agent released
+// the slot and queued a future VerifyOnly attempt. Stay alive until every
+// pending row for this run is terminal, then the finalise path will have
+// overwritten the execution-history JSON with final results.
+if (suiteResult is not null
+    && suiteResult.Results.Any(r => r.Status == TestStatus.AwaitingVerification)
+    && host.Services.GetService<IPendingVerificationRepository>() is IPendingVerificationRepository pendingRepo)
+{
+    var histRepoPoll = host.Services.GetRequiredService<IExecutionHistoryRepository>();
+    var pollSeconds = Math.Max(2, envConfig.AseXml.DeferredPollCliIntervalSeconds);
+
+    AnsiConsole.MarkupLine(
+        $"\n[yellow]Awaiting deferred verification(s)[/] — polling every {pollSeconds}s. " +
+        $"Run id [bold]{cliRunId}[/]. Ctrl+C to exit (verifications continue in the background).");
+
+    await AnsiConsole.Status()
+        .Spinner(Spinner.Known.Clock)
+        .StartAsync("Waiting for pending verifications...", async ctx =>
+        {
+            while (true)
+            {
+                var pending = await pendingRepo.ListForRunAsync(cliRunId);
+                var stillPending = pending.Count(p => p.Status == "Pending");
+                if (stillPending == 0) break;
+
+                // Build a short status line showing the soonest due time + attempt count.
+                var next = pending
+                    .Where(p => p.Status == "Pending")
+                    .OrderBy(p => p.FirstDueAt)
+                    .First();
+                var nowUtc = DateTime.UtcNow;
+                var countdown = next.FirstDueAt > nowUtc
+                    ? $"first attempt at {next.FirstDueAt.ToLocalTime():HH:mm:ss} (in {(next.FirstDueAt - nowUtc).TotalSeconds:F0}s)"
+                    : $"awaiting claim — attempt {next.AttemptCount + 1}";
+                var deadline = $"deadline {next.DeadlineAt.ToLocalTime():HH:mm:ss}";
+                ctx.Status($"{stillPending} pending — {countdown}, {deadline}");
+
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(pollSeconds));
+                }
+                catch (OperationCanceledException) { break; }
+            }
+        });
+
+    // Reload the finalised run from history and reflect it in the results table.
+    try
+    {
+        var finalisedTestSetId = effectiveTestSetId ?? cli.ReuseId ?? SlugHelper.ToSlug(objective);
+        var finalRun = await host.Services.GetRequiredService<IExecutionHistoryRepository>()
+            .GetRunAsync(finalisedTestSetId, cliRunId);
+        if (finalRun is not null)
+        {
+            // Rebuild suiteResult.Results from the finalised run so the printed table
+            // shows the real statuses (Passed/Failed) instead of the original
+            // AwaitingVerification.
+            var rebuilt = finalRun.ObjectiveResults.Select(o => new TestResult
+            {
+                ObjectiveId = o.ObjectiveId,
+                ObjectiveName = o.ObjectiveName,
+                AgentName = o.AgentName,
+                Status = Enum.TryParse<TestStatus>(o.Status, true, out var st) ? st : TestStatus.Error,
+                Summary = o.Summary,
+                Steps = o.Steps.Select(s => new TestStep
+                {
+                    Action = s.Action,
+                    Summary = s.Summary,
+                    Status = Enum.TryParse<TestStatus>(s.Status, true, out var ss) ? ss : TestStatus.Error,
+                    Detail = s.Detail,
+                    Duration = s.Duration,
+                    Timestamp = s.Timestamp,
+                }).ToList(),
+                Duration = o.Duration,
+                CompletedAt = o.CompletedAt,
+            }).ToList();
+
+            suiteResult = new TestSuiteResult
+            {
+                Objective = finalRun.Objective,
+                Results = rebuilt,
+                Summary = finalRun.Summary,
+                TotalDuration = finalRun.TotalDuration,
+                CompletedAt = finalRun.CompletedAt ?? DateTime.UtcNow,
+            };
+        }
+    }
+    catch (Exception ex)
+    {
+        AnsiConsole.MarkupLine($"[yellow]Could not reload finalised run: {Markup.Escape(ex.Message)}[/]");
+    }
+}
 
 // ── Results table ──
 var table = new Table()
@@ -762,6 +872,7 @@ foreach (var r in suiteResult!.Results)
         TestStatus.Passed => "green",
         TestStatus.Failed => "red",
         TestStatus.Error  => "yellow",
+        TestStatus.AwaitingVerification => "cyan",
         _                 => "grey"
     };
     var summary = r.Summary.Length > 80 ? r.Summary[..80] + "…" : r.Summary;
@@ -819,6 +930,7 @@ static CliArgs ParseArgs(string[] args)
     bool agentMode = false;
     string? agentName = null, agentCapabilities = null;
     bool teardownDryRun = false, skipTeardown = false;
+    bool noDeferVerifications = false;
     var mode = RunMode.Normal;
 
     for (int i = 0; i < args.Length; i++)
@@ -966,6 +1078,9 @@ static CliArgs ParseArgs(string[] args)
             case "--skip-teardown":
                 skipTeardown = true;
                 break;
+            case "--no-defer-verifications":
+                noDeferVerifications = true;
+                break;
             default:
                 remaining.Add(args[i]);
                 break;
@@ -1007,7 +1122,8 @@ static CliArgs ParseArgs(string[] args)
         AgentName = agentName,
         AgentCapabilities = agentCapabilities,
         TeardownDryRun = teardownDryRun,
-        SkipTeardown = skipTeardown
+        SkipTeardown = skipTeardown,
+        NoDeferVerifications = noDeferVerifications
     };
 }
 
@@ -1060,4 +1176,8 @@ class CliArgs
 
     /// <summary>--skip-teardown: bypass test-set teardown entirely for this run.</summary>
     public bool SkipTeardown { get; init; }
+
+    /// <summary>--no-defer-verifications: force synchronous post-delivery verifications
+    /// for this run (overrides AseXml.DeferVerifications=true). Useful for local debugging.</summary>
+    public bool NoDeferVerifications { get; init; }
 }

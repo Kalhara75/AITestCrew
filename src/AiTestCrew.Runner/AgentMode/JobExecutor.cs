@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AiTestCrew.Agents.AseXmlAgent.Delivery;
 using AiTestCrew.Agents.Recording;
 using AiTestCrew.Core.Models;
 using AiTestCrew.Orchestrator;
@@ -42,6 +43,33 @@ internal sealed class JobExecutor
 
     private async Task<JobOutcome> ExecuteRunAsync(NextJobResponse job, CancellationToken ct)
     {
+        // Detect a deferred-verification payload (self-contained snapshot the delivery
+        // agent enqueued earlier). If present we route to VerifyOnly mode using the
+        // snapshot — do NOT call GetLatestDeliveryContextAsync.
+        var deferred = TryParseDeferredRequest(job.RequestJson);
+        if (deferred is not null)
+        {
+            var suiteDeferred = await _orchestrator.RunAsync(
+                objective: "",
+                mode: RunMode.VerifyOnly,
+                reuseId: deferred.TestSetId,
+                ct: ct,
+                externalRunId: deferred.ParentRunId,
+                moduleId: string.IsNullOrEmpty(deferred.ModuleId) ? null : deferred.ModuleId,
+                targetTestSetId: deferred.TestSetId,
+                objectiveId: deferred.DeliveryObjectiveId,
+                environmentKey: deferred.EnvironmentKey,
+                deferredVerification: deferred);
+
+            // Outcome of a deferred job reports per-attempt success. AwaitingVerification
+            // (= retry re-enqueued) is not a terminal failure — treat as success so the
+            // queue entry isn't flagged red.
+            var passedOrRetrying = suiteDeferred.Results.All(r =>
+                r.Status is TestStatus.Passed or TestStatus.AwaitingVerification);
+            return new JobOutcome(passedOrRetrying, suiteDeferred.Summary,
+                passedOrRetrying ? null : suiteDeferred.Summary);
+        }
+
         var request = JsonSerializer.Deserialize<QueuedRunRequest>(job.RequestJson, JsonOpts)
             ?? throw new InvalidOperationException("Invalid run request JSON");
 
@@ -63,8 +91,37 @@ internal sealed class JobExecutor
             verificationWaitOverride: request.VerificationWaitOverride,
             environmentKey: request.EnvironmentKey);
 
-        return new JobOutcome(suite.AllPassed, $"{suite.Passed}/{suite.TotalObjectives} passed",
-            suite.AllPassed ? null : suite.Summary);
+        // AwaitingVerification is a SUCCESS for the top-level agent job: the
+        // delivery itself worked; only the verification is deferred. Reporting
+        // failure here would pollute the RunTracker with a stale "Failed" +
+        // surface the LLM's provisional "Inconclusive" summary as an error,
+        // even though the deferred verification will complete cleanly later.
+        var anyFailed = suite.Results.Any(r =>
+            r.Status == TestStatus.Failed || r.Status == TestStatus.Error);
+        var ok = !anyFailed;  // Passed + AwaitingVerification + Skipped count as success
+        var summary = $"{suite.Passed}/{suite.TotalObjectives} passed";
+        return new JobOutcome(ok, summary, ok ? null : suite.Summary);
+    }
+
+    /// <summary>
+    /// Attempts to interpret the queue entry's request_json as a deferred-verification
+    /// snapshot. Returns null when it's a regular run request.
+    /// </summary>
+    private static DeferredVerificationRequest? TryParseDeferredRequest(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            // Cheap discriminator check before full deserialisation.
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("kind", out var kindEl)
+                || kindEl.ValueKind != JsonValueKind.String
+                || kindEl.GetString() != "DeferredVerification")
+                return null;
+
+            return JsonSerializer.Deserialize<DeferredVerificationRequest>(json, JsonOpts);
+        }
+        catch { return null; }
     }
 
     private async Task<JobOutcome> ExecuteRecordAsync(NextJobResponse job, CancellationToken ct)

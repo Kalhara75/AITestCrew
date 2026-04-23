@@ -28,9 +28,25 @@ public interface IRunQueueRepository
     /// <summary>User cancelled a Queued job before an agent claimed it. No-op if already Claimed.</summary>
     Task<bool> CancelAsync(string id);
 
+    /// <summary>
+    /// Cancels every non-terminal (Queued or Claimed) entry tied to <paramref name="parentRunId"/>.
+    /// Used by the dashboard/CLI cancel path to sweep deferred-verification retries attached to a run.
+    /// </summary>
+    Task<int> CancelPendingForRunAsync(string parentRunId);
+
     /// <summary>Active jobs (Queued/Claimed/Running) + recent terminal jobs, newest first.</summary>
     Task<List<RunQueueEntry>> ListRecentAsync(int max = 50);
 
     /// <summary>The currently-claimed job (Claimed or Running) for an agent, if any.</summary>
     Task<RunQueueEntry?> GetActiveForAgentAsync(string agentId);
+
+    /// <summary>
+    /// Queued + Claimed entries whose claiming agent has been silent for longer than
+    /// <paramref name="staleAfter"/>. Used by the janitor to reset them to Queued so
+    /// another agent can re-execute.
+    /// </summary>
+    Task<List<RunQueueEntry>> ListStaleClaimsAsync(TimeSpan staleAfter);
+
+    /// <summary>Resets a stuck Claimed entry back to Queued so another agent can claim it.</summary>
+    Task<bool> ReleaseClaimAsync(string id);
 }

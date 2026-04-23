@@ -43,8 +43,8 @@ Same delivery agent chains in UI steps after upload. Values from the render cont
 
 - **Attachment**: `AseXmlDeliveryTestDefinition.PostDeliveryVerifications: List<VerificationStep>`.
 - **Verification shape**: `{ Description, Target, WaitBeforeSeconds, WebUi?, DesktopUi? }`. Target string matches `TestTargetType` enum: `UI_Web_MVC`, `UI_Web_Blazor`, `UI_Desktop_WinForms`.
-- **Wait**: fixed delay only (Phase 3 ships `WaitBeforeSeconds`; richer strategies are a future extension).
-- **Execution**: `AseXmlDeliveryAgent.RunVerificationAsync` deep-clones the definition, substitutes tokens on every string field, builds a synthetic `TestTask` with the UI target + `Parameters["PreloadedTestCases"]`, and dispatches to the matching sibling agent via `CanHandleAsync`.
+- **Wait**: `WaitBeforeSeconds` is the **deadline for a green result**, not the time to wait before a single attempt. With `AseXml.DeferVerifications=true` (default) and `WaitBeforeSeconds > VerificationDeferThresholdSeconds` (default 30), the delivery agent queues the verification instead of blocking on `Task.Delay` and re-enqueues failed attempts at `VerificationRetryIntervalSeconds` up to `wait + VerificationGraceSeconds`. See `docs/architecture.md → Deferred Post-Delivery Verification` and `/tune-deferred-verification`.
+- **Execution**: `AseXmlDeliveryAgent.RunVerificationAsync` deep-clones the definition, substitutes tokens on every string field, builds a synthetic `TestTask` with the UI target + `Parameters["PreloadedTestCases"]`, and dispatches to the matching sibling agent via `CanHandleAsync`. When deferred, the same method is invoked later via `DeferredVerifyAsync` using a self-contained `DeferredVerificationRequest` snapshot (so context doesn't race with a concurrent re-delivery).
 - **Sibling resolution**: `AseXmlDeliveryAgent` takes `IServiceProvider` (not `IEnumerable<ITestAgent>`) and lazily materialises siblings — avoids DI recursion because the agent itself is an `ITestAgent`.
 - **Recording**: `--record-verification` loads the delivery's `FieldValues` plus the latest successful run's MessageID / TransactionID / Filename from execution history, launches the matching recorder, and auto-parameterises captured literals (min length 4, longest-match-first, exact substring, first-key-wins).
 - **Recording auth**: `UI_Web_Blazor` uses `BraveCloudUiStorageStatePath`, `UI_Web_MVC` uses `LegacyWebUiStorageStatePath`. Prints a hint and runs unauthenticated if the path isn't cached. Run `--auth-setup --target <UI_*>` first.
@@ -84,6 +84,16 @@ Extension → `/add-asexml-verification` (new verification on existing delivery)
 - `src/AiTestCrew.Agents/AseXmlAgent/Recording/VerificationRecorderHelper.cs` (auto-parameterisation)
 - `src/AiTestCrew.Agents/Persistence/ExecutionHistoryRepository.cs` — `GetLatestDeliveryContextAsync`
 - `src/AiTestCrew.Agents/Persistence/PersistedExecutionRun.cs` — `PersistedDelivery` typed record for history
+
+### Deferred verification (v6 coordination)
+- `src/AiTestCrew.Storage/AseXmlAgent/Delivery/DeferredVerificationRequest.cs` — self-contained snapshot carried in the queue entry
+- `src/AiTestCrew.Core/Models/PendingVerification.cs` + `src/AiTestCrew.Core/Interfaces/IPendingVerificationRepository.cs`
+- `src/AiTestCrew.Storage/Sqlite/SqlitePendingVerificationRepository.cs` — server-side impl
+- `src/AiTestCrew.Runner/RemoteRepositories/ApiClientPendingVerificationRepository.cs` + `ApiClientRunQueueRepository.cs` — REST clients for distributed (Docker WebApi + PC agent) deployments
+- `src/AiTestCrew.WebApi/Endpoints/PendingVerificationEndpoints.cs` + `QueueEndpoints.cs` — REST surface
+- `src/AiTestCrew.Agents/AseXmlAgent/AseXmlDeliveryAgent.cs` — `TryEnqueueDeferredVerifications` / `DeferredVerifyAsync` / `TryFinaliseParentRunAsync`
+- `src/AiTestCrew.WebApi/Services/AgentHeartbeatMonitor.cs` — janitor sweeps (stale-claim reclaim + deadline expiry)
+- Full write-up: `docs/architecture.md → Deferred Post-Delivery Verification`; tuning: `/tune-deferred-verification`.
 
 ### UI
 - `ui/src/components/AseXmlTestCaseTable.tsx` (generation — read-only)

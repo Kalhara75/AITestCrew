@@ -21,6 +21,15 @@ export function ExecutionDetailPage() {
       ? fetchModuleRun(moduleId!, id!, runId!)
       : fetchRun(id!, runId!),
     enabled: !!id && !!runId,
+    // While the run is still moving (executing or awaiting a deferred verification),
+    // auto-refetch so the dashboard reflects status/step changes without a manual
+    // reload. Terminal states stop the poll to avoid needless churn.
+    refetchInterval: (query) => {
+      const s = query.state.data?.status;
+      const terminal = s === 'Passed' || s === 'Failed' || s === 'Error'
+        || s === 'Skipped' || s === 'Cancelled';
+      return terminal ? false : 3000;
+    },
   });
 
   if (isLoading) return <p style={{ color: '#64748b', padding: 40, textAlign: 'center' }}>Loading execution details...</p>;

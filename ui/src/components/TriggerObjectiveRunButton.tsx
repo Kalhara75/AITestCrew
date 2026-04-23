@@ -71,16 +71,39 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObject
   if (isActive) {
     const s = individualRunStatus?.status;
     const queued = s === 'Queued' || s === 'Claimed';
+    const awaiting = s === 'AwaitingVerification';
+    const title = awaiting ? 'Awaiting deferred verification' : queued ? 'Waiting for agent' : 'Running';
+
+    // Awaiting = scheduled, not running. Replace the spinner with a quiet
+    // ⏳ cyan pill so the user sees that nothing is actively executing.
+    if (awaiting) {
+      return (
+        <span
+          title={title}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            background: '#cffafe', color: '#0e7490',
+            border: '1px solid #a5f3fc', borderRadius: 10,
+            padding: '2px 8px', fontSize: 10, fontWeight: 600,
+          }}>
+          {'\u23F3'} awaiting
+        </span>
+      );
+    }
+
+    const ringBase = queued ? '#fde68a' : '#bfdbfe';
+    const ringTop = queued ? '#b45309' : '#2563eb';
+    const label = queued ? 'queued' : null;
     return (
-      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }} title={queued ? 'Waiting for agent' : 'Running'}>
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }} title={title}>
         <div style={{
           width: 12, height: 12,
-          border: `2px solid ${queued ? '#fde68a' : '#bfdbfe'}`,
-          borderTop: `2px solid ${queued ? '#b45309' : '#2563eb'}`,
+          border: `2px solid ${ringBase}`,
+          borderTop: `2px solid ${ringTop}`,
           borderRadius: '50%',
           animation: 'spin 0.8s linear infinite',
         }} />
-        {queued && <span style={{ fontSize: 10, color: '#78350f' }}>queued</span>}
+        {label && <span style={{ fontSize: 10, color: '#78350f' }}>{label}</span>}
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
     );

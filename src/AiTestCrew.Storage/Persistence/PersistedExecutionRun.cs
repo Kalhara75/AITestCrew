@@ -97,6 +97,7 @@ public class PersistedExecutionRun
         TestSuiteResult suite, string testSetId, RunMode mode, DateTime startedAt,
         string? moduleId = null, string? environmentKey = null)
     {
+        var hasAwaiting = suite.Results.Any(r => r.Status == TestStatus.AwaitingVerification);
         return new PersistedExecutionRun
         {
             RunId = Guid.NewGuid().ToString("N")[..12],
@@ -104,7 +105,12 @@ public class PersistedExecutionRun
             ModuleId = moduleId,
             Objective = suite.Objective,
             Mode = mode.ToString(),
-            Status = suite.AllPassed ? "Passed"
+            // When any objective is awaiting a deferred verification, the run is NOT
+            // finalised — the Status sits in AwaitingVerification until every pending
+            // row for the run is terminal and ExecutionHistoryRepository re-saves with
+            // the merged results.
+            Status = hasAwaiting ? "AwaitingVerification"
+                   : suite.AllPassed ? "Passed"
                    : suite.Errors > 0 ? "Error"
                    : "Failed",
             StartedAt = startedAt,

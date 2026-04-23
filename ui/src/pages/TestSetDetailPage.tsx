@@ -19,6 +19,7 @@ import { SetupStepsPanel } from '../components/SetupStepsPanel';
 import { TeardownStepsPanel } from '../components/TeardownStepsPanel';
 import { EnvironmentParametersEditor } from '../components/EnvironmentParametersEditor';
 import { fetchEnvironments } from '../api/config';
+import { useActiveRun } from '../contexts/ActiveRunContext';
 import type { TestObjective, ObjectiveStatus } from '../types';
 
 export function TestSetDetailPage() {
@@ -40,12 +41,22 @@ export function TestSetDetailPage() {
     enabled: isModuleScoped,
   });
 
+  // If a run is active for this test set, poll the testSet + runs queries so the
+  // status pill and history table reflect Running → Awaiting → Passed transitions
+  // even if the status-change invalidation race misses a tick. Cheap: 3s cadence
+  // only while the page is mounted AND there's an in-flight run.
+  const { individualRun, isTestSetRunning } = useActiveRun();
+  const thisTestSetRunning = !!id && isTestSetRunning(id);
+  const runPollInterval: number | false =
+    (thisTestSetRunning || individualRun?.testSetId === id) ? 3000 : false;
+
   const { data: testSet, isLoading, error } = useQuery({
     queryKey: ['testSet', moduleId, id],
     queryFn: () => isModuleScoped
       ? fetchModuleTestSet(moduleId!, id!)
       : fetchTestSet(id!),
     enabled: !!id,
+    refetchInterval: runPollInterval,
   });
 
   const { data: envInfo } = useQuery({
@@ -59,6 +70,7 @@ export function TestSetDetailPage() {
       ? fetchModuleRuns(moduleId!, id!)
       : fetchRuns(id!),
     enabled: !!id,
+    refetchInterval: runPollInterval,
   });
 
   if (isLoading) return <p style={{ color: '#64748b', padding: 40, textAlign: 'center' }}>Loading test set...</p>;

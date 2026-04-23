@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
@@ -75,6 +76,9 @@ public class AseXmlDeliveryAgent : BaseTestAgent
         var sw = Stopwatch.StartNew();
         var steps = new List<TestStep>();
         var deliveries = new List<Dictionary<string, object?>>();
+
+        _currentTask = task;
+        _currentTaskId = task.Id;
 
         task.Parameters.TryGetValue("EnvironmentKey", out var rawEnvKey);
         var envKey = rawEnvKey as string;
@@ -152,13 +156,18 @@ public class AseXmlDeliveryAgent : BaseTestAgent
 
             var hasFails = steps.Any(s => s.Status == TestStatus.Failed);
             var hasErrors = steps.Any(s => s.Status == TestStatus.Error);
+            var hasAwaiting = steps.Any(s => s.Status == TestStatus.AwaitingVerification);
             var status = hasErrors ? TestStatus.Error
                        : hasFails ? TestStatus.Failed
+                       : hasAwaiting ? TestStatus.AwaitingVerification
                        : TestStatus.Passed;
 
-            var summary = status == TestStatus.Passed
-                ? $"Delivered {testCases.Count} aseXML payload(s). Debug copies at {runOutputDir}."
-                : $"Delivery attempted for {testCases.Count} case(s) with issues; see step detail.";
+            var summary = status switch
+            {
+                TestStatus.Passed => $"Delivered {testCases.Count} aseXML payload(s). Debug copies at {runOutputDir}.",
+                TestStatus.AwaitingVerification => $"Delivered {testCases.Count} aseXML payload(s). Verification(s) queued — run will finalise when they complete.",
+                _ => $"Delivery attempted for {testCases.Count} case(s) with issues; see step detail.",
+            };
 
             var definitions = testCases.Select(AseXmlDeliveryTestDefinition.FromTestCase).ToList();
             return BuildResult(task, steps, status, summary, sw, definitions, deliveries, runOutputDir);
@@ -189,6 +198,16 @@ public class AseXmlDeliveryAgent : BaseTestAgent
         CancellationToken ct)
     {
         var deliveries = new List<Dictionary<string, object?>>();
+
+        // ── Deferred path: we were claimed from a run_queue entry carrying a
+        //    self-contained DeliveryContext snapshot. Use it directly — do NOT
+        //    query history (that races with concurrent deliveries for the same
+        //    test set and is the reason this feature exists).
+        if (task.Parameters.TryGetValue("DeferredVerificationRequest", out var drObj)
+            && drObj is DeferredVerificationRequest dr)
+        {
+            return await DeferredVerifyAsync(task, dr, steps, sw, ct);
+        }
 
         var historyRepo = _services.GetRequiredService<IExecutionHistoryRepository>();
         var testSetId = task.Parameters.TryGetValue("TestSetId", out var tsId) ? tsId as string : null;
@@ -283,6 +302,363 @@ public class AseXmlDeliveryAgent : BaseTestAgent
 
         var definitions = testCases.Select(AseXmlDeliveryTestDefinition.FromTestCase).ToList();
         return BuildResult(task, steps, status, summary, sw, definitions, deliveries);
+    }
+
+    // ─────────────────────────────────────────────────────
+    // Deferred verification handler
+    // ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Handles a claimed deferred-verification queue entry. Uses the snapshot from
+    /// <see cref="DeferredVerificationRequest"/> so context is isolated from later
+    /// deliveries against the same test set. On any failure before the deadline,
+    /// re-enqueues a fresh attempt and returns — the claim's agent slot is freed.
+    /// On success or deadline-exceeded failure, marks the pending row terminal and
+    /// asks the execution-history repo to finalise the parent run.
+    /// </summary>
+    private async Task<TestResult> DeferredVerifyAsync(
+        TestTask task,
+        DeferredVerificationRequest dr,
+        List<TestStep> steps,
+        Stopwatch sw,
+        CancellationToken ct)
+    {
+        var attemptStart = DateTime.UtcNow;
+        steps.Add(TestStep.Pass("deferred-verify",
+            $"Attempt {dr.AttemptCount + 1} for '{dr.DeliveryObjectiveName}' " +
+            $"(deadline {dr.DeadlineAt:HH:mm:ss}, delivered at {dr.DeliveryCompletedAt:HH:mm:ss})"));
+
+        var pendingRepo = _services.GetRequiredService<IPendingVerificationRepository>();
+        var queueRepo = _services.GetRequiredService<IRunQueueRepository>();
+        var historyRepo = _services.GetRequiredService<IExecutionHistoryRepository>();
+
+        var context = new Dictionary<string, string>(dr.DeliveryContext, StringComparer.OrdinalIgnoreCase);
+        var remoteFileName = context.TryGetValue("Filename", out var fn) ? fn : "";
+
+        // ── Run each verification. First wait is already consumed by not_before_at;
+        //    later verifications use their delta relative to the FIRST verification's wait.
+        var firstWait = dr.Verifications.Count > 0 ? dr.Verifications[0].WaitBeforeSeconds : 0;
+
+        var attemptSteps = new List<TestStep>();
+        var allPassed = true;
+        for (var vIdx = 0; vIdx < dr.Verifications.Count; vIdx++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var v = dr.Verifications[vIdx];
+            var effective = new VerificationStep
+            {
+                Description = v.Description,
+                Target = v.Target,
+                WebUi = v.WebUi,
+                DesktopUi = v.DesktopUi,
+                // First verification's wait was honoured by the queue; subsequent ones
+                // wait only their incremental delta. Negative/zero = no extra wait.
+                WaitBeforeSeconds = vIdx == 0 ? 0 : Math.Max(0, v.WaitBeforeSeconds - firstWait),
+            };
+
+            var preCount = attemptSteps.Count;
+            await RunVerificationAsync(
+                effective,
+                deliveryIndex: 1,
+                verifyIndex: vIdx + 1,
+                remoteFileName,
+                context,
+                attemptSteps,
+                dr.EnvironmentKey,
+                ct);
+
+            // Treat anything other than Passed as failure for this attempt.
+            for (var i = preCount; i < attemptSteps.Count; i++)
+            {
+                if (attemptSteps[i].Status is not TestStatus.Passed)
+                {
+                    allPassed = false;
+                    break;
+                }
+            }
+        }
+
+        // ── Attempt outcome ──
+        var attemptLogList = DeserializeAttemptLog(dr.PendingId, pendingRepo);
+        var newLogEntry = new Dictionary<string, object?>
+        {
+            ["attempt"] = dr.AttemptCount + 1,
+            ["at"] = attemptStart.ToString("O"),
+            ["durationMs"] = (long)sw.Elapsed.TotalMilliseconds,
+            ["passed"] = allPassed,
+        };
+        attemptLogList.Add(newLogEntry);
+        var attemptLogJson = JsonSerializer.Serialize(attemptLogList, DeferredJsonOpts);
+
+        if (allPassed)
+        {
+            steps.AddRange(attemptSteps);
+            steps.Add(TestStep.Pass("deferred-verify-result",
+                $"Passed on attempt {dr.AttemptCount + 1} of {dr.Verifications.Count} verification(s)."));
+
+            var objResultJson = BuildObjectiveResultJson(dr, attemptSteps, TestStatus.Passed);
+            await pendingRepo.MarkCompletedAsync(dr.PendingId, objResultJson, attemptLogJson);
+            await TryFinaliseParentRunAsync(historyRepo, pendingRepo, dr);
+
+            return BuildResult(task, steps, TestStatus.Passed,
+                $"Deferred verification passed for '{dr.DeliveryObjectiveName}'.",
+                sw, [], []);
+        }
+
+        // ── Failed this attempt ──
+        var now = DateTime.UtcNow;
+        if (now < dr.DeadlineAt)
+        {
+            // Re-enqueue a fresh attempt.
+            var retryInterval = Math.Max(5, _config.AseXml.VerificationRetryIntervalSeconds);
+            var nextDue = now.AddSeconds(retryInterval);
+            // Don't overshoot the deadline — if retry interval pushes past deadline,
+            // schedule the final attempt right at the deadline instead.
+            if (nextDue > dr.DeadlineAt) nextDue = dr.DeadlineAt;
+
+            var retryRequest = new DeferredVerificationRequest
+            {
+                ParentRunId = dr.ParentRunId,
+                PendingId = dr.PendingId,
+                ModuleId = dr.ModuleId,
+                TestSetId = dr.TestSetId,
+                DeliveryObjectiveId = dr.DeliveryObjectiveId,
+                DeliveryObjectiveName = dr.DeliveryObjectiveName,
+                EnvironmentKey = dr.EnvironmentKey,
+                DeliveryCompletedAt = dr.DeliveryCompletedAt,
+                DeadlineAt = dr.DeadlineAt,
+                AttemptCount = dr.AttemptCount + 1,
+                DeliveryContext = dr.DeliveryContext,
+                Verifications = dr.Verifications,
+            };
+
+            var retryEntry = new RunQueueEntry
+            {
+                Id = Guid.NewGuid().ToString("N")[..12],
+                ModuleId = dr.ModuleId,
+                TestSetId = dr.TestSetId,
+                ObjectiveId = dr.DeliveryObjectiveId,
+                TargetType = dr.Verifications[0].Target,
+                Mode = "VerifyOnly",
+                JobKind = "Run",
+                Status = "Queued",
+                RequestJson = JsonSerializer.Serialize(retryRequest, DeferredJsonOpts),
+                NotBeforeAt = nextDue,
+                DeadlineAt = dr.DeadlineAt,
+                AttemptCount = dr.AttemptCount + 1,
+                ParentQueueEntryId = dr.PendingId,
+                ParentRunId = dr.ParentRunId,
+            };
+            await queueRepo.EnqueueAsync(retryEntry);
+            await pendingRepo.UpdateAttemptAsync(dr.PendingId, retryEntry.Id, dr.AttemptCount + 1, attemptLogJson);
+
+            steps.AddRange(attemptSteps);
+            steps.Add(new TestStep
+            {
+                Action = "deferred-verify-retry",
+                Summary = $"Attempt {dr.AttemptCount + 1} failed — retrying at {nextDue.ToLocalTime():HH:mm:ss} (deadline {dr.DeadlineAt.ToLocalTime():HH:mm:ss})",
+                Status = TestStatus.AwaitingVerification,
+                Detail = $"nextQueueEntryId={retryEntry.Id}\npendingId={dr.PendingId}\nfirstDueAtUtc={nextDue:O}\ndeadlineAtUtc={dr.DeadlineAt:O}",
+            });
+
+            return BuildResult(task, steps, TestStatus.AwaitingVerification,
+                $"Retry queued for '{dr.DeliveryObjectiveName}' — next attempt at {nextDue:HH:mm:ss}.",
+                sw, [], []);
+        }
+
+        // ── Deadline exceeded → final failure ──
+        steps.AddRange(attemptSteps);
+        steps.Add(TestStep.Fail("deferred-verify-result",
+            $"Deadline exceeded — {dr.AttemptCount + 1} attempts, final attempt failed."));
+
+        var failedResultJson = BuildObjectiveResultJson(dr, attemptSteps, TestStatus.Failed);
+        await pendingRepo.MarkFailedAsync(dr.PendingId, failedResultJson, attemptLogJson);
+        await TryFinaliseParentRunAsync(historyRepo, pendingRepo, dr);
+
+        return BuildResult(task, steps, TestStatus.Failed,
+            $"Deferred verification failed for '{dr.DeliveryObjectiveName}' after {dr.AttemptCount + 1} attempt(s).",
+            sw, [], []);
+    }
+
+    private static List<Dictionary<string, object?>> DeserializeAttemptLog(
+        string pendingId, IPendingVerificationRepository pendingRepo)
+    {
+        var existing = pendingRepo.GetByIdAsync(pendingId).GetAwaiter().GetResult();
+        if (existing is null || string.IsNullOrWhiteSpace(existing.AttemptLogJson)) return new();
+        try
+        {
+            return JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(
+                       existing.AttemptLogJson, DeferredJsonOpts)
+                   ?? new();
+        }
+        catch { return new(); }
+    }
+
+    private static string BuildObjectiveResultJson(
+        DeferredVerificationRequest dr, List<TestStep> attemptSteps, TestStatus status)
+    {
+        var payload = new
+        {
+            objectiveId = dr.DeliveryObjectiveId,
+            objectiveName = dr.DeliveryObjectiveName,
+            status = status.ToString(),
+            passedSteps = attemptSteps.Count(s => s.Status == TestStatus.Passed),
+            failedSteps = attemptSteps.Count(s => s.Status == TestStatus.Failed),
+            totalSteps = attemptSteps.Count,
+            steps = attemptSteps.Select(s => new
+            {
+                action = s.Action,
+                summary = s.Summary,
+                status = s.Status.ToString(),
+                detail = s.Detail,
+                duration = s.Duration,
+                timestamp = s.Timestamp,
+            }).ToList(),
+        };
+        return JsonSerializer.Serialize(payload, DeferredJsonOpts);
+    }
+
+    /// <summary>
+    /// When every pending row for a run is terminal, asks the execution-history repo
+    /// to merge the collected deferred results into the parent run and recompute its
+    /// aggregate status (AwaitingVerification → Passed/Failed).
+    /// </summary>
+    private async Task TryFinaliseParentRunAsync(
+        IExecutionHistoryRepository historyRepo,
+        IPendingVerificationRepository pendingRepo,
+        DeferredVerificationRequest dr)
+    {
+        try
+        {
+            var stillPending = await pendingRepo.CountPendingForRunAsync(dr.ParentRunId);
+            if (stillPending > 0)
+            {
+                Logger.LogInformation(
+                    "Pending row marked terminal for run {RunId}, {Remaining} still pending.",
+                    dr.ParentRunId, stillPending);
+                return;
+            }
+
+            // All pending rows for this run are terminal — merge their results and finalise.
+            var allForRun = await pendingRepo.ListForRunAsync(dr.ParentRunId);
+            var run = await historyRepo.GetRunAsync(dr.TestSetId, dr.ParentRunId);
+            if (run is null)
+            {
+                Logger.LogWarning("Cannot finalise run {RunId} — no history record found.", dr.ParentRunId);
+                return;
+            }
+
+            foreach (var pending in allForRun)
+            {
+                if (string.IsNullOrWhiteSpace(pending.ResultJson)) continue;
+                ApplyDeferredResultToRun(run, pending);
+            }
+
+            // Recompute run-level aggregate status
+            var hasFailed = run.ObjectiveResults.Any(o =>
+                string.Equals(o.Status, "Failed", StringComparison.OrdinalIgnoreCase));
+            var hasError = run.ObjectiveResults.Any(o =>
+                string.Equals(o.Status, "Error", StringComparison.OrdinalIgnoreCase));
+            var hasAwaiting = run.ObjectiveResults.Any(o =>
+                string.Equals(o.Status, "AwaitingVerification", StringComparison.OrdinalIgnoreCase));
+
+            run.Status = hasAwaiting ? "AwaitingVerification"
+                       : hasError ? "Error"
+                       : hasFailed ? "Failed"
+                       : "Passed";
+            run.PassedObjectives = run.ObjectiveResults.Count(o => o.Status == "Passed");
+            run.FailedObjectives = run.ObjectiveResults.Count(o => o.Status == "Failed");
+            run.ErrorObjectives = run.ObjectiveResults.Count(o => o.Status == "Error");
+            run.CompletedAt = DateTime.UtcNow;
+
+            // Replace the provisional "Inconclusive / awaiting verification" summary
+            // generated while the run was mid-flight with a short factual summary of
+            // the final outcome. The UI sometimes renders this alongside the status
+            // pill; keeping the stale LLM text would confuse the user.
+            var verifCount = allForRun.Count;
+            run.Summary = run.Status switch
+            {
+                "Passed" => $"Delivery + {verifCount} deferred verification(s) completed successfully.",
+                "Failed" => $"Delivery completed but {run.FailedObjectives} objective(s) failed after deferred verification.",
+                "Error"  => $"Delivery completed but {run.ErrorObjectives} objective(s) errored during deferred verification.",
+                _        => run.Summary,
+            };
+
+            await historyRepo.SaveAsync(run);
+            Logger.LogInformation(
+                "Finalised run {RunId} → {Status} after deferred verifications.",
+                dr.ParentRunId, run.Status);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to finalise parent run {RunId} after deferred verification.", dr.ParentRunId);
+        }
+    }
+
+    /// <summary>
+    /// Overlays a pending verification's stored result onto the matching objective
+    /// in <paramref name="run"/>. The objective is looked up by id; its steps are
+    /// replaced with the final attempt's steps (plus a rollup), and its status is
+    /// promoted from AwaitingVerification to the pending row's terminal status.
+    /// </summary>
+    private static void ApplyDeferredResultToRun(PersistedExecutionRun run, PendingVerification pending)
+    {
+        var obj = run.ObjectiveResults
+            .FirstOrDefault(o => string.Equals(o.ObjectiveId, pending.DeliveryObjectiveId, StringComparison.OrdinalIgnoreCase));
+        if (obj is null || string.IsNullOrWhiteSpace(pending.ResultJson)) return;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(pending.ResultJson);
+            var root = doc.RootElement;
+
+            // Replace steps that are still AwaitingVerification with the attempt's steps
+            // plus a single rollup step summarising the attempt count.
+            obj.Steps.RemoveAll(s => string.Equals(s.Status, "AwaitingVerification", StringComparison.OrdinalIgnoreCase));
+
+            if (root.TryGetProperty("steps", out var stepsEl) && stepsEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var stepEl in stepsEl.EnumerateArray())
+                {
+                    obj.Steps.Add(new PersistedStepResult
+                    {
+                        Action = stepEl.TryGetProperty("action", out var a) ? a.GetString() ?? "" : "",
+                        Summary = stepEl.TryGetProperty("summary", out var s) ? s.GetString() ?? "" : "",
+                        Status = stepEl.TryGetProperty("status", out var st) ? st.GetString() ?? "" : "",
+                        Detail = stepEl.TryGetProperty("detail", out var d) && d.ValueKind != JsonValueKind.Null ? d.GetString() : null,
+                        Duration = stepEl.TryGetProperty("duration", out var du)
+                            && TimeSpan.TryParse(du.GetString(), out var parsedDur) ? parsedDur : TimeSpan.Zero,
+                        Timestamp = stepEl.TryGetProperty("timestamp", out var ts) ? ts.GetDateTime() : DateTime.UtcNow,
+                    });
+                }
+            }
+
+            var rollupStatus = string.Equals(pending.Status, "Completed", StringComparison.OrdinalIgnoreCase)
+                ? "Passed" : pending.Status;
+            obj.Steps.Add(new PersistedStepResult
+            {
+                Action = "verification-rollup",
+                Summary = $"{pending.AttemptCount + 1} attempt(s); final status {rollupStatus} (pending {pending.PendingId})",
+                Status = rollupStatus,
+                Timestamp = pending.CompletedAt ?? DateTime.UtcNow,
+            });
+
+            obj.Status = rollupStatus switch
+            {
+                "Passed" => "Passed",
+                "Cancelled" => "Skipped",
+                _ => "Failed",
+            };
+            obj.PassedSteps = obj.Steps.Count(s => string.Equals(s.Status, "Passed", StringComparison.OrdinalIgnoreCase));
+            obj.FailedSteps = obj.Steps.Count(s => string.Equals(s.Status, "Failed", StringComparison.OrdinalIgnoreCase));
+            obj.TotalSteps = obj.Steps.Count;
+            obj.CompletedAt = pending.CompletedAt ?? DateTime.UtcNow;
+        }
+        catch
+        {
+            // If the payload is malformed, leave the objective untouched so we fail loudly
+            // rather than silently overwriting with garbage.
+        }
     }
 
     // ─────────────────────────────────────────────────────
@@ -464,6 +840,45 @@ public class AseXmlDeliveryAgent : BaseTestAgent
                 messageId, transactionId, remoteFileName, uploadedAs,
                 endpoint.EndPointCode, resolvedFields);
 
+            // Decide whether to defer: enabled in config AND at least one verification
+            // has a wait longer than the defer threshold. Short waits run inline because
+            // queueing overhead isn't worth it.
+            var canDefer =
+                _config.AseXml.DeferVerifications
+                && tc.PostDeliveryVerifications.Any(v => v.WaitBeforeSeconds > _config.AseXml.VerificationDeferThresholdSeconds);
+
+            // The deferred path requires SQLite-backed run_queue + run_pending_verifications
+            // tables. When storage is File (or repos aren't wired), we can't persist a deferred
+            // job and must fall back to inline Task.Delay execution.
+            var queueRepoAvailable = _services.GetService<IRunQueueRepository>() is not null
+                                      && _services.GetService<IPendingVerificationRepository>() is not null;
+
+            if (canDefer && queueRepoAvailable
+                && TryEnqueueDeferredVerifications(
+                        tc, index, remoteFileName, context, environmentKey, steps, out var enqueued))
+            {
+                // Deferred path — steps list already carries AwaitingVerification markers.
+                // Do not run verifications inline; the agent slot is released here.
+                return;
+            }
+
+            // ── Explain WHY we fell back to inline so the UX is diagnosable. Appears
+            //    as a grey step alongside the wait message.
+            if (_config.AseXml.DeferVerifications
+                && tc.PostDeliveryVerifications.Any(v => v.WaitBeforeSeconds > _config.AseXml.VerificationDeferThresholdSeconds))
+            {
+                var reason = !queueRepoAvailable
+                    ? "deferred verification requires TestEnvironment.StorageProvider=\"Sqlite\" — current provider does not register IRunQueueRepository/IPendingVerificationRepository. Running inline."
+                    : "enqueue failed — see preceding logs. Running inline.";
+                Logger.LogWarning("[{Agent}] {Reason}", Name, reason);
+                steps.Add(new TestStep
+                {
+                    Action = $"verify[{index}] inline",
+                    Summary = $"Running verification(s) inline (not deferred): {reason}",
+                    Status = TestStatus.Skipped,  // grey step — informational, not a failure
+                });
+            }
+
             for (var vIdx = 0; vIdx < tc.PostDeliveryVerifications.Count; vIdx++)
             {
                 ct.ThrowIfCancellationRequested();
@@ -478,6 +893,153 @@ public class AseXmlDeliveryAgent : BaseTestAgent
             }
         }
     }
+
+    /// <summary>
+    /// Enqueues a single deferred <c>VerifyOnly</c> queue entry covering all
+    /// post-delivery verifications for this test case, plus a row in
+    /// <c>run_pending_verifications</c>. Emits an AwaitingVerification synthetic
+    /// step per verification onto <paramref name="steps"/> so the parent run
+    /// shows due-time information in the UI.
+    /// Returns false (and emits no steps) if enqueueing fails — the caller then
+    /// falls back to inline execution so a transient queue-repo error doesn't
+    /// lose the verification.
+    /// </summary>
+    private bool TryEnqueueDeferredVerifications(
+        AseXmlDeliveryTestCase tc,
+        int deliveryIndex,
+        string remoteFileName,
+        IReadOnlyDictionary<string, string> context,
+        string? environmentKey,
+        List<TestStep> steps,
+        out int enqueuedCount)
+    {
+        enqueuedCount = 0;
+        try
+        {
+            var queueRepo = _services.GetRequiredService<IRunQueueRepository>();
+            var pendingRepo = _services.GetRequiredService<IPendingVerificationRepository>();
+
+            var parentRunId = GetTaskParam<string>("RunId") ?? "";
+            var moduleId = GetTaskParam<string>("ModuleId") ?? "";
+            var testSetId = GetTaskParam<string>("TestSetId") ?? "";
+            var objectiveId = GetTaskParam<string>("ObjectiveId") ?? _currentTaskId ?? "";
+            var objectiveName = GetTaskParam<string>("ObjectiveName") ?? "";
+            if (string.IsNullOrEmpty(parentRunId) || string.IsNullOrEmpty(testSetId))
+            {
+                Logger.LogWarning(
+                    "Cannot defer verifications for '{Objective}': missing RunId or TestSetId on task parameters. " +
+                    "Running inline.", objectiveName);
+                return false;
+            }
+
+            var now = DateTime.UtcNow;
+            var minWait = tc.PostDeliveryVerifications.Min(v => v.WaitBeforeSeconds);
+            var maxWait = tc.PostDeliveryVerifications.Max(v => v.WaitBeforeSeconds);
+            var fraction = Math.Clamp(_config.AseXml.VerificationEarlyStartFraction, 0.01, 1.0);
+            var firstDue = now.AddSeconds(minWait * fraction);
+            var deadline = now.AddSeconds(maxWait + _config.AseXml.VerificationGraceSeconds);
+
+            var request = new DeferredVerificationRequest
+            {
+                ParentRunId = parentRunId,
+                ModuleId = moduleId,
+                TestSetId = testSetId,
+                DeliveryObjectiveId = objectiveId,
+                DeliveryObjectiveName = objectiveName,
+                EnvironmentKey = environmentKey,
+                DeliveryCompletedAt = now,
+                DeadlineAt = deadline,
+                AttemptCount = 0,
+                DeliveryContext = new Dictionary<string, string>(context, StringComparer.OrdinalIgnoreCase),
+                Verifications = tc.PostDeliveryVerifications,
+            };
+
+            // Pick the claim capability from the FIRST verification's target (typical case:
+            // all verifications share a target; handler validates individually at replay).
+            var firstTarget = tc.PostDeliveryVerifications[0].Target;
+
+            var pendingId = Guid.NewGuid().ToString("N")[..12];
+            request.PendingId = pendingId;
+
+            var queueEntry = new RunQueueEntry
+            {
+                Id = pendingId,  // first entry id == pending_id for stable identity across retries
+                ModuleId = moduleId,
+                TestSetId = testSetId,
+                ObjectiveId = objectiveId,
+                TargetType = firstTarget,
+                Mode = "VerifyOnly",
+                JobKind = "Run",
+                Status = "Queued",
+                RequestJson = JsonSerializer.Serialize(request, DeferredJsonOpts),
+                NotBeforeAt = firstDue,
+                DeadlineAt = deadline,
+                AttemptCount = 0,
+                ParentRunId = parentRunId,
+            };
+            queueRepo.EnqueueAsync(queueEntry).GetAwaiter().GetResult();
+
+            pendingRepo.InsertAsync(new PendingVerification
+            {
+                PendingId = pendingId,
+                ParentRunId = parentRunId,
+                CurrentQueueEntryId = queueEntry.Id,
+                ModuleId = moduleId,
+                TestSetId = testSetId,
+                DeliveryObjectiveId = objectiveId,
+                FirstDueAt = firstDue,
+                DeadlineAt = deadline,
+                AttemptCount = 0,
+                Status = "Pending",
+                AttemptLogJson = "[]",
+            }).GetAwaiter().GetResult();
+
+            var firstDueLocal = firstDue.ToLocalTime();
+            var deadlineLocal = deadline.ToLocalTime();
+            for (var vIdx = 0; vIdx < tc.PostDeliveryVerifications.Count; vIdx++)
+            {
+                var v = tc.PostDeliveryVerifications[vIdx];
+                steps.Add(new TestStep
+                {
+                    Action = $"verify[{deliveryIndex}.{vIdx + 1}] scheduled",
+                    Summary = $"'{v.Description}' — first attempt at {firstDueLocal:HH:mm:ss}, deadline {deadlineLocal:HH:mm:ss} ({v.Target})",
+                    Status = TestStatus.AwaitingVerification,
+                    // ISO UTC timestamps stay in detail so the UI countdown can parse them
+                    // deterministically regardless of browser timezone. Don't rely on the
+                    // summary string for timing.
+                    Detail = $"pendingId={pendingId}\nremoteFile={remoteFileName}\nwaitSeconds={v.WaitBeforeSeconds}\nfirstDueAtUtc={firstDue:O}\ndeadlineAtUtc={deadline:O}",
+                });
+            }
+
+            enqueuedCount = tc.PostDeliveryVerifications.Count;
+            Logger.LogInformation(
+                "[{Agent}] Deferred {Count} verification(s) for delivery {Idx} — pendingId={Pid}, firstDue={Due}, deadline={Dl}",
+                Name, enqueuedCount, deliveryIndex, pendingId, firstDue, deadline);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to enqueue deferred verifications; falling back to inline execution.");
+            return false;
+        }
+    }
+
+    private T? GetTaskParam<T>(string key) where T : class
+    {
+        if (_currentTask is null) return null;
+        return _currentTask.Parameters.TryGetValue(key, out var v) && v is T typed ? typed : null;
+    }
+
+    private static readonly JsonSerializerOptions DeferredJsonOpts = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,
+    };
+
+    // Current task context — stashed at the top of ExecuteAsync so helpers on this
+    // instance can read task parameters without being passed the task everywhere.
+    private TestTask? _currentTask;
+    private string? _currentTaskId;
 
     // ─────────────────────────────────────────────────────
     // Phase 3 — verifications

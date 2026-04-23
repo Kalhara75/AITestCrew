@@ -1335,6 +1335,151 @@ Agents authenticate via the owning user's API key (the existing `X-Api-Key` midd
 
 ---
 
+## Deferred Post-Delivery Verification
+
+aseXML delivery objectives frequently attach a UI verification that only becomes meaningful after Bravo has processed the uploaded file — typically a 60–180 s delay. Running that delay inline with `Task.Delay` would hold the executing agent slot open for the whole period; with `MaxParallelAgents = 4` and many concurrent deliveries, most slots would spend their time sleeping. Deferred verification decouples the wait from the executing thread: after a delivery uploads, its verifications are queued with a future claim time and the agent slot is freed immediately. When the due time arrives, any compatible agent on its existing poll loop claims and runs the verification. Failed attempts re-enqueue (instead of in-handler polling) so the agent slot is held only during an actual attempt — ~10–30 s — not across the entire wait window.
+
+### Why a separate coordination path
+
+The deferred flow lives alongside the Phase 4 dispatch path, but solves a different problem:
+
+| | Phase 4 dispatch | Deferred verification |
+|---|---|---|
+| What's queued | A whole run the dashboard triggered | A follow-up the delivery agent itself schedules |
+| When the entry becomes claimable | Immediately (`not_before_at = NULL`) | After the configured wait × early-start fraction |
+| Retry on failure | Single attempt; failure is terminal | Re-enqueue with new `not_before_at` up to a deadline, then terminal |
+| Parent run state while waiting | Running (agent has the slot) | `AwaitingVerification` (no slot held) |
+
+### Retry model — early-exit polling via re-enqueue
+
+The verification's `WaitBeforeSeconds` is the **deadline** for a green result, not the wait before a single attempt. With the defaults:
+
+| Time (relative to delivery) | Event |
+|---|---|
+| `wait × VerificationEarlyStartFraction` (default 0.5) | **Attempt 1** |
+| each `VerificationRetryIntervalSeconds` (default 30) after a fail | Retry (re-enqueued with new `not_before_at`) |
+| `wait + VerificationGraceSeconds` (default 30) | Absolute deadline; last attempt is clamped to this boundary |
+| past deadline | Pending row marked `Failed`, parent run finalises as `Failed` |
+
+Verifications only read + assert UI state, so re-running is idempotent. Set `VerificationGraceSeconds = 0` to make `wait` a hard ceiling.
+
+### Schema (v6)
+
+`DatabaseMigrator.cs` v5 → v6 via idempotent `ALTER`s (reuse the `ColumnExists` helper) and one `CREATE TABLE IF NOT EXISTS`.
+
+```sql
+-- new columns on run_queue
+ALTER TABLE run_queue ADD COLUMN not_before_at         TEXT;     -- UTC ISO; NULL = claim immediately
+ALTER TABLE run_queue ADD COLUMN deadline_at           TEXT;     -- UTC ISO; cutoff for retries
+ALTER TABLE run_queue ADD COLUMN attempt_count         INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run_queue ADD COLUMN parent_queue_entry_id TEXT;     -- stable id across retries (= pending_id)
+ALTER TABLE run_queue ADD COLUMN parent_run_id         TEXT;     -- links back to the originating run
+
+CREATE INDEX idx_run_queue_claim       ON run_queue (status, target_type, not_before_at);
+CREATE INDEX idx_run_queue_parent_run  ON run_queue (parent_run_id, status);
+
+CREATE TABLE run_pending_verifications (
+    pending_id              TEXT PRIMARY KEY,            -- stable across retries; first queue entry's id
+    parent_run_id           TEXT NOT NULL,
+    current_queue_entry_id  TEXT NOT NULL,               -- latest attempt's queue row
+    module_id               TEXT NOT NULL,
+    test_set_id             TEXT NOT NULL,
+    delivery_objective_id   TEXT NOT NULL,
+    first_due_at            TEXT NOT NULL,
+    deadline_at             TEXT NOT NULL,
+    attempt_count           INTEGER NOT NULL DEFAULT 0,
+    status                  TEXT NOT NULL,               -- Pending | Completed | Failed | Cancelled
+    result_json             TEXT,                        -- final attempt's PersistedObjectiveResult
+    attempt_log_json        TEXT,                        -- append-only [{ attempt, at, passed }]
+    created_at              TEXT NOT NULL,
+    completed_at            TEXT
+);
+```
+
+**Why a separate table rather than merging into `execution_runs.data`:** `PersistedExecutionRun` is a single JSON blob written last-writer-wins. Concurrent verifications finalising on two different agents would clobber each other. The pending table is the authoritative "is this run still outstanding?" state; the run JSON is merged + saved once, atomically, when the last pending row turns terminal.
+
+### Claim-time filtering
+
+`SqliteRunQueueRepository.ClaimNextAsync` extends the existing claim query with:
+
+```
+AND (not_before_at IS NULL OR not_before_at <= $nowIso)
+```
+
+`$nowIso` is `DateTime.UtcNow.ToString("O")`; stored timestamps use the same format, so string comparison is chronological. The existing FIFO `ORDER BY created_at ASC` is preserved, so ready entries still surface oldest-first.
+
+### End-to-end flow
+
+1. Delivery agent uploads XML successfully. If `AseXml.DeferVerifications = true` and any attached verification's `WaitBeforeSeconds > VerificationDeferThresholdSeconds`, it **does not** run the verification inline.
+2. Agent builds a `DeferredVerificationRequest` carrying a full snapshot of the delivery context — `MessageID`, `TransactionID`, `EndpointCode`, `RemotePath`, `UploadedAs`, plus every resolved template field — and the list of verifications to replay. **Context is not re-read from history at claim time** — that would race with a concurrent second delivery for the same test set and use the wrong MessageID.
+3. Agent enqueues one `run_queue` row (`mode=VerifyOnly`, `not_before_at=now + wait × fraction`, `deadline_at=now + wait + grace`) and inserts a matching `run_pending_verifications` row (`pending_id` = queue entry id). Synthetic `AwaitingVerification` steps are emitted onto the objective for UI countdown display (detail carries `firstDueAtUtc` + `deadlineAtUtc` as ISO strings).
+4. Delivery objective returns with status `AwaitingVerification`; the orchestrator's `FromSuiteResult` detects this and sets the run-level status accordingly. Agent reports the **top-level** queue entry as success (`/api/queue/{jobId}/result`); the `QueueEndpoints` handler checks `IPendingVerificationRepository.CountPendingForRunAsync` and, if pending rows exist, calls `RunTracker.MarkAwaitingVerification` instead of `Complete`.
+5. At `not_before_at`, any capable Runner agent claims the deferred entry via the normal `/api/queue/next` poll. `JobExecutor.ExecuteRunAsync` detects the payload via the `"kind": "DeferredVerification"` discriminator, deserialises to `DeferredVerificationRequest`, and passes it to `TestOrchestrator.RunAsync` through a new `deferredVerification` parameter.
+6. `AseXmlDeliveryAgent.VerifyOnlyAsync` detects `task.Parameters["DeferredVerificationRequest"]`, skips `GetLatestDeliveryContextAsync`, and runs each verification against the snapshot context.
+7. Outcome handling in `DeferredVerifyAsync`:
+   - **All pass** → `MarkCompletedAsync(resultJson)` + `TryFinaliseParentRunAsync`.
+   - **Any fail AND `UtcNow < deadline_at`** → append to `attempt_log_json`, re-enqueue a fresh queue row (`not_before_at = UtcNow + VerificationRetryIntervalSeconds`, clamped to deadline), update `run_pending_verifications.current_queue_entry_id`. Return `AwaitingVerification` so the queue entry for this attempt reports completion but the parent run stays Awaiting.
+   - **Any fail AND past deadline** → `MarkFailedAsync` + `TryFinaliseParentRunAsync`.
+8. `TryFinaliseParentRunAsync` transactions the merge: if `CountPendingForRunAsync(parentRunId) == 0`, load the existing `PersistedExecutionRun`, overlay each pending row's `result_json` onto the matching objective (replacing `AwaitingVerification` steps with the final attempt's steps + a rollup), recompute aggregate counts, rewrite `Status` (Passed/Failed/Error), and regenerate `Summary` with a short factual line so the provisional "Inconclusive / awaiting verification" LLM text doesn't linger in the UI.
+
+### Distributed coordination over REST
+
+The deferred flow is REST-first: the Runner agent may be on a different host than the Docker-hosted WebApi, so direct SQLite access from the agent is not an option. Coordination goes through dedicated endpoints:
+
+| Method | Route | Purpose |
+|---|---|---|
+| `POST` | `/api/queue` | Enqueue a queue entry (deferred enqueue from the agent, plus the retry re-enqueue) |
+| `GET` | `/api/queue/{jobId}` | Fetch a single queue entry (includes v6 fields) |
+| `POST` | `/api/pending-verifications` | Insert a pending row for a newly-deferred verification |
+| `GET` | `/api/pending-verifications/{pendingId}` | Read attempt log before building the next attempt's entry |
+| `POST` | `/api/pending-verifications/{pendingId}/attempt` | Update current queue entry id + attempt count on a retry |
+| `POST` | `/api/pending-verifications/{pendingId}/complete` | Terminal success; caller then checks pending count and calls finalise |
+| `POST` | `/api/pending-verifications/{pendingId}/fail` | Terminal deadline-exceeded failure |
+| `GET` | `/api/pending-verifications/by-run/{runId}` | Server-side finalise merge + UI status endpoint |
+| `GET` | `/api/pending-verifications/count?runId=` | Fast "are we done?" check |
+
+The Runner's `ApiClientRunQueueRepository` + `ApiClientPendingVerificationRepository` implement `IRunQueueRepository` + `IPendingVerificationRepository` as thin HTTP proxies over these endpoints; the server-side `SqliteRunQueueRepository` + `SqlitePendingVerificationRepository` are the authoritative implementations. Runner DI registers the API-client versions when `ServerUrl` is set (remote mode). Methods the agent hot-path doesn't need (`ClaimNextAsync`, `ListRecentAsync`, janitor operations, cancellation sweeps) throw `NotSupportedException` in the API-client so accidental server-side calls surface loudly.
+
+### Janitor (`AgentHeartbeatMonitor` extensions)
+
+Two new sweeps run on the same 30 s tick as the agent-offline sweep:
+
+1. **Stale queue claim reclaim** — `IRunQueueRepository.ListStaleClaimsAsync(2 × AgentHeartbeatTimeoutSeconds)` + `ReleaseClaimAsync(id)`: any `Claimed` entry whose claiming agent has been silent longer than two heartbeats resets to `Queued`. VerifyOnly work is idempotent (assertions only), so re-execution is safe.
+2. **Deadline timeout** — `IPendingVerificationRepository.ListExpiredAsync(cutoff)` where cutoff = `UtcNow − VerificationMaxLatencySeconds` (default 3600): any `Pending` row whose deadline elapsed without a terminal attempt is marked `Failed` with a synthetic `deferred-verify-timeout` step, and the parent run is finalised with the same merge path.
+
+Both sweeps are wrapped in individual try/catch so one failure doesn't stop the other.
+
+### Run-status surfacing (`/api/runs/{id}/status`)
+
+The status endpoint always attaches `pendingVerifications[]` joined from `run_pending_verifications` (Pending rows only) so the UI can render per-verification countdowns. When `pendingView.Count == 0` but there are any rows for the run AND the in-memory `RunTracker` still says `AwaitingVerification`, the endpoint reloads the finalised run from history and writes the terminal status back into the tracker — this is what bridges the gap between "background agent finished the last pending row" and "dashboard sees Passed/Failed without a refresh".
+
+Cancellation is a two-repo sweep: `POST /api/runs/{id}/cancel` calls `CancelAsync` on the top-level job, `CancelPendingForRunAsync` on both `run_queue` and `run_pending_verifications`, and marks the tracker `Cancelled`.
+
+### New config (`AseXmlConfig`)
+
+| Field | Default | Purpose |
+|---|---|---|
+| `DeferVerifications` | `true` | Global opt-in. `false` = legacy inline `Task.Delay` behaviour (also useful for local debugging). |
+| `VerificationDeferThresholdSeconds` | `30` | Short waits run inline regardless of `DeferVerifications` — queueing overhead isn't worth it. |
+| `VerificationEarlyStartFraction` | `0.5` | When the first attempt runs, expressed as a fraction of `WaitBeforeSeconds`. |
+| `VerificationRetryIntervalSeconds` | `30` | Gap between failed attempts. |
+| `VerificationGraceSeconds` | `30` | Added to `WaitBeforeSeconds` for the absolute deadline. Set to `0` for a hard ceiling at `WaitBeforeSeconds`. |
+| `VerificationMaxLatencySeconds` | `3600` | Janitor: after this long in `Queued`, give up and fail. |
+| `DeferredPollCliIntervalSeconds` | `10` | CLI live-view poll cadence in `dotnet run -- --reuse ...` flows. |
+
+CLI override: `--no-defer-verifications` forces the synchronous inline path for a single invocation.
+
+### UI surfacing
+
+- `TestStatus.AwaitingVerification` renders as a cyan "Awaiting" pill (`StatusBadge` + short display name).
+- `StepList` renders `AwaitingVerification` step rows with a ⏳ icon and a live per-second countdown parsed from `firstDueAtUtc` in the step detail (ISO UTC, timezone-safe).
+- `TriggerRunButton` + `TriggerObjectiveRunButton` replace their spinners with a quiet ⏳ cyan chip during the `AwaitingVerification` phase — a spinner would falsely imply active execution.
+- `TestSetDetailPage` polls `['testSet', ...]` + `['runs', ...]` at 3 s while `ActiveRunContext.isTestSetRunning` is true, as a belt-and-braces complement to the invalidate-on-status-change path in `ActiveRunContext`.
+- `ExecutionDetailPage` uses a dynamic `refetchInterval` that stops at terminal statuses (`Passed`, `Failed`, `Error`, `Skipped`, `Cancelled`).
+- `QueueBanner` reads `notBeforeAt` on queue entries — entries with a future `notBeforeAt` show as "Deferred verification — next attempt in ~N min" rather than "waiting for agent".
+
+---
+
 ## Chat Assistant
 
 The Assistant is a right-edge drawer in the React UI that translates natural-language test-engineering requests into structured actions the user confirms with a click. It reuses the existing LLM wrapper, endpoints, and dispatch infrastructure — it is a routing + presentation layer, not a new execution path.
@@ -1446,6 +1591,16 @@ This section complements the "Where to extend" table in `CLAUDE.md` with archite
 - Add a new step-definition shape if the existing `WebUiTestDefinition` / `DesktopUiTestDefinition` don't fit.
 - `AseXmlDeliveryAgent.RunVerificationAsync` has a `if (target is UI_Web_*) / else if (UI_Desktop_*)` branch — extend it with the new branch to wrap the step list as `PreloadedTestCases`.
 - Recorder — optional; without a recorder the user supplies steps via the UI edit dialog (also optional for a new surface).
+
+### Tuning / extending deferred verification
+
+- **Tuning retry cadence or deadline for a specific environment**: edit `TestEnvironment.AseXml` in `appsettings.json` — `VerificationEarlyStartFraction`, `VerificationRetryIntervalSeconds`, `VerificationGraceSeconds`. No code change. Hard ceiling = set `VerificationGraceSeconds = 0`.
+- **Disabling deferred behaviour for a specific run**: `--no-defer-verifications` on the CLI, OR flip `AseXml.DeferVerifications = false` globally.
+- **Observing state**: query `run_pending_verifications` and `run_queue` directly on the WebApi's DB. The `attempt_log_json` column on a pending row is the append-only history of every retry attempt, useful for post-mortem on an intermittently flaky verification.
+- **Adding a new deferred-verification step field** (e.g. per-verification grace override): extend `VerificationStep.cs` + persist, thread through `DeferredVerificationRequest.Verifications[]`, and consume in `AseXmlDeliveryAgent.TryEnqueueDeferredVerifications`. The Runner's `ApiClientPendingVerificationRepository` and `ApiClientRunQueueRepository` don't need changes — the field rides in the opaque `request_json`.
+- **Changing the retry decision policy** (e.g. cap attempts by count, not time): modify `AseXmlDeliveryAgent.DeferredVerifyAsync` retry branch. All decisions are co-located in that method — the server-side endpoints are data proxies, they don't enforce policy.
+- **Adding a new surface that also wants deferred execution** (e.g. background job polling): the pattern is reusable — give your agent access to `IRunQueueRepository` + `IPendingVerificationRepository` (DI already wired in both Sqlite and remote modes), build a JSON payload carrying a `"kind"` discriminator, enqueue with a future `not_before_at` and a `parent_run_id`, and add a matching branch in `JobExecutor.TryParseDeferredRequest`.
+- **Common symptom: "Awaiting" forever** — usually means no agent has a matching capability or the janitor hasn't run yet. Check the `agents` table for online agents with the verification's target type; check `run_pending_verifications` + `run_queue` rows for the parent run.
 
 ### Adding a richer wait strategy for verifications
 

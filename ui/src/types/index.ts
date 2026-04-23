@@ -231,6 +231,14 @@ export interface RunStatusResponse {
   startedAt: string;
   completedAt: string | null;
   error: string | null;
+  pendingVerifications?: {
+    pendingId: string;
+    deliveryObjectiveId: string;
+    firstDueAt: string;
+    deadlineAt: string;
+    attemptCount: number;
+    queueEntryId: string;
+  }[];
 }
 
 export interface ObjectivePatchEntry {
@@ -377,6 +385,22 @@ export interface QueueEntry {
   completedAt: string | null;
   createdAt: string;
   error: string | null;
+
+  // Deferred-verification scheduling (v6): null on ordinary entries.
+  notBeforeAt?: string | null;
+  deadlineAt?: string | null;
+  attemptCount?: number;
+  parentQueueEntryId?: string | null;
+  parentRunId?: string | null;
+}
+
+export interface PendingVerificationSummary {
+  pendingId: string;
+  deliveryObjectiveId: string;
+  firstDueAt: string;
+  deadlineAt: string;
+  attemptCount: number;
+  queueEntryId: string;
 }
 
 // Legacy types kept for backward compatibility

@@ -32,9 +32,25 @@ public class RunTracker : IRunTracker
     {
         if (_runs.TryGetValue(runId, out var status))
         {
+            // Don't overwrite AwaitingVerification with Completed — the delivery agent
+            // returned but the run is still waiting on deferred verifications. The
+            // finalise path (DeferredVerifyAsync → FinaliseParentRun) transitions the
+            // run to Passed/Failed once every pending row terminal.
+            if (status.Status == "AwaitingVerification") return;
+
             status.Status = "Completed";
             status.CompletedAt = DateTime.UtcNow;
             status.TestSetId = testSetId;
+        }
+    }
+
+    public void MarkAwaitingVerification(string runId, string testSetId)
+    {
+        if (_runs.TryGetValue(runId, out var status))
+        {
+            status.Status = "AwaitingVerification";
+            status.TestSetId = testSetId;
+            // Deliberately leave CompletedAt null — the run is not done.
         }
     }
 
@@ -56,7 +72,8 @@ public class RunTracker : IRunTracker
     public RunStatus? GetActiveRun() => _runs.Values.FirstOrDefault(IsActive);
 
     private static bool IsActive(RunStatus r) =>
-        r.Status == "Running" || r.Status == "Queued" || r.Status == "Claimed";
+        r.Status == "Running" || r.Status == "Queued"
+        || r.Status == "Claimed" || r.Status == "AwaitingVerification";
 }
 
 public class RunStatus

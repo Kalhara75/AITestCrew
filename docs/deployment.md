@@ -144,6 +144,7 @@ Polling for jobs — press Ctrl+C to stop.
 **Dashboard view:**
 - The Modules page lists connected agents with status (Online / Busy / Offline), capabilities, and any job they're currently running.
 - When a dashboard user triggers a web/desktop run, the banner shows *"Queued — waiting for agent with UI_Web_Blazor"* until an agent claims it, then flips to *"Running on Alice-PC"*.
+- For aseXML delivery objectives with long post-delivery verifications, the banner shows *"Deferred verification — next attempt in ~N min"* during the wait window. The same agent claims it when `not_before_at` elapses. See `docs/architecture.md → Deferred Post-Delivery Verification` for the retry/deadline model; `/tune-deferred-verification` for the knobs.
 
 **Auto-start on login (optional):**
 

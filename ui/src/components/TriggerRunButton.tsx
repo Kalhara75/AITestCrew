@@ -19,15 +19,19 @@ export function TriggerRunButton({ testSetId, moduleId, apiStackKey, apiModule, 
   // This button is "active" if the global individual run targets this test set
   const isActive = individualRun?.testSetId === testSetId;
 
-  // Navigate on completion
+  // Navigate on completion. Both 'Completed' and 'Passed' mean terminal success
+  // (server returns 'Completed' from RunTracker, 'Passed' when collapsed from
+  // execution history). Don't navigate while the run is AwaitingVerification —
+  // the deferred verification is still in flight.
   if (isActive && individualRunStatus) {
-    if (individualRunStatus.status === 'Completed' && individualRunStatus.testSetId) {
+    const s = individualRunStatus.status;
+    if ((s === 'Completed' || s === 'Passed') && individualRunStatus.testSetId) {
       const basePath = moduleId
         ? `/modules/${moduleId}/testsets/${individualRunStatus.testSetId}`
         : `/testsets/${individualRunStatus.testSetId}`;
       // Defer navigation to avoid state update during render
       setTimeout(() => navigate(`${basePath}/runs/${individualRunStatus.runId}`), 0);
-    } else if (individualRunStatus.status === 'Failed') {
+    } else if (s === 'Failed' || s === 'Error') {
       setTimeout(() => {
         setIndividualRun(null);
         setError(individualRunStatus.error || 'Run failed');
@@ -54,27 +58,41 @@ export function TriggerRunButton({ testSetId, moduleId, apiStackKey, apiModule, 
 
   if (isActive) {
     const s = individualRunStatus?.status;
-    const label = s === 'Queued' ? 'Queued — waiting for agent...'
-                : s === 'Claimed' ? 'Agent claimed the job...'
+    const isQueued = s === 'Queued' || s === 'Claimed';
+    const isAwaiting = s === 'AwaitingVerification';
+    const label = s === 'Queued' ? 'Queued — waiting for agent'
+                : s === 'Claimed' ? 'Agent claimed the job'
+                : isAwaiting ? 'Scheduled — awaiting deferred verification'
                 : 'Running tests...';
+    const palette = isAwaiting
+      ? { bg: '#ecfeff', border: '#a5f3fc', fg: '#0e7490' }
+      : isQueued
+      ? { bg: '#fffbeb', border: '#fde68a', fg: '#78350f' }
+      : { bg: '#eff6ff', border: '#bfdbfe', fg: '#1e40af' };
     return (
       <div style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 12,
-        padding: '10px 20px',
-        background: s === 'Queued' || s === 'Claimed' ? '#fffbeb' : '#eff6ff',
+        gap: 10,
+        padding: '10px 18px',
+        background: palette.bg,
         borderRadius: 8,
-        border: `1px solid ${s === 'Queued' || s === 'Claimed' ? '#fde68a' : '#bfdbfe'}`,
+        border: `1px solid ${palette.border}`,
       }}>
-        <div style={{
-          width: 16, height: 16,
-          border: `2.5px solid ${s === 'Queued' || s === 'Claimed' ? '#fde68a' : '#bfdbfe'}`,
-          borderTop: `2.5px solid ${s === 'Queued' || s === 'Claimed' ? '#b45309' : '#2563eb'}`,
-          borderRadius: '50%',
-          animation: 'spin 0.8s linear infinite',
-        }} />
-        <span style={{ fontSize: 13, color: s === 'Queued' || s === 'Claimed' ? '#78350f' : '#1e40af', fontWeight: 500 }}>
+        {/* Awaiting is a scheduled / parked state — no spinner, just an icon.
+            Only active execution (Queued/Claimed/Running) gets the spinner. */}
+        {isAwaiting ? (
+          <span style={{ fontSize: 16, lineHeight: 1 }}>{'\u23F3'}</span>
+        ) : (
+          <div style={{
+            width: 16, height: 16,
+            border: `2.5px solid ${palette.border}`,
+            borderTop: `2.5px solid ${palette.fg}`,
+            borderRadius: '50%',
+            animation: 'spin 0.8s linear infinite',
+          }} />
+        )}
+        <span style={{ fontSize: 13, color: palette.fg, fontWeight: 500 }}>
           {label}
         </span>
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>

@@ -23,9 +23,11 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
         cmd.CommandText = """
             INSERT INTO run_queue (id, module_id, test_set_id, objective_id, target_type, mode, job_kind,
                                    requested_by, status, claimed_by, claimed_at, completed_at, error,
-                                   request_json, created_at)
+                                   request_json, created_at,
+                                   not_before_at, deadline_at, attempt_count, parent_queue_entry_id, parent_run_id)
             VALUES ($id, $moduleId, $tsId, $objId, $target, $mode, $jobKind, $requestedBy, $status,
-                    NULL, NULL, NULL, NULL, $requestJson, $createdAt)
+                    NULL, NULL, NULL, NULL, $requestJson, $createdAt,
+                    $notBeforeAt, $deadlineAt, $attemptCount, $parentQueueEntryId, $parentRunId)
             """;
         cmd.Parameters.AddWithValue("$id", entry.Id);
         cmd.Parameters.AddWithValue("$moduleId", entry.ModuleId);
@@ -38,6 +40,13 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
         cmd.Parameters.AddWithValue("$status", entry.Status);
         cmd.Parameters.AddWithValue("$requestJson", entry.RequestJson);
         cmd.Parameters.AddWithValue("$createdAt", entry.CreatedAt.ToString("O"));
+        cmd.Parameters.AddWithValue("$notBeforeAt",
+            entry.NotBeforeAt.HasValue ? entry.NotBeforeAt.Value.ToString("O") : DBNull.Value);
+        cmd.Parameters.AddWithValue("$deadlineAt",
+            entry.DeadlineAt.HasValue ? entry.DeadlineAt.Value.ToString("O") : DBNull.Value);
+        cmd.Parameters.AddWithValue("$attemptCount", entry.AttemptCount);
+        cmd.Parameters.AddWithValue("$parentQueueEntryId", (object?)entry.ParentQueueEntryId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$parentRunId", (object?)entry.ParentRunId ?? DBNull.Value);
         await cmd.ExecuteNonQueryAsync();
         return entry;
     }
@@ -50,18 +59,25 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
         using var conn = _factory.CreateConnection();
         using var tx = conn.BeginTransaction(System.Data.IsolationLevel.Serializable);
 
-        // Find the oldest Queued job with a matching target type
+        // Find the oldest Queued job with a matching target type AND whose not_before_at has elapsed.
+        // not_before_at is ISO-8601 text ("O" round-trip format), so lexicographic compare
+        // against UtcNow formatted the same way is a valid chronological compare.
+        var nowIso = DateTime.UtcNow.ToString("O");
+
         using var select = conn.CreateCommand();
         select.Transaction = tx;
         var placeholders = string.Join(",", caps.Select((_, i) => $"$c{i}"));
         select.CommandText = $"""
             SELECT id FROM run_queue
-            WHERE status = 'Queued' AND target_type IN ({placeholders})
+            WHERE status = 'Queued'
+              AND target_type IN ({placeholders})
+              AND (not_before_at IS NULL OR not_before_at <= $now)
             ORDER BY created_at ASC
             LIMIT 1
             """;
         for (int i = 0; i < caps.Length; i++)
             select.Parameters.AddWithValue($"$c{i}", caps[i]);
+        select.Parameters.AddWithValue("$now", nowIso);
         var jobIdObj = await select.ExecuteScalarAsync();
         if (jobIdObj is null or DBNull)
         {
@@ -77,7 +93,7 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
             WHERE id = $id AND status = 'Queued'
             """;
         update.Parameters.AddWithValue("$agent", agentId);
-        update.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("O"));
+        update.Parameters.AddWithValue("$now", nowIso);
         update.Parameters.AddWithValue("$id", jobId);
         var rows = await update.ExecuteNonQueryAsync();
         tx.Commit();
@@ -135,6 +151,19 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
         return rows > 0;
     }
 
+    public async Task<int> CancelPendingForRunAsync(string parentRunId)
+    {
+        using var conn = _factory.CreateConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE run_queue SET status = 'Cancelled', completed_at = $now
+            WHERE parent_run_id = $parentRunId AND status IN ('Queued', 'Claimed')
+            """;
+        cmd.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("O"));
+        cmd.Parameters.AddWithValue("$parentRunId", parentRunId);
+        return await cmd.ExecuteNonQueryAsync();
+    }
+
     public async Task<List<RunQueueEntry>> ListRecentAsync(int max = 50)
     {
         using var conn = _factory.CreateConnection();
@@ -159,10 +188,39 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
         return await reader.ReadAsync() ? Read(reader) : null;
     }
 
+    public async Task<List<RunQueueEntry>> ListStaleClaimsAsync(TimeSpan staleAfter)
+    {
+        var cutoff = DateTime.UtcNow.Subtract(staleAfter).ToString("O");
+        using var conn = _factory.CreateConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = SelectSql +
+            " WHERE status = 'Claimed' AND claimed_at IS NOT NULL AND claimed_at < $cutoff" +
+            " ORDER BY claimed_at ASC";
+        cmd.Parameters.AddWithValue("$cutoff", cutoff);
+        using var reader = await cmd.ExecuteReaderAsync();
+        var result = new List<RunQueueEntry>();
+        while (await reader.ReadAsync()) result.Add(Read(reader));
+        return result;
+    }
+
+    public async Task<bool> ReleaseClaimAsync(string id)
+    {
+        using var conn = _factory.CreateConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE run_queue SET status = 'Queued', claimed_by = NULL, claimed_at = NULL
+            WHERE id = $id AND status = 'Claimed'
+            """;
+        cmd.Parameters.AddWithValue("$id", id);
+        var rows = await cmd.ExecuteNonQueryAsync();
+        return rows > 0;
+    }
+
     private const string SelectSql = """
         SELECT id, module_id, test_set_id, objective_id, target_type, mode, job_kind,
                requested_by, status, claimed_by, claimed_at, completed_at, error,
-               request_json, created_at
+               request_json, created_at,
+               not_before_at, deadline_at, attempt_count, parent_queue_entry_id, parent_run_id
         FROM run_queue
         """;
 
@@ -182,6 +240,11 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
         CompletedAt = r.IsDBNull(11) ? null : DateTime.Parse(r.GetString(11)).ToUniversalTime(),
         Error = r.IsDBNull(12) ? null : r.GetString(12),
         RequestJson = r.GetString(13),
-        CreatedAt = DateTime.Parse(r.GetString(14)).ToUniversalTime()
+        CreatedAt = DateTime.Parse(r.GetString(14)).ToUniversalTime(),
+        NotBeforeAt = r.IsDBNull(15) ? null : DateTime.Parse(r.GetString(15)).ToUniversalTime(),
+        DeadlineAt = r.IsDBNull(16) ? null : DateTime.Parse(r.GetString(16)).ToUniversalTime(),
+        AttemptCount = r.IsDBNull(17) ? 0 : r.GetInt32(17),
+        ParentQueueEntryId = r.IsDBNull(18) ? null : r.GetString(18),
+        ParentRunId = r.IsDBNull(19) ? null : r.GetString(19),
     };
 }

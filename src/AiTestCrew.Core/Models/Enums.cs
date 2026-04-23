@@ -13,7 +13,12 @@ public enum TestStatus
     Passed,
     Failed,
     Error,
-    Skipped
+    Skipped,
+    /// <summary>
+    /// Objective/step has a post-delivery verification queued for later execution.
+    /// The run does not finalise until all awaited verifications complete or exceed their deadline.
+    /// </summary>
+    AwaitingVerification
 }
 
 public enum TestTargetType

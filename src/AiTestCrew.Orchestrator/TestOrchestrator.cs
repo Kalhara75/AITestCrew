@@ -6,6 +6,7 @@ using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using AiTestCrew.Agents.ApiAgent;
 using AiTestCrew.Agents.AseXmlAgent;
+using AiTestCrew.Agents.AseXmlAgent.Delivery;
 using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Configuration;
@@ -91,7 +92,8 @@ public class TestOrchestrator
         int? verificationWaitOverride = null,
         string? environmentKey = null,
         bool teardownDryRun = false,
-        bool skipTeardown = false)
+        bool skipTeardown = false,
+        DeferredVerificationRequest? deferredVerification = null)
     {
         var sw = Stopwatch.StartNew();
         var startedAt = DateTime.UtcNow;
@@ -309,7 +311,33 @@ public class TestOrchestrator
                         t.Parameters["ModuleId"] = moduleId;
                     if (verificationWaitOverride.HasValue)
                         t.Parameters["VerificationWaitOverride"] = verificationWaitOverride.Value;
+
+                    // Deferred-verification claim: carry the self-contained snapshot so
+                    // the delivery agent replays the verification against the correct
+                    // delivery's MessageID/TransactionID/filename (not the latest one).
+                    if (deferredVerification is not null
+                        && string.Equals(t.Id, deferredVerification.DeliveryObjectiveId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        t.Parameters["DeferredVerificationRequest"] = deferredVerification;
+                    }
                 }
+            }
+
+            // ── Thread RunId onto every task so the delivery agent can attribute
+            //    deferred queue entries to the correct parent run. When the caller did
+            //    not supply externalRunId, we generate one here and store it back so
+            //    the subsequent FromSuiteResult/Save path uses the same id.
+            externalRunId ??= Guid.NewGuid().ToString("N")[..12];
+            var runIdForTasks = externalRunId;
+            foreach (var t in tasks)
+            {
+                t.Parameters["RunId"] = runIdForTasks;
+                if (!t.Parameters.ContainsKey("TestSetId"))
+                    t.Parameters["TestSetId"] = targetTestSetId ?? reuseId ?? "";
+                if (!t.Parameters.ContainsKey("ModuleId") && !string.IsNullOrEmpty(moduleId))
+                    t.Parameters["ModuleId"] = moduleId;
+                t.Parameters["ObjectiveName"] = t.Description;
+                t.Parameters["ObjectiveId"] = t.Id;
             }
 
             // ── Single-objective filter: run only one objective from the set ──

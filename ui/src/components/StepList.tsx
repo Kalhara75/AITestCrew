@@ -1,6 +1,42 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ObjectiveResult, StepResult } from '../types';
 import { StatusBadge } from './StatusBadge';
+
+/** Parse "pendingId=...\nremoteFile=...\nwaitSeconds=..." or "nextQueueEntryId=..." style detail
+ *  into a lookup so we can surface useful info on AwaitingVerification rows. */
+function parseAwaitingDetail(detail: string | null): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!detail) return out;
+  for (const line of detail.split(/\r?\n/)) {
+    const m = line.match(/^([A-Za-z0-9_]+)=(.*)$/);
+    if (m) out[m[1]] = m[2];
+  }
+  return out;
+}
+
+/** Prefer the ISO UTC timestamp the agent stores in detail — deterministic across
+ *  timezones. Fall back to parsing the HH:MM:SS from the summary as a last resort.
+ *  The summary is intended for human display and should not be the source of truth
+ *  for timing. */
+function extractDueTime(summary: string, detail: string | null): Date | null {
+  if (detail) {
+    const m = detail.match(/firstDueAtUtc=([^\r\n]+)/);
+    if (m) {
+      const d = new Date(m[1]);
+      if (!isNaN(d.getTime())) return d;
+    }
+  }
+  // Fallback: parse HH:MM:SS from summary as browser-local time.
+  const m = summary.match(/(?:attempt at|due|retrying at|due at)\s+(\d{2}:\d{2}:\d{2})/i);
+  if (!m) return null;
+  const [h, mi, s] = m[1].split(':').map(Number);
+  const now = new Date();
+  const target = new Date(now);
+  target.setHours(h, mi, s, 0);
+  // If the parsed time is earlier today than now, assume it's tomorrow (clock wrap).
+  if (target.getTime() < now.getTime() - 60_000) target.setDate(target.getDate() + 1);
+  return target;
+}
 
 export function StepList({ objectiveResults }: { objectiveResults: ObjectiveResult[] }) {
   return (
@@ -83,9 +119,14 @@ function parseScreenshot(detail: string | null): { text: string; screenshotFile:
 
 function StepRow({ step, isLast }: { step: StepResult; isLast: boolean }) {
   const [showDetail, setShowDetail] = useState(false);
-  const statusIcon = step.status === 'Passed' ? '\u2705' : step.status === 'Failed' ? '\u274C' : '\u26A0\uFE0F';
+  const isAwaiting = step.status === 'AwaitingVerification';
+  const statusIcon = step.status === 'Passed' ? '\u2705'
+    : step.status === 'Failed' ? '\u274C'
+    : isAwaiting ? '\u23F3'
+    : '\u26A0\uFE0F';
   const { text: detailText, screenshotFile } = parseScreenshot(step.detail);
   const hasDetail = !!(step.detail);
+  const dueTime = isAwaiting ? extractDueTime(step.summary, step.detail) : null;
 
   return (
     <div style={{ borderBottom: isLast ? 'none' : '1px solid #f1f5f9' }}>
@@ -113,7 +154,8 @@ function StepRow({ step, isLast }: { step: StepResult; isLast: boolean }) {
         }}>
           {step.action}
         </span>
-        <span style={{ color: '#64748b', flex: 1 }}>{step.summary}</span>
+        <span style={{ color: isAwaiting ? '#0e7490' : '#64748b', flex: 1 }}>{step.summary}</span>
+        {dueTime && <Countdown target={dueTime} />}
         {hasDetail && (
           <span style={{ color: '#94a3b8', fontSize: 11 }}>{showDetail ? 'Hide' : 'Detail'}</span>
         )}
@@ -162,5 +204,44 @@ function StepRow({ step, isLast }: { step: StepResult; isLast: boolean }) {
         </div>
       )}
     </div>
+  );
+}
+
+function Countdown({ target }: { target: Date }) {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+  // keep the tick reference to force re-renders
+  void tick;
+
+  const diffMs = target.getTime() - Date.now();
+  if (diffMs <= 0) {
+    return (
+      <span style={{
+        background: '#fef9c3',
+        color: '#854d0e',
+        padding: '2px 8px',
+        borderRadius: 10,
+        fontSize: 11,
+        fontWeight: 600,
+      }}>awaiting claim</span>
+    );
+  }
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  const label = minutes > 0 ? `in ${minutes}m ${seconds}s` : `in ${seconds}s`;
+  return (
+    <span style={{
+      background: '#cffafe',
+      color: '#0e7490',
+      padding: '2px 8px',
+      borderRadius: 10,
+      fontSize: 11,
+      fontWeight: 600,
+      fontFamily: 'ui-monospace, Consolas, monospace',
+    }}>{label}</span>
   );
 }

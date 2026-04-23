@@ -171,6 +171,45 @@ public class AseXmlConfig
     /// the dropped file before UI assertions query it.
     /// </summary>
     public int DefaultVerificationWaitSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// When true (default), post-delivery UI verifications with a wait greater than
+    /// <see cref="VerificationDeferThresholdSeconds"/> are queued with a future
+    /// <c>not_before_at</c> so the delivery agent slot is freed immediately. When
+    /// false, the delivery agent blocks on <c>Task.Delay</c> and runs the verification
+    /// inline (legacy behaviour, useful for local debugging).
+    /// </summary>
+    public bool DeferVerifications { get; set; } = true;
+
+    /// <summary>
+    /// Waits ≤ this value run synchronously on the delivery agent even when
+    /// <see cref="DeferVerifications"/> is true — the queueing/agent-hop overhead
+    /// isn't worth it for short delays.
+    /// </summary>
+    public int VerificationDeferThresholdSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Fraction of <c>WaitBeforeSeconds</c> at which the FIRST deferred verification
+    /// attempt runs. A value of 0.5 means the first attempt fires at half the configured
+    /// wait; if it fails, retries re-enqueue every <see cref="VerificationRetryIntervalSeconds"/>
+    /// until <c>WaitBeforeSeconds + VerificationGraceSeconds</c> elapses.
+    /// </summary>
+    public double VerificationEarlyStartFraction { get; set; } = 0.5;
+
+    /// <summary>Gap between failed deferred-verification attempts. Keeps the re-enqueue cadence predictable.</summary>
+    public int VerificationRetryIntervalSeconds { get; set; } = 30;
+
+    /// <summary>Added to <c>WaitBeforeSeconds</c> to form the absolute deadline past which a final failure is recorded.</summary>
+    public int VerificationGraceSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Maximum time a pending verification may stay in the queue without being claimed
+    /// by an agent. Past this, the janitor marks it Failed and finalises the parent run.
+    /// </summary>
+    public int VerificationMaxLatencySeconds { get; set; } = 3600;
+
+    /// <summary>Poll cadence (seconds) for the CLI live-view while waiting on deferred verifications.</summary>
+    public int DeferredPollCliIntervalSeconds { get; set; } = 10;
 }
 
 /// <summary>

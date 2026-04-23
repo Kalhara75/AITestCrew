@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Collections.Generic;
 using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
@@ -136,7 +137,14 @@ public static class RunEndpoints
                         : !string.IsNullOrWhiteSpace(request.TestSetId)
                             ? request.TestSetId!
                             : SlugHelper.ToSlug(result.Objective);
-                    tracker.Complete(runId, testSetId);
+
+                    // If any objective is awaiting a deferred verification, the run is not
+                    // complete — park it in AwaitingVerification until the pending-row
+                    // finaliser flips it to Passed/Failed.
+                    if (result.Results.Any(r => r.Status == TestStatus.AwaitingVerification))
+                        tracker.MarkAwaitingVerification(runId, testSetId);
+                    else
+                        tracker.Complete(runId, testSetId);
                 }
                 catch (Exception ex)
                 {
@@ -153,31 +161,122 @@ public static class RunEndpoints
             });
         });
 
-        group.MapGet("/{runId}/status", async (string runId, IRunTracker tracker, IRunQueueRepository? queueRepo) =>
+        group.MapGet("/{runId}/status", async (
+            string runId, IRunTracker tracker,
+            IRunQueueRepository? queueRepo,
+            IPendingVerificationRepository? pendingRepo,
+            IExecutionHistoryRepository historyRepo) =>
         {
+            // Look up deferred-verification state once so every branch can include it.
+            var pending = pendingRepo is not null
+                ? await pendingRepo.ListForRunAsync(runId)
+                : new List<PendingVerification>();
+            var pendingView = pending
+                .Where(p => p.Status == "Pending")
+                .Select(p => new
+                {
+                    pendingId = p.PendingId,
+                    deliveryObjectiveId = p.DeliveryObjectiveId,
+                    firstDueAt = p.FirstDueAt,
+                    deadlineAt = p.DeadlineAt,
+                    attemptCount = p.AttemptCount,
+                    queueEntryId = p.CurrentQueueEntryId,
+                })
+                .ToList();
+
+            // If every pending row is terminal and the run was previously AwaitingVerification,
+            // reload the finalised row from history and push the final status back onto the
+            // in-memory RunTracker (the delivery agent can't do this cross-process).
+            if (pendingView.Count == 0 && pending.Count > 0)
+            {
+                var trackerStatus = tracker.Get(runId);
+                if (trackerStatus is not null && trackerStatus.Status == "AwaitingVerification")
+                {
+                    var anyForRun = pending.FirstOrDefault();
+                    if (anyForRun is not null)
+                    {
+                        var finalised = await historyRepo.GetRunAsync(anyForRun.TestSetId, runId);
+                        if (finalised is not null)
+                        {
+                            trackerStatus.Status = finalised.Status == "Passed" ? "Completed"
+                                : finalised.Status;  // Failed / Error / Cancelled all pass through
+                            trackerStatus.CompletedAt = finalised.CompletedAt ?? DateTime.UtcNow;
+                        }
+                    }
+                }
+            }
+
             // Queue takes precedence — it's the source of truth for agent-dispatched runs
             if (queueRepo is not null)
             {
                 var job = await queueRepo.GetByIdAsync(runId);
                 if (job is not null)
                 {
-                    return Results.Ok(new RunStatus
+                    return Results.Ok(new
                     {
-                        RunId = job.Id,
-                        Objective = "",
-                        Mode = job.Mode,
-                        TestSetId = job.TestSetId,
-                        Status = job.Status,
-                        StartedAt = job.CreatedAt,
-                        CompletedAt = job.CompletedAt,
-                        Error = job.Error
+                        runId = job.Id,
+                        objective = "",
+                        mode = job.Mode,
+                        testSetId = job.TestSetId,
+                        status = pendingView.Count > 0 ? "AwaitingVerification" : job.Status,
+                        startedAt = job.CreatedAt,
+                        completedAt = job.CompletedAt,
+                        error = job.Error,
+                        pendingVerifications = pendingView,
                     });
                 }
             }
 
             var status = tracker.Get(runId);
             if (status is null) return Results.NotFound(new { error = $"Run '{runId}' not found" });
-            return Results.Ok(status);
+            return Results.Ok(new
+            {
+                runId = status.RunId,
+                objective = status.Objective,
+                mode = status.Mode,
+                testSetId = status.TestSetId,
+                status = status.Status,
+                startedAt = status.StartedAt,
+                completedAt = status.CompletedAt,
+                error = status.Error,
+                pendingVerifications = pendingView,
+            });
+        });
+
+        // POST /api/runs/{runId}/cancel — cancel an in-flight run, sweeping any deferred
+        // verification retries still in the queue or pending-verifications table.
+        group.MapPost("/{runId}/cancel", async (
+            string runId, IRunTracker tracker,
+            IRunQueueRepository? queueRepo,
+            IPendingVerificationRepository? pendingRepo) =>
+        {
+            var cancelledQueue = 0;
+            var cancelledPending = 0;
+
+            // Cancel a still-Queued top-level job (dashboard-dispatched agent run that
+            // never got claimed).
+            if (queueRepo is not null)
+            {
+                await queueRepo.CancelAsync(runId);                           // the job itself
+                cancelledQueue = await queueRepo.CancelPendingForRunAsync(runId); // any deferred retries
+            }
+            if (pendingRepo is not null)
+                cancelledPending = await pendingRepo.CancelForRunAsync(runId);
+
+            var status = tracker.Get(runId);
+            if (status is not null)
+            {
+                status.Status = "Cancelled";
+                status.CompletedAt = DateTime.UtcNow;
+            }
+
+            return Results.Ok(new
+            {
+                runId,
+                status = "Cancelled",
+                cancelledQueueEntries = cancelledQueue,
+                cancelledPendingVerifications = cancelledPending,
+            });
         });
 
         // GET /api/runs/active — check for any active run (module-level or individual)

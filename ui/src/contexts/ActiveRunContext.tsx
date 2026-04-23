@@ -110,19 +110,25 @@ export function ActiveRunProvider({ children }: { children: React.ReactNode }) {
     refetchInterval: 3000,
   });
 
-  // When individual run reaches a terminal state, clear it and invalidate
+  // Whenever the polled status changes, invalidate dependent queries so the
+  // dashboard reflects the transition (Queued → Running → AwaitingVerification →
+  // Passed/Failed). On a terminal status, clear individualRun so the poll stops.
   useEffect(() => {
     if (!individualRunStatusData || !individualRun) return;
     const s = individualRunStatusData.status;
-    if (s === 'Completed' || s === 'Failed' || s === 'Cancelled') {
-      const { moduleId, testSetId } = individualRun;
-      setIndividualRun(null);
-      if (testSetId) {
-        queryClient.invalidateQueries({ queryKey: ['testSet', moduleId, testSetId] });
-        queryClient.invalidateQueries({ queryKey: ['runs', moduleId, testSetId] });
-      }
-      queryClient.invalidateQueries({ queryKey: ['queue'] });
+    const terminal = s === 'Completed' || s === 'Failed' || s === 'Cancelled'
+      || s === 'Passed' || s === 'Error';
+
+    // Refresh list/detail on every change so the per-test-case status pill and
+    // per-run history keep up with Running → Awaiting → Passed transitions.
+    const { moduleId, testSetId } = individualRun;
+    if (testSetId) {
+      queryClient.invalidateQueries({ queryKey: ['testSet', moduleId, testSetId] });
+      queryClient.invalidateQueries({ queryKey: ['runs', moduleId, testSetId] });
     }
+    queryClient.invalidateQueries({ queryKey: ['queue'] });
+
+    if (terminal) setIndividualRun(null);
   }, [individualRunStatusData?.status]);
 
   // ── Helpers ──

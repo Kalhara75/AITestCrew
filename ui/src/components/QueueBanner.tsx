@@ -56,8 +56,22 @@ function QueueRow({ job, agents, onCancel }: { job: QueueEntry; agents: AgentSum
   const capable = agents.filter(a => a.capabilities.includes(job.targetType) && a.status === 'Online');
   const hasCapableAgent = capable.length > 0;
 
+  // Deferred post-delivery verification: queued but with a future not_before_at.
+  // Show a different message so the user understands the job is scheduled, not stalled.
+  const notBefore = job.notBeforeAt ? new Date(job.notBeforeAt) : null;
+  const isDeferred = notBefore !== null && notBefore.getTime() > Date.now();
+  const isRetry = (job.attemptCount ?? 0) > 0;
+
   let message: React.ReactNode;
-  if (job.status === 'Queued') {
+  if (job.status === 'Queued' && isDeferred) {
+    const mins = Math.max(0, Math.round((notBefore!.getTime() - Date.now()) / 60_000));
+    const whenLabel = mins > 0 ? `in ~${mins} min` : `shortly (${notBefore!.toLocaleTimeString()})`;
+    const attemptLabel = isRetry ? <> (retry {job.attemptCount})</> : null;
+    message = <>
+      <b>Deferred verification</b>{attemptLabel} — next attempt {whenLabel}
+      {' '}on an agent with <b>{job.targetType}</b>
+    </>;
+  } else if (job.status === 'Queued') {
     message = hasCapableAgent
       ? <>Queued — waiting for agent with <b>{job.targetType}</b></>
       : <>

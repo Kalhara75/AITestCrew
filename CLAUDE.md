@@ -85,18 +85,29 @@ Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → C
 | `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` | Bound from `appsettings.json → TestEnvironment` — `ApiStacks`, `Environments`, `DefaultEnvironment`, auth, execution, Playwright, desktop UI settings |
 | `src/AiTestCrew.Core/Services/AgentConcurrencyLimiter.cs` | Global semaphore for parallel execution, bounded by `MaxParallelAgents` |
 | `src/AiTestCrew.Core/Models/Agent.cs` | Phase 4 agent record — registered Runner instance + capabilities + status |
-| `src/AiTestCrew.Core/Models/RunQueueEntry.cs` | Phase 4 queue row — enqueued run waiting for / claimed by / completed on a local agent |
+| `src/AiTestCrew.Core/Models/RunQueueEntry.cs` | Queue row — includes deferred-verification fields (`NotBeforeAt`, `DeadlineAt`, `AttemptCount`, `ParentQueueEntryId`, `ParentRunId`) |
+| `src/AiTestCrew.Core/Models/PendingVerification.cs` | Deferred-verification state row — stable `pending_id` across retries, `attempt_log_json`, terminal result |
+| `src/AiTestCrew.Core/Interfaces/IPendingVerificationRepository.cs` | DI contract for pending-verification CRUD |
 | `src/AiTestCrew.Storage/Sqlite/SqliteAgentRepository.cs` | Agent upsert / heartbeat / stale-offline marking |
-| `src/AiTestCrew.Storage/Sqlite/SqliteRunQueueRepository.cs` | Run-queue enqueue / atomic claim / progress / result |
+| `src/AiTestCrew.Storage/Sqlite/SqliteRunQueueRepository.cs` | Run-queue enqueue / atomic claim (respects `not_before_at`) / progress / result / stale-claim reclaim |
+| `src/AiTestCrew.Storage/Sqlite/SqlitePendingVerificationRepository.cs` | `run_pending_verifications` CRUD — authoritative "is this run still outstanding?" state |
+| `src/AiTestCrew.Storage/Sqlite/DatabaseMigrator.cs` | Schema v6 migration — `ALTER TABLE run_queue` (5 new columns) + `CREATE TABLE run_pending_verifications` + new indexes |
+| `src/AiTestCrew.Storage/AseXmlAgent/Delivery/DeferredVerificationRequest.cs` | Self-contained snapshot carried in `run_queue.request_json` for a deferred verification (delivery context + verifications + deadline). Discriminator `"kind": "DeferredVerification"` |
 | `src/AiTestCrew.WebApi/Endpoints/AgentEndpoints.cs` | `/api/agents/*` — register, heartbeat, list, deregister |
-| `src/AiTestCrew.WebApi/Endpoints/QueueEndpoints.cs` | `/api/queue/*` — next (claim), progress, result, list, cancel |
-| `src/AiTestCrew.WebApi/Services/AgentHeartbeatMonitor.cs` | `BackgroundService` that marks agents Offline when heartbeat is stale |
+| `src/AiTestCrew.WebApi/Endpoints/QueueEndpoints.cs` | `/api/queue/*` — next (claim), progress, result, enqueue, get-by-id, list, cancel; progress endpoint moves tracker to `AwaitingVerification` when pending rows exist |
+| `src/AiTestCrew.WebApi/Endpoints/PendingVerificationEndpoints.cs` | `/api/pending-verifications/*` — insert / get / attempt / complete / fail / by-run / count; REST surface the Runner remote-mode repos consume |
+| `src/AiTestCrew.WebApi/Services/AgentHeartbeatMonitor.cs` | `BackgroundService` — three sweeps on a 30s tick: mark stale agents Offline, reclaim stale queue claims, expire pending verifications past `VerificationMaxLatencySeconds` + finalise their runs |
 | `src/AiTestCrew.WebApi/Services/RunDispatchHelper.cs` | Decides whether a run must be enqueued for a local agent (Web/Desktop targets) or run in-process |
 | `src/AiTestCrew.Runner/AgentMode/AgentRunner.cs` | Runner `--agent` mode — register, heartbeat, poll, execute |
 | `src/AiTestCrew.Runner/AgentMode/AgentClient.cs` | HTTP wrapper around `/api/agents/*` + `/api/queue/*` |
-| `src/AiTestCrew.Runner/AgentMode/JobExecutor.cs` | Bridges a dequeued job to `TestOrchestrator.RunAsync` |
+| `src/AiTestCrew.Runner/AgentMode/JobExecutor.cs` | Bridges a dequeued job to `TestOrchestrator.RunAsync` — detects `"kind": "DeferredVerification"` payloads and routes to VerifyOnly; treats `AwaitingVerification` results as success (not a failure to report) |
+| `src/AiTestCrew.Runner/RemoteRepositories/ApiClientRunQueueRepository.cs` | HTTP-backed `IRunQueueRepository` — agent enqueues deferred / retry rows via `POST /api/queue`. Non-hot-path methods throw `NotSupportedException` |
+| `src/AiTestCrew.Runner/RemoteRepositories/ApiClientPendingVerificationRepository.cs` | HTTP-backed `IPendingVerificationRepository` over `/api/pending-verifications/*` |
+| `src/AiTestCrew.Agents/AseXmlAgent/AseXmlDeliveryAgent.cs` | Delivery agent with deferred path — `TryEnqueueDeferredVerifications` + `DeferredVerifyAsync` (retry-via-reenqueue) + `TryFinaliseParentRunAsync` (transactional merge + summary regeneration) |
 | `ui/src/components/AgentsPanel.tsx` | Dashboard panel — agents with status dot, capabilities, owner, current job |
-| `ui/src/components/QueueBanner.tsx` | Dashboard banner — active queued/claimed/running jobs + cancel button |
+| `ui/src/components/QueueBanner.tsx` | Dashboard banner — active queued/claimed/running jobs + cancel button; deferred entries (`notBeforeAt` in future) show "Deferred verification — next attempt in ~N min" |
+| `ui/src/components/StepList.tsx` | Step rendering; `AwaitingVerification` steps get a cyan ⏳ pill and live countdown parsed from `firstDueAtUtc` in step detail |
+| `ui/src/components/TriggerRunButton.tsx` + `TriggerObjectiveRunButton.tsx` | Trigger buttons — swap the spinner for a quiet cyan ⏳ chip during `AwaitingVerification` so the UI doesn't falsely imply active execution |
 
 ## Test organisation
 
@@ -239,6 +250,7 @@ All agents extend `BaseTestAgent` and implement `ITestAgent`:
 | `/add-asexml-template <TransactionType> <templateId> "<desc>"` | Scaffold a new aseXML template + manifest pair (content-only — no agent changes) |
 | `/add-asexml-verification` | Scaffold a post-delivery UI verification attached to an existing delivery objective (recorder + auto-parameterisation) |
 | `/add-delivery-protocol <scheme> "<desc>"` | Scaffold a new `IXmlDropTarget` implementation (AS2, HTTP POST, SMB, etc.) |
+| `/tune-deferred-verification` | Tune or debug deferred post-delivery verification (retry cadence, deadline, timeouts) + stuck-Awaiting diagnosis |
 | `/implement-feature "<description>"` | Implement any new feature (general-purpose planner + builder) |
 | `/run-aitest <args>` | Build and run the test suite |
 | `/review-agent <AgentName>` | Review an agent implementation for correctness + pattern compliance |
@@ -272,6 +284,9 @@ Adding a ___ is → ___
 | A new customer environment (e.g. TASN Networks) | Manual — `appsettings.json` only | Add an entry under `TestEnvironment.Environments.<key>` with the customer's URLs/creds/DB/per-stack BaseUrls. Run `--auth-setup --environment <key>` per target to cache auth state. Zero code changes. |
 | A new per-environment setting (e.g. customer reporting URL) | Manual — three files | Add field to `EnvironmentConfig`; add `ResolveXxx(envKey)` on `IEnvironmentResolver` + `EnvironmentResolver` (with top-level fallback); inject the resolver wherever the setting is consumed. |
 | A new teardown protocol (e.g. API-based purge, blob/file cleanup) | Manual — implement `ITeardownExecutor` | New class in `src/AiTestCrew.Agents/Teardown/`; register in DI alongside `BravoTeardownExecutor` (Runner + WebApi `Program.cs`). The orchestrator already invokes `ITeardownExecutor.ExecuteAsync` — no orchestrator change needed if a single implementation handles all teardown. For protocol routing, introduce a factory keyed off step metadata. |
+| Tuning deferred-verification retry / deadline behaviour | `/tune-deferred-verification` | Config-only (`appsettings.json → TestEnvironment.AseXml`). Key knobs: `DeferVerifications`, `VerificationEarlyStartFraction`, `VerificationRetryIntervalSeconds`, `VerificationGraceSeconds` (set to 0 for a hard wait ceiling). |
+| Debugging a stuck "Awaiting Verification" run | `/tune-deferred-verification` | Query `run_pending_verifications` + `run_queue` on the WebApi's DB; check `agents` table for matching capability; janitor sweeps on 30s tick. |
+| A new deferred job kind (beyond verifications — e.g. deferred API polling) | Manual — new `"kind": "..."` discriminator + branch in `JobExecutor.TryParseDeferredRequest` | Reuse `run_queue` with `not_before_at` + `run_pending_verifications` OR model a new state table. Agent enqueues via `IRunQueueRepository.EnqueueAsync` (HTTP in remote mode, direct SQLite server-side). |
 
 ## Documentation
 
