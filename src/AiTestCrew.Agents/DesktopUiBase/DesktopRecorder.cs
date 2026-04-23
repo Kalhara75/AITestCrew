@@ -66,6 +66,45 @@ public static class DesktopRecorder
     [DllImport("user32.dll")]
     private static extern short GetKeyState(int nVirtKey);
 
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool BringWindowToTop(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, [MarshalAs(UnmanagedType.Bool)] bool fAttach);
+
+    [DllImport("user32.dll")]
+    private static extern void SwitchToThisWindow(IntPtr hWnd, [MarshalAs(UnmanagedType.Bool)] bool fAltTab);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+    private const int SW_RESTORE = 9;
+    private const int SW_SHOW = 5;
+    private const byte VK_MENU = 0x12;
+    private const uint KEYEVENTF_KEYUP = 0x0002;
+    private static readonly IntPtr HWND_TOPMOST = new(-1);
+    private static readonly IntPtr HWND_NOTOPMOST = new(-2);
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_SHOWWINDOW = 0x0040;
+
     private const int VK_CONTROL = 0x11;
     private const int VK_SHIFT = 0x10;
 
@@ -177,6 +216,13 @@ public static class DesktopRecorder
                     $"Application did not show a window within {config.WinFormsAppLaunchTimeoutSeconds}s");
 
             logger.LogInformation("[DesktopRecorder] Main window: \"{Title}\"", mainWindow.Title);
+
+            // When the recorder is invoked from a long-running agent process (polling, no
+            // recent user input), Windows' SetForegroundWindow restrictions cause the newly
+            // launched app to open behind the browser/console — the user never sees it.
+            // Replay doesn't hit this because later Invoke/Click calls activate the window
+            // as a side effect; recording has no programmatic interaction, so force it here.
+            BringAppToForeground(mainWindow.Properties.NativeWindowHandle.ValueOrDefault, logger);
 
             // ── Flush keyboard buffer ──
             void FlushKeyBuffer()
@@ -534,6 +580,66 @@ public static class DesktopRecorder
             Steps = steps,
             TakeScreenshotOnFailure = true
         };
+    }
+
+    private static void BringAppToForeground(IntPtr hwnd, ILogger logger)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            logger.LogWarning("[DesktopRecorder] Main window has no native HWND — cannot foreground.");
+            return;
+        }
+
+        logger.LogInformation("[DesktopRecorder] Bringing app window to foreground (hwnd=0x{Hwnd:X}).",
+            hwnd.ToInt64());
+
+        try
+        {
+            // 1. Make sure it isn't minimized.
+            ShowWindow(hwnd, SW_RESTORE);
+            ShowWindow(hwnd, SW_SHOW);
+
+            // 2. Alt-key trick: Windows grants the calling process foreground-set
+            //    permission for a brief window after a keyboard event. Simulating an
+            //    Alt keypress bypasses the SetForegroundWindow lock that kicks in
+            //    when the agent has been idle-polling without recent user input.
+            keybd_event(VK_MENU, 0, 0, UIntPtr.Zero);
+            keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+
+            // 3. AttachThreadInput fallback — share the input queue with the current
+            //    foreground thread so SetForegroundWindow is allowed.
+            var foregroundWnd = GetForegroundWindow();
+            uint foregroundThreadId = GetWindowThreadProcessId(foregroundWnd, out _);
+            uint currentThreadId = GetCurrentThreadId();
+
+            var attached = false;
+            if (foregroundThreadId != 0 && foregroundThreadId != currentThreadId)
+                attached = AttachThreadInput(currentThreadId, foregroundThreadId, true);
+
+            BringWindowToTop(hwnd);
+            var fgOk = SetForegroundWindow(hwnd);
+
+            // 4. Topmost-toggle as last resort — SetWindowPos(HWND_TOPMOST) always works,
+            //    then immediately demote back to non-topmost so the user can still
+            //    Alt-Tab normally.
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+
+            if (!fgOk)
+                SwitchToThisWindow(hwnd, true);
+
+            if (attached)
+                AttachThreadInput(currentThreadId, foregroundThreadId, false);
+
+            // Verify.
+            var actualFg = GetForegroundWindow();
+            logger.LogInformation("[DesktopRecorder] Foreground now hwnd=0x{Hwnd:X} (target was 0x{Target:X}).",
+                actualFg.ToInt64(), hwnd.ToInt64());
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning("[DesktopRecorder] Foreground call failed: {Msg}", ex.Message);
+        }
     }
 
     /// <summary>
