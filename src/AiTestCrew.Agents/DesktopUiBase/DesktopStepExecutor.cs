@@ -369,7 +369,27 @@ public static class DesktopStepExecutor
 
     private static void ExecuteFill(Window window, DesktopUiStep step, UIA3Automation automation, ILogger logger)
     {
-        var element = ResolveElement(window, step, automation, logger);
+        logger.LogWarning(
+            "[DesktopStepExecutor] fill step — Name='{Name}' Aid='{Aid}' Coords=({X},{Y}) Value='{Val}'",
+            step.Name ?? "", step.AutomationId ?? "",
+            step.WindowRelativeX?.ToString() ?? "null",
+            step.WindowRelativeY?.ToString() ?? "null",
+            step.Value ?? "");
+
+        // Coord-first lookup mirrors ExecuteClick's strategy. WinForms textboxes
+        // routinely expose their current display value as the UIA Name (e.g. "0"
+        // for a zero-valued amount field). On a form with several zero-valued
+        // textboxes, FindFirstDescendant(ByName("0")) returns the wrong field —
+        // hit-testing at the focusing click's recorded position is unambiguous.
+        var element = TryFindForFill(window, step, automation, logger);
+
+        if (element is null)
+        {
+            LogSearchFailureDiagnostics(window, step, automation, logger);
+            var selectorDesc = step.AutomationId ?? step.Name ?? step.TreePath ?? "(none)";
+            throw new InvalidOperationException(
+                $"Element not found for fill: {selectorDesc} (timeout {step.TimeoutMs}ms)");
+        }
 
         // Try ValuePattern first (most reliable for text boxes)
         if (element.Patterns.Value.IsSupported)
@@ -388,6 +408,46 @@ public static class DesktopStepExecutor
         }
 
         Wait.UntilInputIsProcessed(TimeSpan.FromMilliseconds(200));
+    }
+
+    /// <summary>
+    /// Element lookup tailored for fill steps. When the step has the focusing
+    /// click's window-relative coords, prefer hit-testing at those coords —
+    /// this avoids Name-match collisions for textboxes whose only Name is
+    /// their current display value (a form full of "0"-valued amount fields,
+    /// for example). Falls back to the standard selector cascade for legacy
+    /// recordings that pre-date the coord-on-fill feature.
+    /// </summary>
+    private static AutomationElement? TryFindForFill(
+        Window window, DesktopUiStep step, UIA3Automation automation, ILogger logger)
+    {
+        if (step.WindowRelativeX is int relX && step.WindowRelativeY is int relY
+            && TryGetReferenceRect(window, out var refRect))
+        {
+            var screenX = refRect.Left + relX;
+            var screenY = refRect.Top + relY;
+            try
+            {
+                var hit = automation.FromPoint(new System.Drawing.Point(screenX, screenY));
+                if (hit is not null)
+                {
+                    string hitName = "", hitAid = "", hitCt = "";
+                    try { hitName = hit.Properties.Name.ValueOrDefault ?? ""; } catch { }
+                    try { hitAid = hit.Properties.AutomationId.ValueOrDefault ?? ""; } catch { }
+                    try { hitCt = hit.Properties.ControlType.ValueOrDefault.ToString(); } catch { }
+                    logger.LogWarning(
+                        "[DesktopStepExecutor] fill coord-lookup at ({X},{Y}) → Ct='{Ct}' Aid='{Aid}' Name='{Name}'",
+                        screenX, screenY, hitCt, hitAid, hitName);
+                    return hit;
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning("[DesktopStepExecutor] fill coord-lookup failed: {Msg}", ex.Message);
+            }
+        }
+
+        return FindElementWithRetry(window, step, automation, logger);
     }
 
     private static void ExecuteSelect(Window window, DesktopUiStep step, UIA3Automation automation, ILogger logger)

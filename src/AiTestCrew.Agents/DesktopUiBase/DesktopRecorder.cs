@@ -356,6 +356,13 @@ public static class DesktopRecorder
                         ClassName = currentFocusSelector.ClassName,
                         ControlType = currentFocusSelector.ControlType,
                         TreePath = currentFocusSelector.TreePath,
+                        // Carry over the focusing-click's window-relative coords so the
+                        // executor can hit-test at the recorded position instead of
+                        // matching by Name. WinForms textboxes commonly expose their
+                        // current display value as Name (e.g. "0"), which is non-unique
+                        // across a form full of zero-valued textboxes.
+                        WindowRelativeX = currentFocusSelector.WindowRelativeX,
+                        WindowRelativeY = currentFocusSelector.WindowRelativeY,
                         Value = keyBuffer.ToString()
                     };
 
@@ -461,6 +468,12 @@ public static class DesktopRecorder
                                     lastClickedElement = element;
                                     currentFocusedElement = element;
                                     currentFocusSelector = DesktopElementResolver.BuildSelector(element, mainWindow);
+                                    // Carry the click's window-relative coords onto the focus
+                                    // selector so a subsequent fill step (built from this
+                                    // selector when the user types) can locate the field by
+                                    // hit-testing instead of an ambiguous Name match.
+                                    currentFocusSelector.WindowRelativeX = selector.WindowRelativeX;
+                                    currentFocusSelector.WindowRelativeY = selector.WindowRelativeY;
                                     } // end else (non-chrome click)
                                 }
                             }
@@ -521,6 +534,8 @@ public static class DesktopRecorder
                                                 ClassName = currentFocusSelector.ClassName,
                                                 ControlType = currentFocusSelector.ControlType,
                                                 TreePath = currentFocusSelector.TreePath,
+                                                WindowRelativeX = currentFocusSelector.WindowRelativeX,
+                                                WindowRelativeY = currentFocusSelector.WindowRelativeY,
                                                 Value = clipText.Trim()
                                             };
                                             steps.Add(fillStep);
