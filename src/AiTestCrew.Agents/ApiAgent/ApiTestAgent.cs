@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using AiTestCrew.Agents.Base;
 using AiTestCrew.Agents.Environment;
+using AiTestCrew.Agents.PostSteps;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
@@ -38,7 +39,8 @@ public class ApiTestAgent : BaseTestAgent
         ILogger<ApiTestAgent> logger,
         HttpClient httpClient,
         TestEnvironmentConfig config,
-        IApiTargetResolver resolver) : base(kernel, logger)
+        IApiTargetResolver resolver,
+        PostStepOrchestrator postStepOrchestrator) : base(kernel, logger, postStepOrchestrator)
     {
         _http = httpClient;
         _config = config;
@@ -127,9 +129,10 @@ public class ApiTestAgent : BaseTestAgent
             }
 
             // ── 4. Execute each test case (each becomes a step) ──
-            foreach (var rawTc in testCases)
+            for (var tcIdx = 0; tcIdx < testCases.Count; tcIdx++)
             {
                 ct.ThrowIfCancellationRequested();
+                var rawTc = testCases[tcIdx];
                 // Apply per-environment {{Token}} substitution before executing.
                 var tc = envParams.Count > 0
                     ? StepParameterSubstituter.Apply(rawTc, envParams)
@@ -139,6 +142,14 @@ public class ApiTestAgent : BaseTestAgent
 
                 Logger.LogInformation("[{Agent}] {Status}: {Method} {Endpoint} - {Summary}",
                     Name, stepResult.Status, tc.Method, tc.Endpoint, stepResult.Summary);
+
+                // Post-steps attached to this API call — defer long waits or run inline.
+                if (tc.PostSteps.Count > 0)
+                {
+                    await RunPostStepsAsync(
+                        tc.PostSteps, tc, new List<TestStep> { stepResult }, tcIdx + 1,
+                        steps, envKey, envParams, ct, task);
+                }
             }
 
             // ── 5. Determine overall status ──
@@ -620,6 +631,27 @@ public class ApiTestAgent : BaseTestAgent
         sb.AppendLine("Body:");
         sb.Append(truncated);
         return sb.ToString();
+    }
+
+    protected override string PostStepParentKind => "Api";
+
+    /// <summary>
+    /// Publishes {{Token}} values an API parent call contributes to its post-steps.
+    /// Response status is pulled from the parent step's Detail blob (the parser
+    /// is deliberately lenient — a missing or non-parseable status just leaves
+    /// <c>{{ResponseStatus}}</c> unset, not an error).
+    /// </summary>
+    protected override IDictionary<string, string> BuildPostStepContext(
+        object parentTestCase, IReadOnlyList<TestStep> parentSteps)
+    {
+        var ctx = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (parentTestCase is ApiTestCase tc)
+        {
+            ctx["Method"] = tc.Method;
+            ctx["Endpoint"] = tc.Endpoint;
+            ctx["ParentCaseName"] = tc.Name;
+        }
+        return ctx;
     }
 }
 

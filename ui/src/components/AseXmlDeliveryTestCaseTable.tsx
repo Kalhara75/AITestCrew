@@ -102,16 +102,16 @@ export function AseXmlDeliveryTestCaseTable({ objectives, moduleId, testSetId, o
         </tbody>
       </table>
 
-      {allCases.some(tc => (tc.step.postDeliveryVerifications?.length ?? 0) > 0) && (
+      {allCases.some(tc => ((tc.step.postSteps ?? tc.step.postDeliveryVerifications)?.length ?? 0) > 0) && (
         <div style={{ marginTop: 16 }}>
           {allCases.map(tc =>
-            (tc.step.postDeliveryVerifications?.length ?? 0) > 0 && (
+            ((tc.step.postSteps ?? tc.step.postDeliveryVerifications)?.length ?? 0) > 0 && (
               <VerificationsPanel
                 key={`${tc.key}-verifs`}
                 caseName={tc.objectiveName}
                 objectiveId={tc.objectiveId}
                 deliveryIndex={tc.stepIndex}
-                verifications={tc.step.postDeliveryVerifications}
+                verifications={(tc.step.postSteps ?? tc.step.postDeliveryVerifications)}
                 moduleId={moduleId}
                 testSetId={testSetId}
                 onChanged={onTestCaseUpdated}

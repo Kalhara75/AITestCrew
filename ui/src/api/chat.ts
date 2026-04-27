@@ -14,6 +14,7 @@ export interface ChatAction {
   kind: string;
   path?: string;
   title?: string;
+  summary?: string;   // one-line human description on confirm cards
   data?: unknown;
 }
 

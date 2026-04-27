@@ -25,11 +25,10 @@ public static class RunDispatchHelper
     /// target type that requires an agent, if any. Returns null when the run
     /// can be executed in-process.
     ///
-    /// Also detects nested UI targets on aseXML delivery objectives via
-    /// <c>AseXmlDeliverySteps[].PostDeliveryVerifications[].Target</c> — a
-    /// delivery objective whose top-level <c>TargetType</c> is <c>AseXml_Deliver</c>
-    /// still needs a local agent if any post-delivery verification runs against
-    /// a browser / desktop surface.
+    /// Detects nested UI targets on ANY parent step type via the generalized
+    /// <see cref="TestObjective.EnumerateAllPostSteps"/> walker — a delivery
+    /// objective, a web UI case, a desktop UI case, etc. all need a local
+    /// agent if any of their post-steps run against a browser / desktop surface.
     /// </summary>
     public static string? GetAgentRequiredTarget(PersistedTestSet testSet, string? objectiveId)
     {
@@ -43,9 +42,8 @@ public static class RunDispatchHelper
         {
             if (RequiresAgent(o.TargetType)) return o.TargetType;
 
-            foreach (var delivery in o.AseXmlDeliverySteps)
-                foreach (var verification in delivery.PostDeliveryVerifications)
-                    if (RequiresAgent(verification.Target)) return verification.Target;
+            foreach (var (_, _, _, postStep) in o.EnumerateAllPostSteps())
+                if (RequiresAgent(postStep.Target)) return postStep.Target;
         }
 
         return null;

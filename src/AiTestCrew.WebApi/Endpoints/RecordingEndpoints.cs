@@ -62,7 +62,7 @@ public static class RecordingEndpoints
                     requestJson = JsonSerializer.Serialize(new RecordVerificationRequest(
                         request.ModuleId!, request.TestSetId!, request.ObjectiveId!, request.VerificationName!,
                         request.Target, request.WaitBeforeSeconds ?? 0, request.DeliveryStepIndex ?? 0,
-                        request.EnvironmentKey), JsonOpts);
+                        request.EnvironmentKey, request.ParentKind, request.ParentStepIndex), JsonOpts);
                     moduleIdForRow = request.ModuleId!;
                     testSetIdForRow = request.TestSetId!;
                     objectiveIdForRow = request.ObjectiveId;
@@ -131,4 +131,8 @@ public record StartRecordingRequest(
     string? VerificationName = null,
     int? WaitBeforeSeconds = null,
     int? DeliveryStepIndex = null,
-    string? EnvironmentKey = null);
+    string? EnvironmentKey = null,
+    // Slice 2: parent-kind + index lets RecordVerification attach the
+    // captured UI payload to any parent step type, not just aseXML delivery.
+    string? ParentKind = null,
+    int? ParentStepIndex = null);

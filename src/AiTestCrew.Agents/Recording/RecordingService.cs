@@ -251,21 +251,29 @@ public class RecordingService : IRecordingService
         if (targetObjective is null)
             return Fail($"Objective '{r.ObjectiveId}' not found in test set.");
 
-        if (targetObjective.AseXmlDeliverySteps.Count == 0)
-            return Fail($"Objective '{targetObjective.Id}' is not an AseXml_Deliver objective.");
-        if (r.DeliveryStepIndex < 0 || r.DeliveryStepIndex >= targetObjective.AseXmlDeliverySteps.Count)
-            return Fail($"deliveryStepIndex {r.DeliveryStepIndex} out of range (0..{targetObjective.AseXmlDeliverySteps.Count - 1}).");
-        var deliveryCase = targetObjective.AseXmlDeliverySteps[r.DeliveryStepIndex];
+        // Generalised parent lookup: legacy callers send ParentKind=null +
+        // DeliveryStepIndex; new callers send ParentKind + ParentStepIndex.
+        var parentKind = string.IsNullOrWhiteSpace(r.ParentKind) ? "AseXmlDeliver" : r.ParentKind;
+        var parentIndex = r.ParentStepIndex ?? r.DeliveryStepIndex;
 
-        var context = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (k, v) in deliveryCase.FieldValues)
-            if (!string.IsNullOrEmpty(v)) context[k] = v;
+        var (parentList, context, parentErr) = ResolveParentPostStepList(
+            targetObjective, parentKind, parentIndex);
+        if (parentErr is not null) return parentErr;
 
-        var historyCtx = await _historyRepo.GetLatestDeliveryContextAsync(testSetId, moduleId, targetObjective.Id);
-        if (historyCtx is null)
-            return Fail($"No successful delivery found for objective '{targetObjective.Id}'. Run the delivery at least once so the recorder has real data to reference.");
-        foreach (var (k, v) in historyCtx)
-            if (!string.IsNullOrEmpty(v)) context[k] = v;
+        // Delivery parents have a historical delivery context in the history
+        // repo — fetch it so the recorder can auto-parameterise against values
+        // produced at actual upload time (MessageID, TransactionID, Filename).
+        // Other parent kinds contribute their static definition-time tokens
+        // (FieldValues / StartUrl / etc.) which ResolveParentPostStepList
+        // already populated in <paramref name="context"/>.
+        if (string.Equals(parentKind, "AseXmlDeliver", StringComparison.OrdinalIgnoreCase))
+        {
+            var historyCtx = await _historyRepo.GetLatestDeliveryContextAsync(testSetId, moduleId, targetObjective.Id);
+            if (historyCtx is null)
+                return Fail($"No successful delivery found for objective '{targetObjective.Id}'. Run the delivery at least once so the recorder has real data to reference.");
+            foreach (var (k, v) in historyCtx)
+                if (!string.IsNullOrEmpty(v)) context![k] = v;
+        }
 
         _logger.LogInformation("Recording verification '{Name}' for {ObjId} (target {Target}, {CtxCount} context key(s))",
             r.VerificationName, targetObjective.Id, target, context.Count);
@@ -315,13 +323,80 @@ public class RecordingService : IRecordingService
             verifyStep.WebUi = WebUiTestDefinition.FromTestCase(webRecorded);
         }
 
-        deliveryCase.PostDeliveryVerifications.Add(verifyStep);
+        parentList!.Add(verifyStep);
         await _testSetRepo.SaveAsync(testSet, moduleId);
 
         return new RecordingResult(true,
-            $"Saved verification '{r.VerificationName}' to {targetObjective.Id}. " +
-            $"Delivery case now has {deliveryCase.PostDeliveryVerifications.Count} verification(s).",
+            $"Saved post-step '{r.VerificationName}' to {targetObjective.Id} ({parentKind}[{parentIndex}]). " +
+            $"Parent step now has {parentList.Count} post-step(s).",
             1);
+    }
+
+    /// <summary>
+    /// Looks up the <c>PostSteps</c> list on the parent step identified by
+    /// <paramref name="parentKind"/> + <paramref name="parentIndex"/>, and returns
+    /// it along with a starter context dict populated from the parent's
+    /// definition-time values (FieldValues for aseXML, StartUrl for WebUi,
+    /// AppPath/WindowTitle for DesktopUi, Method+Endpoint for Api).
+    ///
+    /// The caller (<see cref="RecordVerificationAsync"/>) augments this with
+    /// execution-history values for delivery parents before handing off to
+    /// the recorder's auto-parameterisation.
+    /// </summary>
+    private (
+        List<AiTestCrew.Agents.AseXmlAgent.VerificationStep>? List,
+        Dictionary<string, string>? Context,
+        RecordingResult? Err)
+    ResolveParentPostStepList(
+        AiTestCrew.Agents.Persistence.TestObjective objective,
+        string parentKind, int parentIndex)
+    {
+        var ctx = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        switch (parentKind)
+        {
+            case "Api":
+                if (parentIndex < 0 || parentIndex >= objective.ApiSteps.Count)
+                    return (null, null, Fail($"parentStepIndex {parentIndex} out of range for Api parent (0..{objective.ApiSteps.Count - 1})."));
+                var apiStep = objective.ApiSteps[parentIndex];
+                ctx["Method"] = apiStep.Method;
+                ctx["Endpoint"] = apiStep.Endpoint;
+                return (apiStep.PostSteps, ctx, null);
+
+            case "WebUi":
+                if (parentIndex < 0 || parentIndex >= objective.WebUiSteps.Count)
+                    return (null, null, Fail($"parentStepIndex {parentIndex} out of range for WebUi parent (0..{objective.WebUiSteps.Count - 1})."));
+                var webStep = objective.WebUiSteps[parentIndex];
+                if (!string.IsNullOrEmpty(webStep.StartUrl)) ctx["StartUrl"] = webStep.StartUrl;
+                return (webStep.PostSteps, ctx, null);
+
+            case "DesktopUi":
+                if (parentIndex < 0 || parentIndex >= objective.DesktopUiSteps.Count)
+                    return (null, null, Fail($"parentStepIndex {parentIndex} out of range for DesktopUi parent (0..{objective.DesktopUiSteps.Count - 1})."));
+                var dtStep = objective.DesktopUiSteps[parentIndex];
+                if (!string.IsNullOrEmpty(dtStep.Description)) ctx["ParentCaseDescription"] = dtStep.Description;
+                return (dtStep.PostSteps, ctx, null);
+
+            case "AseXml":
+                if (parentIndex < 0 || parentIndex >= objective.AseXmlSteps.Count)
+                    return (null, null, Fail($"parentStepIndex {parentIndex} out of range for AseXml parent (0..{objective.AseXmlSteps.Count - 1})."));
+                var genStep = objective.AseXmlSteps[parentIndex];
+                foreach (var (k, v) in genStep.FieldValues)
+                    if (!string.IsNullOrEmpty(v)) ctx[k] = v;
+                return (genStep.PostSteps, ctx, null);
+
+            case "AseXmlDeliver":
+                if (objective.AseXmlDeliverySteps.Count == 0)
+                    return (null, null, Fail($"Objective '{objective.Id}' is not an AseXml_Deliver objective."));
+                if (parentIndex < 0 || parentIndex >= objective.AseXmlDeliverySteps.Count)
+                    return (null, null, Fail($"parentStepIndex {parentIndex} out of range for AseXmlDeliver parent (0..{objective.AseXmlDeliverySteps.Count - 1})."));
+                var delStep = objective.AseXmlDeliverySteps[parentIndex];
+                foreach (var (k, v) in delStep.FieldValues)
+                    if (!string.IsNullOrEmpty(v)) ctx[k] = v;
+                return (delStep.PostSteps, ctx, null);
+
+            default:
+                return (null, null, Fail($"Unknown parentKind '{parentKind}'. Expected Api, WebUi, DesktopUi, AseXml, or AseXmlDeliver."));
+        }
     }
 
     // ─────────────────────────────────────────────────────────────

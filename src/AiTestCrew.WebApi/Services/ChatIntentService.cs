@@ -99,8 +99,10 @@ public class ChatIntentService : IChatIntentService
             };
         }).ToArray();
 
-        // When a test set is in the current page context, surface its objectives so
-        // the LLM can scope run triggers to a single objective by id / display name.
+        // When a test set is in the current page context, surface its objectives
+        // AND each objective's parent-step breakdown so the LLM can resolve
+        // references like "after the Search web UI step" or "the second API call"
+        // to a concrete (parentKind, parentStepIndex) tuple.
         object? currentTestSet = null;
         if (!string.IsNullOrWhiteSpace(context?.ModuleId) && !string.IsNullOrWhiteSpace(context?.TestSetId))
         {
@@ -121,7 +123,12 @@ public class ChatIntentService : IChatIntentService
                         id = o.Id,
                         name = string.IsNullOrWhiteSpace(o.Name) ? o.Id : o.Name,
                         source = o.Source,
-                        targetType = o.TargetType
+                        targetType = o.TargetType,
+                        // Flat list of (parentKind, parentStepIndex, short description, postStepCount)
+                        // tuples across all five step-list fields. Lets the LLM pick
+                        // a parent for post-step authoring without deep-reading the
+                        // test set JSON.
+                        parentSteps = BuildParentStepBreakdown(o)
                     }).ToArray()
                 };
             }
@@ -169,6 +176,18 @@ public class ChatIntentService : IChatIntentService
             }
         }
 
+        // Post-step deferral knobs — surfaced to the LLM so it picks a
+        // waitBeforeSeconds that matches the user's intent (inline vs deferred)
+        // against the CURRENT config, not a hardcoded guess. See "Deferred vs
+        // inline post-steps" in the system prompt for how these get used.
+        var postStepConfig = new
+        {
+            deferEnabled = _cfg.AseXml.DeferVerifications,
+            deferThresholdSeconds = _cfg.AseXml.VerificationDeferThresholdSeconds,
+            retryIntervalSeconds = _cfg.AseXml.VerificationRetryIntervalSeconds,
+            graceSeconds = _cfg.AseXml.VerificationGraceSeconds,
+        };
+
         return new
         {
             modules = moduleList,
@@ -179,15 +198,90 @@ public class ChatIntentService : IChatIntentService
             defaultModule = _cfg.DefaultApiModule,
             endpoints,
             agents,
-            currentTestSet
+            currentTestSet,
+            postStepConfig
         };
+    }
+
+    /// <summary>
+    /// Flattens every parent step across the five step-list fields of a
+    /// <see cref="TestObjective"/> into a single catalog-friendly array. Each
+    /// entry carries just enough info for the LLM to match a user reference
+    /// like "the Search step" to a concrete (parentKind, parentStepIndex)
+    /// — no deep payload, no recorded UI steps.
+    /// </summary>
+    private static object[] BuildParentStepBreakdown(TestObjective o)
+    {
+        var rows = new List<object>();
+        for (var i = 0; i < o.ApiSteps.Count; i++)
+        {
+            var s = o.ApiSteps[i];
+            rows.Add(new
+            {
+                parentKind = "Api",
+                parentStepIndex = i,
+                description = $"{s.Method} {s.Endpoint}".Trim(),
+                postStepCount = s.PostSteps.Count
+            });
+        }
+        for (var i = 0; i < o.WebUiSteps.Count; i++)
+        {
+            var s = o.WebUiSteps[i];
+            rows.Add(new
+            {
+                parentKind = "WebUi",
+                parentStepIndex = i,
+                description = string.IsNullOrWhiteSpace(s.Description)
+                    ? (string.IsNullOrWhiteSpace(s.StartUrl) ? $"web ui case {i}" : s.StartUrl)
+                    : s.Description,
+                postStepCount = s.PostSteps.Count
+            });
+        }
+        for (var i = 0; i < o.DesktopUiSteps.Count; i++)
+        {
+            var s = o.DesktopUiSteps[i];
+            rows.Add(new
+            {
+                parentKind = "DesktopUi",
+                parentStepIndex = i,
+                description = string.IsNullOrWhiteSpace(s.Description) ? $"desktop ui case {i}" : s.Description,
+                postStepCount = s.PostSteps.Count
+            });
+        }
+        for (var i = 0; i < o.AseXmlSteps.Count; i++)
+        {
+            var s = o.AseXmlSteps[i];
+            rows.Add(new
+            {
+                parentKind = "AseXml",
+                parentStepIndex = i,
+                description = string.IsNullOrWhiteSpace(s.Description)
+                    ? $"aseXml generate {s.TemplateId}".Trim()
+                    : s.Description,
+                postStepCount = s.PostSteps.Count
+            });
+        }
+        for (var i = 0; i < o.AseXmlDeliverySteps.Count; i++)
+        {
+            var s = o.AseXmlDeliverySteps[i];
+            rows.Add(new
+            {
+                parentKind = "AseXmlDeliver",
+                parentStepIndex = i,
+                description = string.IsNullOrWhiteSpace(s.Description)
+                    ? $"aseXml deliver {s.TemplateId} → {s.EndpointCode}".Trim()
+                    : s.Description,
+                postStepCount = s.PostSteps.Count
+            });
+        }
+        return rows.ToArray();
     }
 
     private static string BuildSystemPrompt(object catalog, ChatRequestContext? context)
     {
         var catalogJson = JsonSerializer.Serialize(catalog, LlmJsonHelper.JsonOpts);
         var contextJson = context is null ? "none" : JsonSerializer.Serialize(context, LlmJsonHelper.JsonOpts);
-        return $$"""
+        return $$$"""
             You are the AITestCrew chat assistant, embedded in a web UI used by test engineers.
 
             You help users explore their test suite, navigate pages, trigger runs, create modules/test sets, and dispatch recording or auth-setup sessions to online agents. You do NOT execute mutations directly — you always produce a confirmation card (confirmRun, confirmCreate, or confirmRecord) and the user clicks Execute.
@@ -233,8 +327,37 @@ public class ChatIntentService : IChatIntentService
                   "objectiveId": "<from currentTestSet.objectives>",  // RecordVerification only
                   "verificationName": "<display name>",               // RecordVerification only
                   "waitBeforeSeconds": <optional integer>,            // RecordVerification
-                  "deliveryStepIndex": <optional integer>,            // RecordVerification, default 0
+                  "parentKind": "Api" | "WebUi" | "DesktopUi" | "AseXml" | "AseXmlDeliver",  // RecordVerification only — which parent step list
+                  "parentStepIndex": <integer>,                       // RecordVerification only — 0-based index into the chosen parent list
+                  "deliveryStepIndex": <optional integer>,            // DEPRECATED — use parentKind+parentStepIndex. Kept for old aseXML delivery flow: equivalent to parentKind="AseXmlDeliver" + parentStepIndex=<this value>. Default 0.
                   "environmentKey": "<optional>"
+                }
+              }
+
+              Post-step authoring without a recorder — the user asked to add a DB check, API call, aseXML generation, or aseXML delivery AS a post-step of an existing parent. These carry a JSON payload directly rather than firing up a UI recorder:
+              { "kind": "confirmCreatePostStep", "summary": "Add DB check 'Job row exists' after WebUi[1] 'Search'", "data": {
+                  "moduleId": "<from catalog>",
+                  "testSetId": "<from catalog>",
+                  "objectiveId": "<from currentTestSet.objectives>",
+                  "parentKind": "Api" | "WebUi" | "DesktopUi" | "AseXml" | "AseXmlDeliver",
+                  "parentStepIndex": <0-based index from the objective's parentSteps list>,
+                  "postStep": {
+                    "description": "<short human label>",
+                    "target": "Db_SqlServer" | "API_REST" | "AseXml_Generate" | "AseXml_Deliver",
+                    "waitBeforeSeconds": <integer, default 0 for DbCheck when user didn't specify>,
+                    "role": "Verification" | "Action",   // Verification unless the user described an action (drop aseXML, call API to mutate, etc.)
+                    "dbCheck": {                         // present only when target is Db_SqlServer
+                      "name": "<human label>",
+                      "connectionKey": "BravoDb",        // only supported value today
+                      "sql": "<single read-only SELECT; {{Tokens}} from the parent context — NMI, MessageID, StartUrl etc. — are substituted at runtime>",
+                      "expectedRowCount": <optional integer>,
+                      "expectedColumnValues": { <col>: "<expected value or {{Token}}>", ... }, // use one of rowCount or columnValues
+                      "timeoutSeconds": 15
+                    },
+                    "api": { <ApiTestDefinition shape> },            // present only when target is API_REST
+                    "aseXml": { <AseXmlTestDefinition shape> },      // present only when target is AseXml_Generate
+                    "aseXmlDeliver": { <AseXmlDeliveryTestDefinition shape> }  // present only when target is AseXml_Deliver
+                  }
                 }
               }
 
@@ -263,8 +386,33 @@ public class ChatIntentService : IChatIntentService
             Recording rules:
             - AuthSetup is only valid for UI_Web_MVC or UI_Web_Blazor (not desktop).
             - "target" must match the UI surface the user mentioned ("Blazor", "Legacy MVC", "Desktop" / "WinForms").
-            - For RecordVerification, the objective must be present in catalog.currentTestSet.objectives AND have AseXml delivery steps (the card server will validate). Only offer it when the user is on a test-set page that contains a delivery objective.
+            - For RecordVerification, the objective must be present in catalog.currentTestSet.objectives. You MUST pick parentKind+parentStepIndex from that objective's parentSteps array — match the user's phrase ("after the Search step", "on step 1 of the WinForms test", "after the MFN delivery") to the parentSteps entry whose description is the best fit. When the user doesn't name a parent step and the objective has exactly one, default to that one (e.g. a delivery objective with a single AseXmlDeliver step → parentKind="AseXmlDeliver", parentStepIndex=0). When ambiguous, ask rather than guess.
+            - RecordVerification always fires up a UI recorder — so target MUST be UI_Web_MVC, UI_Web_Blazor, or UI_Desktop_WinForms. For DB checks and other non-UI post-steps, use confirmCreatePostStep instead.
             - Only propose recording when catalog.agents contains at least one Online agent with the matching capability; otherwise reply that no agent is available and emit no actions.
+
+            Deferred vs inline post-steps — CRITICAL, applies to both confirmRecord (RecordVerification) and confirmCreatePostStep:
+            - Every post-step carries a waitBeforeSeconds. That value AND catalog.postStepConfig together decide whether the step runs inline (same process, blocking) or deferred (queued for a remote agent to claim after the wait):
+                INLINE when  catalog.postStepConfig.deferEnabled = false  OR  waitBeforeSeconds <= catalog.postStepConfig.deferThresholdSeconds
+                DEFERRED when catalog.postStepConfig.deferEnabled = true  AND  waitBeforeSeconds > catalog.postStepConfig.deferThresholdSeconds
+              Use these exact values — don't hardcode 30. If deferEnabled is false, deferral is impossible regardless of wait (and you should tell the user so).
+            - Map the user's phrasing to waitBeforeSeconds:
+                "run inline" / "immediately" / "right after" / "in the same process" → 0
+                "wait N seconds" / "after N seconds" → N (respect their number literally)
+                "settle" / "small delay" / "let it finish" (no number) → pick a short value BELOW deferThresholdSeconds (e.g. 5)
+                "defer" / "queue" / "long-running" / "run later" / "wait for Bravo to process" / "on another machine" → pick a value ABOVE deferThresholdSeconds (default 60 if they didn't give a number; 300 for "a few minutes"; 600 for "ten minutes")
+                "wait N minutes" / "N min" → N × 60, which will naturally cross the threshold when N ≥ 1
+            - Include a sentence in the `reply` that explicitly states which mode will be used and why. Examples:
+                "Will run INLINE (wait 5s, under the {deferThresholdSeconds}s defer threshold)."
+                "Will DEFER to the queue (wait 300s, over the {deferThresholdSeconds}s threshold) — a Blazor agent will claim it once the wait elapses."
+                "Deferral is disabled on this server — this will run inline regardless of the 600s wait. Ask an operator to set TestEnvironment.AseXml.DeferVerifications=true to enable deferred execution."
+            - When the user asks for deferred execution but no Online agent in catalog.agents advertises the post-step's target capability, warn them the deferred step will sit in the queue until such an agent connects. Still emit the card — the queue entry is valid — but make the reply honest about the gap.
+
+            Post-step authoring rules (confirmCreatePostStep):
+            - Use this when the user wants to ADD a DB check, API call, aseXML generate, or aseXML deliver as a post-step of an existing parent. Typical phrases: "add a DB check that …", "confirm Jobs has a row for …", "after the WinForms test drop an MFN aseXML file".
+            - Resolve parentKind + parentStepIndex from currentTestSet.objectives[*].parentSteps — exact match where possible; ask if ambiguous.
+            - For Db_SqlServer: write the SQL yourself from the user's description using {{Token}} placeholders (double curly braces in the actual JSON) for values they mentioned that look like parent context (NMI, MessageID, TransactionID, StartUrl). The SQL MUST be a single SELECT — no semicolons, no INSERT/UPDATE/DELETE/DDL. Prefer expectedRowCount for "confirm at least one row" checks; prefer expectedColumnValues when the user specified column values. Never invent values that weren't in the user's message or the parent context.
+            - For API_REST/AseXml_Generate/AseXml_Deliver post-steps, only emit if the user gave enough info to fully populate the respective definition. If not, ask for the missing fields rather than guessing.
+            - Pick waitBeforeSeconds per the "Deferred vs inline post-steps" rules above — don't duplicate that logic here.
 
             Create rules:
             - For "testSet" target, moduleId is required and must be present in the catalog.
@@ -276,10 +424,10 @@ public class ChatIntentService : IChatIntentService
             - Keep replies short: 1–3 sentences. The card shows the structured details; the reply is a brief human confirmation.
             - Never wrap the JSON in markdown fences and never add text before or after the JSON.
 
-            Current page context (from the URL): {{contextJson}}
+            Current page context (from the URL): {{{contextJson}}}
 
             Catalog:
-            {{catalogJson}}
+            {{{catalogJson}}}
             """;
     }
 }

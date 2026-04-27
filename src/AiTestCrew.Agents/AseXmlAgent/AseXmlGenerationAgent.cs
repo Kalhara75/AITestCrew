@@ -6,6 +6,7 @@ using Microsoft.SemanticKernel;
 using AiTestCrew.Agents.AseXmlAgent.Templates;
 using AiTestCrew.Agents.Base;
 using AiTestCrew.Agents.Environment;
+using AiTestCrew.Agents.PostSteps;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Models;
 
@@ -35,7 +36,8 @@ public class AseXmlGenerationAgent : BaseTestAgent
         Kernel kernel,
         ILogger<AseXmlGenerationAgent> logger,
         TestEnvironmentConfig config,
-        TemplateRegistry templates) : base(kernel, logger)
+        TemplateRegistry templates,
+        PostStepOrchestrator postStepOrchestrator) : base(kernel, logger, postStepOrchestrator)
     {
         _config = config;
         _templates = templates;
@@ -93,12 +95,27 @@ public class AseXmlGenerationAgent : BaseTestAgent
             var runOutputDir = ResolveRunOutputDir(task.Id);
             Directory.CreateDirectory(runOutputDir);
 
-            var caseIndex = 0;
-            foreach (var tc in testCases)
+            task.Parameters.TryGetValue("EnvironmentKey", out var rawEnvKey);
+            var envKey = rawEnvKey as string;
+
+            for (var caseIdx = 0; caseIdx < testCases.Count; caseIdx++)
             {
                 ct.ThrowIfCancellationRequested();
-                caseIndex++;
-                steps.Add(RenderOne(tc, caseIndex, runOutputDir));
+                var tc = testCases[caseIdx];
+                var (renderStep, renderedContext) = RenderOneWithContext(tc, caseIdx + 1, runOutputDir);
+                steps.Add(renderStep);
+
+                // Post-steps attached to this generation — run inline, passing
+                // the rendered context (MessageID, TransactionID, resolved fields)
+                // into token substitution for the sub-step payloads.
+                if (tc.PostSteps.Count > 0 && renderStep.Status == TestStatus.Passed)
+                {
+                    _lastRenderedContext = renderedContext;
+                    await RunPostStepsAsync(
+                        tc.PostSteps, tc, new List<TestStep> { renderStep }, caseIdx + 1,
+                        steps, envKey, envParams, ct, task);
+                    _lastRenderedContext = null;
+                }
             }
 
             var hasFails = steps.Any(s => s.Status == TestStatus.Failed);
@@ -132,17 +149,29 @@ public class AseXmlGenerationAgent : BaseTestAgent
     // Core
     // ─────────────────────────────────────────────────────
 
-    private TestStep RenderOne(AseXmlTestCase tc, int index, string runOutputDir)
+    /// <summary>
+    /// Holds the most-recently rendered context (MessageID, TransactionID,
+    /// template fields) so <see cref="BuildPostStepContext"/> can pick it up
+    /// when called by the base-class helper after a render. Scoped to a single
+    /// test case (cleared at the end of its post-step run), not shared across
+    /// cases, so concurrent rendering is never an issue because <c>ExecuteAsync</c>
+    /// renders serially per task.
+    /// </summary>
+    private Dictionary<string, string>? _lastRenderedContext;
+
+    private (TestStep Step, Dictionary<string, string> Context) RenderOneWithContext(
+        AseXmlTestCase tc, int index, string runOutputDir)
     {
         var stepSw = Stopwatch.StartNew();
         var action = $"render[{index}] {tc.TemplateId}";
+        var emptyCtx = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         var template = _templates.Get(tc.TemplateId);
         if (template is null)
         {
             var known = string.Join(", ", _templates.All().Select(t => t.Manifest.TemplateId));
-            return TestStep.Fail(action,
-                $"Template '{tc.TemplateId}' not found. Known templates: {known}");
+            return (TestStep.Fail(action,
+                $"Template '{tc.TemplateId}' not found. Known templates: {known}"), emptyCtx);
         }
 
         try
@@ -170,7 +199,10 @@ public class AseXmlGenerationAgent : BaseTestAgent
             detail.AppendLine("XML preview:");
             detail.Append(preview);
 
-            return new TestStep
+            var ctx = new Dictionary<string, string>(result.ResolvedFields, StringComparer.OrdinalIgnoreCase);
+            ctx["OutputPath"] = outputPath;
+
+            var step = new TestStep
             {
                 Action = action,
                 Summary = $"Rendered '{tc.TemplateId}' → {Path.GetFileName(outputPath)}"
@@ -179,15 +211,31 @@ public class AseXmlGenerationAgent : BaseTestAgent
                 Detail = detail.ToString(),
                 Duration = stepSw.Elapsed
             };
+            return (step, ctx);
         }
         catch (AseXmlRenderException ex)
         {
-            return TestStep.Fail(action, ex.Message);
+            return (TestStep.Fail(action, ex.Message), emptyCtx);
         }
         catch (Exception ex)
         {
-            return TestStep.Err(action, $"Unexpected render failure: {ex.Message}");
+            return (TestStep.Err(action, $"Unexpected render failure: {ex.Message}"), emptyCtx);
         }
+    }
+
+    protected override string PostStepParentKind => "AseXml";
+
+    /// <summary>
+    /// Publishes {{Token}} values from the most-recently rendered payload so
+    /// the generation agent's post-steps can reference MessageID / TransactionID
+    /// / any resolved template field by name.
+    /// </summary>
+    protected override IDictionary<string, string> BuildPostStepContext(
+        object parentTestCase, IReadOnlyList<TestStep> parentSteps)
+    {
+        if (_lastRenderedContext is null)
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        return new Dictionary<string, string>(_lastRenderedContext, StringComparer.OrdinalIgnoreCase);
     }
 
     private async Task<List<AseXmlTestCase>?> GenerateTestCasesAsync(TestTask task, CancellationToken ct)

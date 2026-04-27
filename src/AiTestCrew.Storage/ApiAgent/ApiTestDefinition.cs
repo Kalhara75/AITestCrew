@@ -1,3 +1,5 @@
+using AiTestCrew.Agents.AseXmlAgent;
+
 namespace AiTestCrew.Agents.ApiAgent;
 
 /// <summary>
@@ -17,6 +19,14 @@ public class ApiTestDefinition
     public bool IsFuzzTest { get; set; }
 
     /// <summary>
+    /// Optional post-steps (sub-actions / sub-verifications) that run AFTER this
+    /// API call completes. Each post-step targets a UI surface, aseXML delivery,
+    /// or DB check and receives the parent call's context (method, endpoint,
+    /// response status) via <c>{{Token}}</c> substitution.
+    /// </summary>
+    public List<VerificationStep> PostSteps { get; set; } = [];
+
+    /// <summary>
     /// Creates an <see cref="ApiTestDefinition"/> from a legacy <see cref="ApiTestCase"/>.
     /// </summary>
     public static ApiTestDefinition FromTestCase(ApiTestCase tc) => new()
@@ -29,7 +39,8 @@ public class ApiTestDefinition
         ExpectedStatus = tc.ExpectedStatus,
         ExpectedBodyContains = tc.ExpectedBodyContains,
         ExpectedBodyNotContains = tc.ExpectedBodyNotContains,
-        IsFuzzTest = tc.IsFuzzTest
+        IsFuzzTest = tc.IsFuzzTest,
+        PostSteps = tc.PostSteps
     };
 
     /// <summary>
@@ -46,6 +57,7 @@ public class ApiTestDefinition
         ExpectedStatus = ExpectedStatus,
         ExpectedBodyContains = ExpectedBodyContains,
         ExpectedBodyNotContains = ExpectedBodyNotContains,
-        IsFuzzTest = IsFuzzTest
+        IsFuzzTest = IsFuzzTest,
+        PostSteps = PostSteps
     };
 }

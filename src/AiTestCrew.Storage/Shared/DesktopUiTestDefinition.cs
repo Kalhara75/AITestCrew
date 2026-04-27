@@ -1,3 +1,5 @@
+using AiTestCrew.Agents.AseXmlAgent;
+
 namespace AiTestCrew.Agents.Shared;
 
 /// <summary>
@@ -16,13 +18,22 @@ public class DesktopUiTestDefinition
     public bool TakeScreenshotOnFailure { get; set; } = true;
 
     /// <summary>
+    /// Optional post-steps (sub-actions / sub-verifications) that run AFTER this
+    /// desktop UI case completes. Each post-step targets a UI surface, API,
+    /// aseXML delivery, or DB check and receives the parent case's context via
+    /// <c>{{Token}}</c> substitution. Long waits queue for a remote agent.
+    /// </summary>
+    public List<VerificationStep> PostSteps { get; set; } = [];
+
+    /// <summary>
     /// Creates a <see cref="DesktopUiTestDefinition"/> from a <see cref="DesktopUiTestCase"/>.
     /// </summary>
     public static DesktopUiTestDefinition FromTestCase(DesktopUiTestCase tc) => new()
     {
         Description = tc.Description,
         Steps = tc.Steps,
-        TakeScreenshotOnFailure = tc.TakeScreenshotOnFailure
+        TakeScreenshotOnFailure = tc.TakeScreenshotOnFailure,
+        PostSteps = tc.PostSteps
     };
 
     /// <summary>
@@ -33,6 +44,7 @@ public class DesktopUiTestDefinition
         Name = name,
         Description = Description,
         Steps = Steps,
-        TakeScreenshotOnFailure = TakeScreenshotOnFailure
+        TakeScreenshotOnFailure = TakeScreenshotOnFailure,
+        PostSteps = PostSteps
     };
 }

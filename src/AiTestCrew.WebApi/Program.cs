@@ -65,12 +65,18 @@ builder.Services.AddSingleton<IApiTargetResolver>(sp => new ApiTargetResolver(
     sp.GetRequiredService<ILoggerFactory>(),
     sp.GetRequiredService<IEnvironmentResolver>()
 ));
+// Shared post-step orchestrator — any agent that supports PostSteps on its
+// parent test cases consumes this via its constructor. Lives at singleton
+// scope because it's stateless and can safely resolve sibling agents lazily.
+builder.Services.AddSingleton<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>();
+
 builder.Services.AddSingleton<ApiTestAgent>(sp => new ApiTestAgent(
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<ApiTestAgent>>(),
     sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
     sp.GetRequiredService<TestEnvironmentConfig>(),
-    sp.GetRequiredService<IApiTargetResolver>()
+    sp.GetRequiredService<IApiTargetResolver>(),
+    sp.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<ApiTestAgent>());
 
@@ -78,7 +84,8 @@ builder.Services.AddSingleton<LegacyWebUiTestAgent>(sp => new LegacyWebUiTestAge
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<LegacyWebUiTestAgent>>(),
     sp.GetRequiredService<TestEnvironmentConfig>(),
-    sp.GetRequiredService<IEnvironmentResolver>()
+    sp.GetRequiredService<IEnvironmentResolver>(),
+    sp.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<LegacyWebUiTestAgent>());
 
@@ -86,7 +93,8 @@ builder.Services.AddSingleton<BraveCloudUiTestAgent>(sp => new BraveCloudUiTestA
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<BraveCloudUiTestAgent>>(),
     sp.GetRequiredService<TestEnvironmentConfig>(),
-    sp.GetRequiredService<IEnvironmentResolver>()
+    sp.GetRequiredService<IEnvironmentResolver>(),
+    sp.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<BraveCloudUiTestAgent>());
 
@@ -94,7 +102,8 @@ builder.Services.AddSingleton<WinFormsUiTestAgent>(sp => new WinFormsUiTestAgent
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<WinFormsUiTestAgent>>(),
     sp.GetRequiredService<TestEnvironmentConfig>(),
-    sp.GetRequiredService<IEnvironmentResolver>()
+    sp.GetRequiredService<IEnvironmentResolver>(),
+    sp.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<WinFormsUiTestAgent>());
 
@@ -107,7 +116,8 @@ builder.Services.AddSingleton<AseXmlGenerationAgent>(sp => new AseXmlGenerationA
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<AseXmlGenerationAgent>>(),
     sp.GetRequiredService<TestEnvironmentConfig>(),
-    sp.GetRequiredService<TemplateRegistry>()
+    sp.GetRequiredService<TemplateRegistry>(),
+    sp.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AseXmlGenerationAgent>());
 
@@ -125,9 +135,19 @@ builder.Services.AddSingleton<AseXmlDeliveryAgent>(sp => new AseXmlDeliveryAgent
     sp.GetRequiredService<TemplateRegistry>(),
     sp.GetRequiredService<IEndpointResolver>(),
     sp.GetRequiredService<DropTargetFactory>(),
-    sp  // IServiceProvider — siblings resolved lazily to avoid DI recursion
+    sp,  // IServiceProvider — siblings resolved lazily to avoid DI recursion
+    sp.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AseXmlDeliveryAgent>());
+
+// DB check agent — only invoked as a Db_SqlServer post-step, never standalone.
+builder.Services.AddSingleton<AiTestCrew.Agents.DbAgent.DbCheckAgent>(sp => new AiTestCrew.Agents.DbAgent.DbCheckAgent(
+    sp.GetRequiredService<Kernel>(),
+    sp.GetRequiredService<ILogger<AiTestCrew.Agents.DbAgent.DbCheckAgent>>(),
+    sp.GetRequiredService<IEnvironmentResolver>(),
+    sp.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>()
+));
+builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AiTestCrew.Agents.DbAgent.DbCheckAgent>());
 
 // ── Persistence — share the same data directory as the Runner ──
 var runnerBinDir = Path.GetFullPath(Path.Combine(runnerDir, "bin", "Debug", "net8.0-windows"));

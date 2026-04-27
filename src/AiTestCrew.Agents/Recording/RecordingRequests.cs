@@ -17,7 +17,14 @@ public record RecordSetupRequest(
     string Target,                   // UI_Web_MVC | UI_Web_Blazor (desktop setup not supported today)
     string? EnvironmentKey);
 
-/// <summary>Record a post-delivery UI verification attached to an aseXML delivery objective.</summary>
+/// <summary>
+/// Record a post-step attached to any parent step on a test objective.
+///
+/// Slice 2 generalisation: <c>ParentKind</c> picks which parent step list the
+/// new post-step is appended to. Default <c>"AseXmlDeliver"</c> matches the
+/// legacy flow so old callers (<c>--record-verification</c>, UI buttons that
+/// haven't yet been updated) keep working.
+/// </summary>
 public record RecordVerificationRequest(
     string ModuleId,
     string TestSetId,
@@ -25,8 +32,10 @@ public record RecordVerificationRequest(
     string VerificationName,
     string Target,                   // UI_Web_MVC | UI_Web_Blazor | UI_Desktop_WinForms
     int WaitBeforeSeconds,
-    int DeliveryStepIndex,
-    string? EnvironmentKey);
+    int DeliveryStepIndex,           // legacy field — aliased to ParentStepIndex when ParentKind omitted
+    string? EnvironmentKey,
+    string? ParentKind = null,       // "Api" | "WebUi" | "DesktopUi" | "AseXml" | "AseXmlDeliver" (default)
+    int? ParentStepIndex = null);    // preferred over DeliveryStepIndex when supplied
 
 /// <summary>Launch an interactive browser login and save the resulting storage state.</summary>
 public record AuthSetupRequest(

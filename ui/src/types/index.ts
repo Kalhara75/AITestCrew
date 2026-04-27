@@ -36,6 +36,7 @@ export interface ApiTestDefinition {
   expectedBodyContains: string[];
   expectedBodyNotContains: string[];
   isFuzzTest: boolean;
+  postSteps?: PostStep[];
 }
 
 export interface WebUiStep {
@@ -51,6 +52,7 @@ export interface WebUiTestDefinition {
   startUrl: string;
   steps: WebUiStep[];
   takeScreenshotOnFailure: boolean;
+  postSteps?: PostStep[];
 }
 
 export interface DesktopUiStep {
@@ -76,6 +78,7 @@ export interface DesktopUiTestDefinition {
   description: string;
   steps: DesktopUiStep[];
   takeScreenshotOnFailure: boolean;
+  postSteps?: PostStep[];
 }
 
 export interface AseXmlTestDefinition {
@@ -84,15 +87,39 @@ export interface AseXmlTestDefinition {
   transactionType: string;
   fieldValues: Record<string, string>;
   validateAgainstSchema: boolean;
+  postSteps?: PostStep[];
 }
 
-export interface VerificationStep {
+export interface DbCheckStepDefinition {
+  name: string;
+  connectionKey: string;          // "BravoDb" (only value supported in Slice 2)
+  sql: string;
+  expectedRowCount?: number;
+  expectedColumnValues: Record<string, string>;
+  timeoutSeconds: number;
+}
+
+/**
+ * A post-step attached to any parent step. Carriers are mutually exclusive
+ * but the TS interface keeps them all optional so a single editor can bind
+ * to whichever is populated. The `VerificationStep` alias below preserves
+ * back-compat for existing components.
+ */
+export interface PostStep {
   description: string;
-  target: string;           // UI_Web_MVC | UI_Web_Blazor | UI_Desktop_WinForms
+  target: string;            // UI_Web_MVC | UI_Web_Blazor | UI_Desktop_WinForms | API_REST | AseXml_Generate | AseXml_Deliver | Db_SqlServer
   waitBeforeSeconds: number;
+  role?: string;             // "Verification" (default) | "Action"
   webUi?: WebUiTestDefinition;
   desktopUi?: DesktopUiTestDefinition;
+  api?: ApiTestDefinition;
+  aseXml?: AseXmlTestDefinition;
+  aseXmlDeliver?: AseXmlDeliveryTestDefinition;
+  dbCheck?: DbCheckStepDefinition;
 }
+
+/** @deprecated Use PostStep. Kept as an alias so existing imports keep working. */
+export type VerificationStep = PostStep;
 
 export interface AseXmlDeliveryTestDefinition {
   description: string;
@@ -101,7 +128,14 @@ export interface AseXmlDeliveryTestDefinition {
   fieldValues: Record<string, string>;
   endpointCode: string;
   validateAgainstSchema: boolean;
-  postDeliveryVerifications: VerificationStep[];
+  /**
+   * Canonical field since Slice 2. Legacy persisted test sets still read
+   * `postDeliveryVerifications` on the wire — the backend promotes it into
+   * this list on deserialise so the UI only ever sees `postSteps`.
+   */
+  postSteps: PostStep[];
+  /** @deprecated Present only on payloads deserialised from very old backends. Prefer `postSteps`. */
+  postDeliveryVerifications?: PostStep[];
 }
 
 export interface TestObjective {

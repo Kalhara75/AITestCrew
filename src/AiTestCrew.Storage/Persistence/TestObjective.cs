@@ -120,4 +120,53 @@ public class TestObjective
                 WebUiSteps.Add(value);
         }
     }
+
+    /// <summary>
+    /// Enumerates every post-step attached to any parent test step across all five
+    /// step-list fields, yielding <c>(parentKind, parentStepIndex, postStepIndex, postStep)</c>.
+    /// Used by <c>RunDispatchHelper</c> to decide whether a run needs a remote agent,
+    /// and by the generalized record/edit flow to locate a post-step by coordinates.
+    ///
+    /// <c>parentKind</c> values: <c>"Api"</c>, <c>"WebUi"</c>, <c>"DesktopUi"</c>,
+    /// <c>"AseXml"</c>, <c>"AseXmlDeliver"</c>.
+    ///
+    /// For <c>AseXmlDeliver</c>, yields entries from the legacy
+    /// <c>PostDeliveryVerifications</c> field so back-compat behaviour is preserved
+    /// until Slice 2 renames it.
+    /// </summary>
+    public IEnumerable<(string ParentKind, int ParentStepIndex, int PostStepIndex, VerificationStep PostStep)> EnumerateAllPostSteps()
+    {
+        for (var i = 0; i < ApiSteps.Count; i++)
+        {
+            var step = ApiSteps[i];
+            for (var j = 0; j < step.PostSteps.Count; j++)
+                yield return ("Api", i, j, step.PostSteps[j]);
+        }
+        for (var i = 0; i < WebUiSteps.Count; i++)
+        {
+            var step = WebUiSteps[i];
+            for (var j = 0; j < step.PostSteps.Count; j++)
+                yield return ("WebUi", i, j, step.PostSteps[j]);
+        }
+        for (var i = 0; i < DesktopUiSteps.Count; i++)
+        {
+            var step = DesktopUiSteps[i];
+            for (var j = 0; j < step.PostSteps.Count; j++)
+                yield return ("DesktopUi", i, j, step.PostSteps[j]);
+        }
+        for (var i = 0; i < AseXmlSteps.Count; i++)
+        {
+            var step = AseXmlSteps[i];
+            for (var j = 0; j < step.PostSteps.Count; j++)
+                yield return ("AseXml", i, j, step.PostSteps[j]);
+        }
+        for (var i = 0; i < AseXmlDeliverySteps.Count; i++)
+        {
+            var step = AseXmlDeliverySteps[i];
+            // Legacy field — still canonical for delivery parents until Slice 2
+            // rename. Yield via the same tuple shape so callers walk uniformly.
+            for (var j = 0; j < step.PostSteps.Count; j++)
+                yield return ("AseXmlDeliver", i, j, step.PostSteps[j]);
+        }
+    }
 }

@@ -33,7 +33,13 @@ public enum TestTargetType
     Database,
     AseXml_Generate,
     AseXml_Deliver,
-    EndToEnd
+    EndToEnd,
+    /// <summary>
+    /// SQL Server database check — runs a read-only SELECT and compares the
+    /// result against an expected row count or column-value dictionary. Used
+    /// as a post-step on any parent step type (UI, API, aseXML delivery).
+    /// </summary>
+    Db_SqlServer
 }
 
 public enum TestPriority

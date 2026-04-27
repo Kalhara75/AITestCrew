@@ -8,6 +8,7 @@ using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using AiTestCrew.Agents.Base;
 using AiTestCrew.Agents.Environment;
+using AiTestCrew.Agents.PostSteps;
 using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
@@ -47,8 +48,11 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
     /// <summary>Config key name shown in error messages when TargetAppPath is empty.</summary>
     protected abstract string TargetAppPathConfigKey { get; }
 
-    protected BaseDesktopUiTestAgent(Kernel kernel, ILogger logger, TestEnvironmentConfig config, IEnvironmentResolver envResolver)
-        : base(kernel, logger)
+    protected BaseDesktopUiTestAgent(
+        Kernel kernel, ILogger logger,
+        TestEnvironmentConfig config, IEnvironmentResolver envResolver,
+        PostStepOrchestrator postStepOrchestrator)
+        : base(kernel, logger, postStepOrchestrator)
     {
         _config = config;
         _envResolver = envResolver;
@@ -183,6 +187,16 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
 
                 var tcSteps = ExecuteDesktopTestCase(app, mainWindow, automation, tc);
                 steps.AddRange(tcSteps);
+
+                // Post-steps (sub-actions / sub-verifications) attached to this
+                // desktop case. Long-wait post-steps defer to the queue when
+                // enabled; short-wait ones run inline.
+                if (tc.PostSteps.Count > 0)
+                {
+                    await RunPostStepsAsync(
+                        tc.PostSteps, tc, tcSteps, tcIdx + 1,
+                        steps, CurrentEnvironmentKey, envParams, ct, task);
+                }
             }
 
             var summary = await SummariseResultsAsync(steps, ct);
@@ -433,6 +447,26 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
                 app.Kill();
         }
         catch { /* already exited */ }
+    }
+
+    protected override string PostStepParentKind => "DesktopUi";
+
+    /// <summary>
+    /// Publishes the {{Token}} values a desktop UI parent case contributes to
+    /// its post-steps. Parent test case is always a <see cref="DesktopUiTestCase"/>.
+    /// </summary>
+    protected override IDictionary<string, string> BuildPostStepContext(
+        object parentTestCase, IReadOnlyList<TestStep> parentSteps)
+    {
+        var ctx = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (parentTestCase is DesktopUiTestCase tc)
+        {
+            if (!string.IsNullOrEmpty(tc.Name))        ctx["ParentCaseName"] = tc.Name;
+            if (!string.IsNullOrEmpty(tc.Description)) ctx["ParentCaseDescription"] = tc.Description;
+        }
+        if (!string.IsNullOrEmpty(TargetAppPath))      ctx["AppPath"] = TargetAppPath;
+        if (!string.IsNullOrEmpty(CurrentEnvironmentKey)) ctx["EnvironmentKey"] = CurrentEnvironmentKey;
+        return ctx;
     }
 
     private TestResult BuildResult(

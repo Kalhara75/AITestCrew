@@ -96,6 +96,57 @@ export const updateVerification = (
     { method: 'PUT', body: JSON.stringify(updated) }
   );
 
+// ─────────────────────────────────────────────────────────────────────────
+// Generalised post-step API (Slice 2)
+//
+// Works against any parent step type (Api / WebUi / DesktopUi / AseXml /
+// AseXmlDeliver) — used by the forthcoming PostStepsPanel. The legacy
+// deleteVerification / updateVerification stay in place for back-compat
+// with the existing delivery-specific UI.
+// ─────────────────────────────────────────────────────────────────────────
+
+export type PostStepParentKind = 'Api' | 'WebUi' | 'DesktopUi' | 'AseXml' | 'AseXmlDeliver';
+
+export const addPostStep = (
+  moduleId: string,
+  tsId: string,
+  objectiveId: string,
+  parentKind: PostStepParentKind,
+  parentIndex: number,
+  newStep: VerificationStep
+) =>
+  apiFetch<TestSetDetail>(
+    `/modules/${moduleId}/testsets/${tsId}/objectives/${objectiveId}/post-steps/${parentKind}/${parentIndex}`,
+    { method: 'POST', body: JSON.stringify(newStep) }
+  );
+
+export const updatePostStep = (
+  moduleId: string,
+  tsId: string,
+  objectiveId: string,
+  parentKind: PostStepParentKind,
+  parentIndex: number,
+  postIndex: number,
+  updated: VerificationStep
+) =>
+  apiFetch<TestSetDetail>(
+    `/modules/${moduleId}/testsets/${tsId}/objectives/${objectiveId}/post-steps/${parentKind}/${parentIndex}/${postIndex}`,
+    { method: 'PUT', body: JSON.stringify(updated) }
+  );
+
+export const deletePostStep = (
+  moduleId: string,
+  tsId: string,
+  objectiveId: string,
+  parentKind: PostStepParentKind,
+  parentIndex: number,
+  postIndex: number
+) =>
+  apiFetch<TestSetDetail>(
+    `/modules/${moduleId}/testsets/${tsId}/objectives/${objectiveId}/post-steps/${parentKind}/${parentIndex}/${postIndex}`,
+    { method: 'DELETE' }
+  );
+
 export const previewAiPatch = (moduleId: string, tsId: string, request: AiPatchRequest) =>
   apiFetch<AiPatchPreview>(
     `/modules/${moduleId}/testsets/${tsId}/ai-patch`,

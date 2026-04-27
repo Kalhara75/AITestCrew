@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace AiTestCrew.Agents.AseXmlAgent;
 
 /// <summary>
@@ -25,13 +27,34 @@ public class AseXmlDeliveryTestDefinition
     public bool ValidateAgainstSchema { get; set; }
 
     /// <summary>
-    /// Optional UI verification steps that run AFTER the XML has been uploaded
-    /// and a fixed wait has elapsed. Each step can target a different UI
-    /// surface (Legacy MVC, Blazor, WinForms) and receives the delivery's
-    /// resolved field values via <c>{{Token}}</c> substitution at playback.
-    /// Empty list means upload-only.
+    /// Optional post-steps (sub-actions / sub-verifications) that run AFTER
+    /// the XML has been uploaded and a fixed wait has elapsed. Each step can
+    /// target a different UI surface, DB check, API, aseXML generation/delivery
+    /// and receives the delivery's resolved field values via <c>{{Token}}</c>
+    /// substitution at playback. Empty list means upload-only.
+    ///
+    /// JSON is always written as <c>postSteps</c>. Legacy files using the old
+    /// <c>postDeliveryVerifications</c> key deserialise via <see cref="PostDeliveryVerificationsCompat"/>
+    /// below — so existing test sets load unchanged.
     /// </summary>
-    public List<VerificationStep> PostDeliveryVerifications { get; set; } = [];
+    public List<VerificationStep> PostSteps { get; set; } = [];
+
+    /// <summary>
+    /// Read-on-deserialize back-compat for test sets saved before the Slice 2
+    /// rename. When JSON carries <c>postDeliveryVerifications</c>, System.Text.Json
+    /// populates this setter, which promotes the value into <see cref="PostSteps"/>.
+    /// Never serialised back out (getter returns null).
+    /// </summary>
+    [JsonPropertyName("postDeliveryVerifications")]
+    public List<VerificationStep>? PostDeliveryVerificationsCompat
+    {
+        get => null;
+        set
+        {
+            if (value is not null && PostSteps.Count == 0)
+                PostSteps = value;
+        }
+    }
 
     public AseXmlDeliveryTestCase ToTestCase(string name) => new()
     {
@@ -42,7 +65,7 @@ public class AseXmlDeliveryTestDefinition
         FieldValues = FieldValues,
         EndpointCode = EndpointCode,
         ValidateAgainstSchema = ValidateAgainstSchema,
-        PostDeliveryVerifications = PostDeliveryVerifications
+        PostSteps = PostSteps
     };
 
     public static AseXmlDeliveryTestDefinition FromTestCase(AseXmlDeliveryTestCase tc) => new()
@@ -53,7 +76,7 @@ public class AseXmlDeliveryTestDefinition
         FieldValues = tc.FieldValues,
         EndpointCode = tc.EndpointCode,
         ValidateAgainstSchema = tc.ValidateAgainstSchema,
-        PostDeliveryVerifications = tc.PostDeliveryVerifications
+        PostSteps = tc.PostSteps
     };
 }
 
@@ -69,5 +92,5 @@ public class AseXmlDeliveryTestCase
     public Dictionary<string, string> FieldValues { get; set; } = [];
     public string EndpointCode { get; set; } = "";
     public bool ValidateAgainstSchema { get; set; }
-    public List<VerificationStep> PostDeliveryVerifications { get; set; } = [];
+    public List<VerificationStep> PostSteps { get; set; } = [];
 }

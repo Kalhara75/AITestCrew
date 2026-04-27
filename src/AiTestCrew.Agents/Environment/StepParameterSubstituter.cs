@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AiTestCrew.Agents.ApiAgent;
 using AiTestCrew.Agents.AseXmlAgent;
+using AiTestCrew.Agents.DbAgent;
 using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Utilities;
 
@@ -14,6 +15,11 @@ namespace AiTestCrew.Agents.Environment;
 /// Built on top of <see cref="TokenSubstituter"/> (lenient mode) — unknown
 /// tokens are left as <c>{{Literal}}</c> and (when a collector is supplied)
 /// reported to the caller so the agent can log them as WARN.
+///
+/// Since Slice 1 of the generalized post-step work, each definition and test
+/// case is also walked recursively through its <c>PostSteps</c> list so
+/// sub-steps receive the same substitution. <c>AseXmlDelivery</c>'s legacy
+/// <c>PostDeliveryVerifications</c> field stays substituted for back-compat.
 /// </summary>
 public static class StepParameterSubstituter
 {
@@ -42,7 +48,8 @@ public static class StepParameterSubstituter
             ExpectedStatus = source.ExpectedStatus,
             ExpectedBodyContains = SubList(source.ExpectedBodyContains, context, unknownTokens),
             ExpectedBodyNotContains = SubList(source.ExpectedBodyNotContains, context, unknownTokens),
-            IsFuzzTest = source.IsFuzzTest
+            IsFuzzTest = source.IsFuzzTest,
+            PostSteps = ApplyPostSteps(source.PostSteps, context, unknownTokens)
         };
     }
 
@@ -67,7 +74,8 @@ public static class StepParameterSubstituter
                 TimeoutMs = s.TimeoutMs,
                 MatchFirst = s.MatchFirst
             }).ToList(),
-            TakeScreenshotOnFailure = source.TakeScreenshotOnFailure
+            TakeScreenshotOnFailure = source.TakeScreenshotOnFailure,
+            PostSteps = ApplyPostSteps(source.PostSteps, context, unknownTokens)
         };
     }
 
@@ -96,7 +104,8 @@ public static class StepParameterSubstituter
                 WindowTitle = Sub(s.WindowTitle, context, unknownTokens),
                 TimeoutMs = s.TimeoutMs
             }).ToList(),
-            TakeScreenshotOnFailure = source.TakeScreenshotOnFailure
+            TakeScreenshotOnFailure = source.TakeScreenshotOnFailure,
+            PostSteps = ApplyPostSteps(source.PostSteps, context, unknownTokens)
         };
     }
 
@@ -115,7 +124,8 @@ public static class StepParameterSubstituter
             TemplateId = source.TemplateId,
             TransactionType = source.TransactionType,
             FieldValues = SubDict(source.FieldValues, context, unknownTokens),
-            ValidateAgainstSchema = source.ValidateAgainstSchema
+            ValidateAgainstSchema = source.ValidateAgainstSchema,
+            PostSteps = ApplyPostSteps(source.PostSteps, context, unknownTokens)
         };
     }
 
@@ -136,7 +146,7 @@ public static class StepParameterSubstituter
             FieldValues = SubDict(source.FieldValues, context, unknownTokens),
             EndpointCode = Sub(source.EndpointCode, context, unknownTokens) ?? "",
             ValidateAgainstSchema = source.ValidateAgainstSchema,
-            PostDeliveryVerifications = source.PostDeliveryVerifications
+            PostSteps = source.PostSteps
                 .Select(v => Apply(v, context, unknownTokens))
                 .ToList()
         };
@@ -161,7 +171,8 @@ public static class StepParameterSubstituter
             ExpectedStatus = source.ExpectedStatus,
             ExpectedBodyContains = SubList(source.ExpectedBodyContains, context, unknownTokens),
             ExpectedBodyNotContains = SubList(source.ExpectedBodyNotContains, context, unknownTokens),
-            IsFuzzTest = source.IsFuzzTest
+            IsFuzzTest = source.IsFuzzTest,
+            PostSteps = ApplyPostSteps(source.PostSteps, context, unknownTokens)
         };
     }
 
@@ -184,7 +195,8 @@ public static class StepParameterSubstituter
                 TimeoutMs = s.TimeoutMs,
                 MatchFirst = s.MatchFirst
             }).ToList(),
-            TakeScreenshotOnFailure = source.TakeScreenshotOnFailure
+            TakeScreenshotOnFailure = source.TakeScreenshotOnFailure,
+            PostSteps = ApplyPostSteps(source.PostSteps, context, unknownTokens)
         };
     }
 
@@ -211,7 +223,8 @@ public static class StepParameterSubstituter
                 WindowTitle = Sub(s.WindowTitle, context, unknownTokens),
                 TimeoutMs = s.TimeoutMs
             }).ToList(),
-            TakeScreenshotOnFailure = source.TakeScreenshotOnFailure
+            TakeScreenshotOnFailure = source.TakeScreenshotOnFailure,
+            PostSteps = ApplyPostSteps(source.PostSteps, context, unknownTokens)
         };
     }
 
@@ -228,7 +241,8 @@ public static class StepParameterSubstituter
             TemplateId = source.TemplateId,
             TransactionType = source.TransactionType,
             FieldValues = SubDict(source.FieldValues, context, unknownTokens),
-            ValidateAgainstSchema = source.ValidateAgainstSchema
+            ValidateAgainstSchema = source.ValidateAgainstSchema,
+            PostSteps = ApplyPostSteps(source.PostSteps, context, unknownTokens)
         };
     }
 
@@ -247,7 +261,7 @@ public static class StepParameterSubstituter
             FieldValues = SubDict(source.FieldValues, context, unknownTokens),
             EndpointCode = Sub(source.EndpointCode, context, unknownTokens) ?? "",
             ValidateAgainstSchema = source.ValidateAgainstSchema,
-            PostDeliveryVerifications = source.PostDeliveryVerifications
+            PostSteps = source.PostSteps
                 .Select(v => Apply(v, context, unknownTokens))
                 .ToList()
         };
@@ -275,7 +289,7 @@ public static class StepParameterSubstituter
     private static readonly IReadOnlyDictionary<string, string> EmptyParameters =
         new Dictionary<string, string>();
 
-    // ── VerificationStep ───────────────────────────────────────────
+    // ── VerificationStep / PostStep ────────────────────────────────
 
     public static VerificationStep Apply(
         VerificationStep source,
@@ -287,12 +301,44 @@ public static class StepParameterSubstituter
             Description = source.Description,
             Target = source.Target,
             WaitBeforeSeconds = source.WaitBeforeSeconds,
+            Role = source.Role,
             WebUi = source.WebUi is null ? null : Apply(source.WebUi, context, unknownTokens),
-            DesktopUi = source.DesktopUi is null ? null : Apply(source.DesktopUi, context, unknownTokens)
+            DesktopUi = source.DesktopUi is null ? null : Apply(source.DesktopUi, context, unknownTokens),
+            Api = source.Api is null ? null : Apply(source.Api, context, unknownTokens),
+            AseXml = source.AseXml is null ? null : Apply(source.AseXml, context, unknownTokens),
+            AseXmlDeliver = source.AseXmlDeliver is null ? null : Apply(source.AseXmlDeliver, context, unknownTokens),
+            DbCheck = source.DbCheck is null ? null : Apply(source.DbCheck, context, unknownTokens)
+        };
+    }
+
+    // ── DbCheckStepDefinition ──────────────────────────────────────
+
+    public static DbCheckStepDefinition Apply(
+        DbCheckStepDefinition source,
+        IReadOnlyDictionary<string, string> context,
+        ICollection<string>? unknownTokens = null)
+    {
+        return new DbCheckStepDefinition
+        {
+            Name = source.Name,
+            ConnectionKey = source.ConnectionKey,
+            Sql = Sub(source.Sql, context, unknownTokens) ?? "",
+            ExpectedRowCount = source.ExpectedRowCount,
+            ExpectedColumnValues = SubDict(source.ExpectedColumnValues, context, unknownTokens),
+            TimeoutSeconds = source.TimeoutSeconds
         };
     }
 
     // ── Helpers ────────────────────────────────────────────────────
+
+    private static List<VerificationStep> ApplyPostSteps(
+        List<VerificationStep> source,
+        IReadOnlyDictionary<string, string> context,
+        ICollection<string>? unknownTokens)
+    {
+        if (source.Count == 0) return source;
+        return source.Select(v => Apply(v, context, unknownTokens)).ToList();
+    }
 
     private static string? Sub(
         string? input,

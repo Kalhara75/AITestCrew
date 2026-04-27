@@ -28,6 +28,15 @@ public class AseXmlTestDefinition
     /// </summary>
     public bool ValidateAgainstSchema { get; set; }
 
+    /// <summary>
+    /// Optional post-steps that run AFTER this aseXML payload is generated. Each
+    /// post-step receives the rendered context (MessageID, TransactionID, template
+    /// fields) via <c>{{Token}}</c> substitution. Typical use: attach a DB check
+    /// or UI verification that confirms the generated payload was handled
+    /// correctly downstream.
+    /// </summary>
+    public List<VerificationStep> PostSteps { get; set; } = [];
+
     /// <summary>Maps this definition to its runtime-mutable test case.</summary>
     public AseXmlTestCase ToTestCase(string name) => new()
     {
@@ -36,7 +45,8 @@ public class AseXmlTestDefinition
         TemplateId = TemplateId,
         TransactionType = TransactionType,
         FieldValues = FieldValues,
-        ValidateAgainstSchema = ValidateAgainstSchema
+        ValidateAgainstSchema = ValidateAgainstSchema,
+        PostSteps = PostSteps
     };
 
     /// <summary>Builds a definition (for persistence) from a runtime test case.</summary>
@@ -46,7 +56,8 @@ public class AseXmlTestDefinition
         TemplateId = tc.TemplateId,
         TransactionType = tc.TransactionType,
         FieldValues = tc.FieldValues,
-        ValidateAgainstSchema = tc.ValidateAgainstSchema
+        ValidateAgainstSchema = tc.ValidateAgainstSchema,
+        PostSteps = tc.PostSteps
     };
 }
 
@@ -62,4 +73,11 @@ public class AseXmlTestCase
     public string TransactionType { get; set; } = "";
     public Dictionary<string, string> FieldValues { get; set; } = [];
     public bool ValidateAgainstSchema { get; set; }
+
+    /// <summary>
+    /// Optional post-steps that run AFTER this aseXML payload is generated. Mirrors
+    /// the parent definition's field so the agent can see them when executing a
+    /// preloaded reuse case.
+    /// </summary>
+    public List<VerificationStep> PostSteps { get; set; } = [];
 }

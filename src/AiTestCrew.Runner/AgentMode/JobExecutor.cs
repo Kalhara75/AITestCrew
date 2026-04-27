@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AiTestCrew.Agents.AseXmlAgent.Delivery;
+using AiTestCrew.Agents.PostSteps;
 using AiTestCrew.Agents.Recording;
 using AiTestCrew.Core.Models;
 using AiTestCrew.Orchestrator;
@@ -10,11 +11,17 @@ namespace AiTestCrew.Runner.AgentMode;
 /// Bridges a dequeued job to the right handler. JobKind decides whether it's a
 /// standard test run (<see cref="TestOrchestrator"/>) or an interactive recording
 /// session (<see cref="IRecordingService"/>).
+///
+/// Deferred post-step queue entries (discriminator <c>"DeferredVerification"</c>)
+/// are routed directly to <see cref="PostStepOrchestrator"/> — no agent dispatch,
+/// no history lookup — because the replay is pure post-step work against a
+/// snapshotted context.
 /// </summary>
 internal sealed class JobExecutor
 {
     private readonly TestOrchestrator _orchestrator;
     private readonly IRecordingService _recording;
+    private readonly PostStepOrchestrator _postStepOrchestrator;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -22,10 +29,14 @@ internal sealed class JobExecutor
         PropertyNameCaseInsensitive = true
     };
 
-    public JobExecutor(TestOrchestrator orchestrator, IRecordingService recording)
+    public JobExecutor(
+        TestOrchestrator orchestrator,
+        IRecordingService recording,
+        PostStepOrchestrator postStepOrchestrator)
     {
         _orchestrator = orchestrator;
         _recording = recording;
+        _postStepOrchestrator = postStepOrchestrator;
     }
 
     public async Task<JobOutcome> ExecuteAsync(NextJobResponse job, CancellationToken ct)
@@ -43,31 +54,19 @@ internal sealed class JobExecutor
 
     private async Task<JobOutcome> ExecuteRunAsync(NextJobResponse job, CancellationToken ct)
     {
-        // Detect a deferred-verification payload (self-contained snapshot the delivery
-        // agent enqueued earlier). If present we route to VerifyOnly mode using the
-        // snapshot — do NOT call GetLatestDeliveryContextAsync.
+        // Detect a deferred post-step payload (self-contained snapshot enqueued
+        // by any parent agent). Route directly to PostStepOrchestrator — the
+        // replay is pure post-step work against the snapshot, so we skip the
+        // orchestrator → agent roundtrip that pre-Slice-2 code used.
         var deferred = TryParseDeferredRequest(job.RequestJson);
         if (deferred is not null)
         {
-            var suiteDeferred = await _orchestrator.RunAsync(
-                objective: "",
-                mode: RunMode.VerifyOnly,
-                reuseId: deferred.TestSetId,
-                ct: ct,
-                externalRunId: deferred.ParentRunId,
-                moduleId: string.IsNullOrEmpty(deferred.ModuleId) ? null : deferred.ModuleId,
-                targetTestSetId: deferred.TestSetId,
-                objectiveId: deferred.DeliveryObjectiveId,
-                environmentKey: deferred.EnvironmentKey,
-                deferredVerification: deferred);
-
-            // Outcome of a deferred job reports per-attempt success. AwaitingVerification
-            // (= retry re-enqueued) is not a terminal failure — treat as success so the
-            // queue entry isn't flagged red.
-            var passedOrRetrying = suiteDeferred.Results.All(r =>
-                r.Status is TestStatus.Passed or TestStatus.AwaitingVerification);
-            return new JobOutcome(passedOrRetrying, suiteDeferred.Summary,
-                passedOrRetrying ? null : suiteDeferred.Summary);
+            var outcome = await _postStepOrchestrator.RunDeferredAttemptAsync(deferred, ct);
+            // AwaitingVerification (= retry re-enqueued) is not a terminal failure —
+            // treat as success so the queue entry isn't flagged red.
+            var passedOrRetrying = outcome.Status is TestStatus.Passed or TestStatus.AwaitingVerification;
+            return new JobOutcome(passedOrRetrying, outcome.Summary,
+                passedOrRetrying ? null : outcome.Summary);
         }
 
         var request = JsonSerializer.Deserialize<QueuedRunRequest>(job.RequestJson, JsonOpts)

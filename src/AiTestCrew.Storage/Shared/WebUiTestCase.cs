@@ -1,3 +1,5 @@
+using AiTestCrew.Agents.AseXmlAgent;
+
 namespace AiTestCrew.Agents.Shared;
 
 /// <summary>
@@ -23,6 +25,13 @@ public class WebUiTestCase
 
     /// <summary>When true, a screenshot is saved to PlaywrightScreenshotDir on step failure.</summary>
     public bool TakeScreenshotOnFailure { get; set; } = true;
+
+    /// <summary>
+    /// Optional post-steps (sub-actions / sub-verifications) that run AFTER this
+    /// web UI case completes. Mirrors the parent definition's field so the agent
+    /// can see them when executing a preloaded reuse case.
+    /// </summary>
+    public List<VerificationStep> PostSteps { get; set; } = [];
 }
 
 /// <summary>

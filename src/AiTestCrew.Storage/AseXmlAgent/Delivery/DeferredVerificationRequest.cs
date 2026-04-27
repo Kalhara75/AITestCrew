@@ -13,8 +13,19 @@ namespace AiTestCrew.Agents.AseXmlAgent.Delivery;
 /// </summary>
 public class DeferredVerificationRequest
 {
-    /// <summary>Discriminator so the executor can detect a deferred job.</summary>
+    /// <summary>Discriminator so the executor can detect a deferred job. Literal kept
+    /// as "DeferredVerification" for back-compat with in-flight queue rows serialised
+    /// by pre-Slice-2 code even though the feature now covers all parent kinds.</summary>
     public string Kind { get; set; } = "DeferredVerification";
+
+    /// <summary>
+    /// Parent step type that scheduled these post-steps — one of
+    /// <c>"WebUi"</c>, <c>"DesktopUi"</c>, <c>"Api"</c>, <c>"AseXml"</c>,
+    /// <c>"AseXmlDeliver"</c>. Empty on rows serialised before Slice 2;
+    /// callers should treat empty as <c>"AseXmlDeliver"</c> (the only parent
+    /// type that could defer before the generalisation).
+    /// </summary>
+    public string ParentKind { get; set; } = "";
 
     public string ParentRunId { get; set; } = "";
     public string PendingId { get; set; } = "";

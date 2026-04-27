@@ -9,6 +9,7 @@ using AiTestCrew.Agents.AseXmlAgent.Delivery;
 using AiTestCrew.Agents.AseXmlAgent.Templates;
 using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Agents.Base;
+using AiTestCrew.Agents.PostSteps;
 using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
@@ -54,7 +55,8 @@ public class AseXmlDeliveryAgent : BaseTestAgent
         TemplateRegistry templates,
         IEndpointResolver endpoints,
         DropTargetFactory dropFactory,
-        IServiceProvider services) : base(kernel, logger)
+        IServiceProvider services,
+        PostStepOrchestrator postStepOrchestrator) : base(kernel, logger, postStepOrchestrator)
     {
         _config = config;
         _templates = templates;
@@ -244,7 +246,7 @@ public class AseXmlDeliveryAgent : BaseTestAgent
             var tc = testCases[caseIndex];
             ct.ThrowIfCancellationRequested();
 
-            if (tc.PostDeliveryVerifications.Count == 0)
+            if (tc.PostSteps.Count == 0)
             {
                 steps.Add(TestStep.Pass($"verify-only[{caseIndex + 1}]",
                     "No post-delivery verifications defined — nothing to re-run."));
@@ -260,10 +262,10 @@ public class AseXmlDeliveryAgent : BaseTestAgent
 
             var remoteFileName = historyCtx.GetValueOrDefault("Filename") ?? "";
 
-            for (var vIdx = 0; vIdx < tc.PostDeliveryVerifications.Count; vIdx++)
+            for (var vIdx = 0; vIdx < tc.PostSteps.Count; vIdx++)
             {
                 ct.ThrowIfCancellationRequested();
-                var verification = tc.PostDeliveryVerifications[vIdx];
+                var verification = tc.PostSteps[vIdx];
                 totalVerifications++;
 
                 // Apply wait override if specified (e.g. --wait 0 to skip delays)
@@ -833,65 +835,50 @@ public class AseXmlDeliveryAgent : BaseTestAgent
             ["status"] = "Delivered",
         });
 
-        // 5) Post-delivery UI verifications (Phase 3)
-        if (tc.PostDeliveryVerifications.Count > 0)
+        // 5) Post-delivery verifications (Phase 3 / Slice 2 generalisation)
+        //    Now goes through the shared BaseTestAgent.RunPostStepsAsync, which
+        //    consults PostStepOrchestrator to pick defer vs inline and builds the
+        //    {{Token}} context via BuildPostStepContext (overridden below to
+        //    publish MessageID / TransactionID / Filename / resolved fields).
+        if (tc.PostSteps.Count > 0)
         {
-            var context = BuildVerificationContext(
+            _lastDeliveryContext = BuildVerificationContext(
                 messageId, transactionId, remoteFileName, uploadedAs,
                 endpoint.EndPointCode, resolvedFields);
 
-            // Decide whether to defer: enabled in config AND at least one verification
-            // has a wait longer than the defer threshold. Short waits run inline because
-            // queueing overhead isn't worth it.
-            var canDefer =
-                _config.AseXml.DeferVerifications
-                && tc.PostDeliveryVerifications.Any(v => v.WaitBeforeSeconds > _config.AseXml.VerificationDeferThresholdSeconds);
+            var envParams = Environment.StepParameterSubstituter.ReadEnvironmentParameters(
+                _currentTask?.Parameters ?? new Dictionary<string, object>());
 
-            // The deferred path requires SQLite-backed run_queue + run_pending_verifications
-            // tables. When storage is File (or repos aren't wired), we can't persist a deferred
-            // job and must fall back to inline Task.Delay execution.
-            var queueRepoAvailable = _services.GetService<IRunQueueRepository>() is not null
-                                      && _services.GetService<IPendingVerificationRepository>() is not null;
-
-            if (canDefer && queueRepoAvailable
-                && TryEnqueueDeferredVerifications(
-                        tc, index, remoteFileName, context, environmentKey, steps, out var enqueued))
+            try
             {
-                // Deferred path — steps list already carries AwaitingVerification markers.
-                // Do not run verifications inline; the agent slot is released here.
-                return;
+                await RunPostStepsAsync(
+                    tc.PostSteps, tc, new List<TestStep>(), index,
+                    steps, environmentKey, envParams, ct, _currentTask);
             }
-
-            // ── Explain WHY we fell back to inline so the UX is diagnosable. Appears
-            //    as a grey step alongside the wait message.
-            if (_config.AseXml.DeferVerifications
-                && tc.PostDeliveryVerifications.Any(v => v.WaitBeforeSeconds > _config.AseXml.VerificationDeferThresholdSeconds))
+            finally
             {
-                var reason = !queueRepoAvailable
-                    ? "deferred verification requires TestEnvironment.StorageProvider=\"Sqlite\" — current provider does not register IRunQueueRepository/IPendingVerificationRepository. Running inline."
-                    : "enqueue failed — see preceding logs. Running inline.";
-                Logger.LogWarning("[{Agent}] {Reason}", Name, reason);
-                steps.Add(new TestStep
-                {
-                    Action = $"verify[{index}] inline",
-                    Summary = $"Running verification(s) inline (not deferred): {reason}",
-                    Status = TestStatus.Skipped,  // grey step — informational, not a failure
-                });
-            }
-
-            for (var vIdx = 0; vIdx < tc.PostDeliveryVerifications.Count; vIdx++)
-            {
-                ct.ThrowIfCancellationRequested();
-                await RunVerificationAsync(
-                    tc.PostDeliveryVerifications[vIdx],
-                    index, vIdx + 1,
-                    remoteFileName,
-                    context,
-                    steps,
-                    environmentKey,
-                    ct);
+                _lastDeliveryContext = null;
             }
         }
+    }
+
+    /// <summary>Scratchpad holding the context of the most recent delivery so
+    /// <see cref="BuildPostStepContext"/> can hand it to the orchestrator.</summary>
+    private Dictionary<string, string>? _lastDeliveryContext;
+
+    protected override string PostStepParentKind => "AseXmlDeliver";
+
+    /// <summary>
+    /// Publishes MessageID / TransactionID / Filename / EndpointCode / UploadedAs
+    /// plus every resolved template field as post-step tokens. Populated by
+    /// <see cref="DeliverOneAsync"/> just before <c>RunPostStepsAsync</c> runs.
+    /// </summary>
+    protected override IDictionary<string, string> BuildPostStepContext(
+        object parentTestCase, IReadOnlyList<TestStep> parentSteps)
+    {
+        return _lastDeliveryContext is null
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(_lastDeliveryContext, StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -933,8 +920,8 @@ public class AseXmlDeliveryAgent : BaseTestAgent
             }
 
             var now = DateTime.UtcNow;
-            var minWait = tc.PostDeliveryVerifications.Min(v => v.WaitBeforeSeconds);
-            var maxWait = tc.PostDeliveryVerifications.Max(v => v.WaitBeforeSeconds);
+            var minWait = tc.PostSteps.Min(v => v.WaitBeforeSeconds);
+            var maxWait = tc.PostSteps.Max(v => v.WaitBeforeSeconds);
             var fraction = Math.Clamp(_config.AseXml.VerificationEarlyStartFraction, 0.01, 1.0);
             var firstDue = now.AddSeconds(minWait * fraction);
             var deadline = now.AddSeconds(maxWait + _config.AseXml.VerificationGraceSeconds);
@@ -951,12 +938,12 @@ public class AseXmlDeliveryAgent : BaseTestAgent
                 DeadlineAt = deadline,
                 AttemptCount = 0,
                 DeliveryContext = new Dictionary<string, string>(context, StringComparer.OrdinalIgnoreCase),
-                Verifications = tc.PostDeliveryVerifications,
+                Verifications = tc.PostSteps,
             };
 
             // Pick the claim capability from the FIRST verification's target (typical case:
             // all verifications share a target; handler validates individually at replay).
-            var firstTarget = tc.PostDeliveryVerifications[0].Target;
+            var firstTarget = tc.PostSteps[0].Target;
 
             var pendingId = Guid.NewGuid().ToString("N")[..12];
             request.PendingId = pendingId;
@@ -996,9 +983,9 @@ public class AseXmlDeliveryAgent : BaseTestAgent
 
             var firstDueLocal = firstDue.ToLocalTime();
             var deadlineLocal = deadline.ToLocalTime();
-            for (var vIdx = 0; vIdx < tc.PostDeliveryVerifications.Count; vIdx++)
+            for (var vIdx = 0; vIdx < tc.PostSteps.Count; vIdx++)
             {
-                var v = tc.PostDeliveryVerifications[vIdx];
+                var v = tc.PostSteps[vIdx];
                 steps.Add(new TestStep
                 {
                     Action = $"verify[{deliveryIndex}.{vIdx + 1}] scheduled",
@@ -1011,7 +998,7 @@ public class AseXmlDeliveryAgent : BaseTestAgent
                 });
             }
 
-            enqueuedCount = tc.PostDeliveryVerifications.Count;
+            enqueuedCount = tc.PostSteps.Count;
             Logger.LogInformation(
                 "[{Agent}] Deferred {Count} verification(s) for delivery {Idx} — pendingId={Pid}, firstDue={Due}, deadline={Dl}",
                 Name, enqueuedCount, deliveryIndex, pendingId, firstDue, deadline);

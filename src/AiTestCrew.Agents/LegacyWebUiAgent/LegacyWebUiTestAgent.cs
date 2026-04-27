@@ -73,8 +73,9 @@ public class LegacyWebUiTestAgent : BaseWebUiTestAgent
         Kernel kernel,
         ILogger<LegacyWebUiTestAgent> logger,
         TestEnvironmentConfig config,
-        IEnvironmentResolver envResolver)
-        : base(kernel, logger, config, envResolver)
+        IEnvironmentResolver envResolver,
+        AiTestCrew.Agents.PostSteps.PostStepOrchestrator postStepOrchestrator)
+        : base(kernel, logger, config, envResolver, postStepOrchestrator)
     {
     }
 

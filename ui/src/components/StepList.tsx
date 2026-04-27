@@ -2,18 +2,6 @@ import { useEffect, useState } from 'react';
 import type { ObjectiveResult, StepResult } from '../types';
 import { StatusBadge } from './StatusBadge';
 
-/** Parse "pendingId=...\nremoteFile=...\nwaitSeconds=..." or "nextQueueEntryId=..." style detail
- *  into a lookup so we can surface useful info on AwaitingVerification rows. */
-function parseAwaitingDetail(detail: string | null): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!detail) return out;
-  for (const line of detail.split(/\r?\n/)) {
-    const m = line.match(/^([A-Za-z0-9_]+)=(.*)$/);
-    if (m) out[m[1]] = m[2];
-  }
-  return out;
-}
-
 /** Prefer the ISO UTC timestamp the agent stores in detail — deterministic across
  *  timezones. Fall back to parsing the HH:MM:SS from the summary as a last resort.
  *  The summary is intended for human display and should not be the source of truth

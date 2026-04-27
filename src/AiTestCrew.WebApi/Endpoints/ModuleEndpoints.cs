@@ -328,10 +328,10 @@ public static class ModuleEndpoints
                 return Results.BadRequest(new { error = $"deliveryIndex {deliveryIndex} out of range (0..{objective.AseXmlDeliverySteps.Count - 1})" });
 
             var delivery = objective.AseXmlDeliverySteps[deliveryIndex];
-            if (verificationIndex < 0 || verificationIndex >= delivery.PostDeliveryVerifications.Count)
-                return Results.BadRequest(new { error = $"verificationIndex {verificationIndex} out of range (0..{delivery.PostDeliveryVerifications.Count - 1})" });
+            if (verificationIndex < 0 || verificationIndex >= delivery.PostSteps.Count)
+                return Results.BadRequest(new { error = $"verificationIndex {verificationIndex} out of range (0..{delivery.PostSteps.Count - 1})" });
 
-            delivery.PostDeliveryVerifications.RemoveAt(verificationIndex);
+            delivery.PostSteps.RemoveAt(verificationIndex);
             await tsRepo.SaveAsync(testSet, moduleId);
             return Results.Ok(TestSetResponse(testSet, historyRepo));
         });
@@ -357,12 +357,78 @@ public static class ModuleEndpoints
                 return Results.BadRequest(new { error = $"deliveryIndex {deliveryIndex} out of range (0..{objective.AseXmlDeliverySteps.Count - 1})" });
 
             var delivery = objective.AseXmlDeliverySteps[deliveryIndex];
-            if (verificationIndex < 0 || verificationIndex >= delivery.PostDeliveryVerifications.Count)
-                return Results.BadRequest(new { error = $"verificationIndex {verificationIndex} out of range (0..{delivery.PostDeliveryVerifications.Count - 1})" });
+            if (verificationIndex < 0 || verificationIndex >= delivery.PostSteps.Count)
+                return Results.BadRequest(new { error = $"verificationIndex {verificationIndex} out of range (0..{delivery.PostSteps.Count - 1})" });
 
-            delivery.PostDeliveryVerifications[verificationIndex] = updated;
+            delivery.PostSteps[verificationIndex] = updated;
             await tsRepo.SaveAsync(testSet, moduleId);
             return Results.Ok(TestSetResponse(testSet, historyRepo));
+        });
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Generalized post-step endpoints (Slice 2)
+        //
+        // parentKind is one of: "Api", "WebUi", "DesktopUi", "AseXml", "AseXmlDeliver".
+        // parentIndex is the 0-based position in the corresponding step-list
+        // field on the TestObjective.
+        //
+        // The legacy deliveries/verifications routes above remain for back-compat
+        // but these new routes are the canonical surface for any parent type.
+        // ─────────────────────────────────────────────────────────────────────
+
+        // POST /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId}/post-steps/{parentKind}/{parentIndex}
+        // Appends a new post-step to any parent step list.
+        group.MapPost("/{moduleId}/testsets/{tsId}/objectives/{objectiveId}/post-steps/{parentKind}/{parentIndex:int}",
+            async (string moduleId, string tsId, string objectiveId,
+                string parentKind, int parentIndex,
+                AiTestCrew.Agents.AseXmlAgent.VerificationStep newStep,
+                ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
+        {
+            var (testSet, objective, list, err) = await ResolvePostStepListAsync(
+                tsRepo, moduleId, tsId, objectiveId, parentKind, parentIndex);
+            if (err is not null) return err;
+
+            list!.Add(newStep);
+            await tsRepo.SaveAsync(testSet!, moduleId);
+            return Results.Ok(TestSetResponse(testSet!, historyRepo));
+        });
+
+        // PUT /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId}/post-steps/{parentKind}/{parentIndex}/{postIndex}
+        // Replaces a post-step in place.
+        group.MapPut("/{moduleId}/testsets/{tsId}/objectives/{objectiveId}/post-steps/{parentKind}/{parentIndex:int}/{postIndex:int}",
+            async (string moduleId, string tsId, string objectiveId,
+                string parentKind, int parentIndex, int postIndex,
+                AiTestCrew.Agents.AseXmlAgent.VerificationStep updated,
+                ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
+        {
+            var (testSet, objective, list, err) = await ResolvePostStepListAsync(
+                tsRepo, moduleId, tsId, objectiveId, parentKind, parentIndex);
+            if (err is not null) return err;
+
+            if (postIndex < 0 || postIndex >= list!.Count)
+                return Results.BadRequest(new { error = $"postIndex {postIndex} out of range (0..{list.Count - 1})" });
+
+            list[postIndex] = updated;
+            await tsRepo.SaveAsync(testSet!, moduleId);
+            return Results.Ok(TestSetResponse(testSet!, historyRepo));
+        });
+
+        // DELETE /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId}/post-steps/{parentKind}/{parentIndex}/{postIndex}
+        group.MapDelete("/{moduleId}/testsets/{tsId}/objectives/{objectiveId}/post-steps/{parentKind}/{parentIndex:int}/{postIndex:int}",
+            async (string moduleId, string tsId, string objectiveId,
+                string parentKind, int parentIndex, int postIndex,
+                ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
+        {
+            var (testSet, objective, list, err) = await ResolvePostStepListAsync(
+                tsRepo, moduleId, tsId, objectiveId, parentKind, parentIndex);
+            if (err is not null) return err;
+
+            if (postIndex < 0 || postIndex >= list!.Count)
+                return Results.BadRequest(new { error = $"postIndex {postIndex} out of range (0..{list.Count - 1})" });
+
+            list.RemoveAt(postIndex);
+            await tsRepo.SaveAsync(testSet!, moduleId);
+            return Results.Ok(TestSetResponse(testSet!, historyRepo));
         });
 
         // PUT /api/modules/{moduleId}/testsets/{tsId}/setup-steps — save/update setup steps
@@ -741,6 +807,74 @@ public static class ModuleEndpoints
         });
 
         return group;
+    }
+
+    /// <summary>
+    /// Resolves the <c>PostSteps</c> list on a parent step identified by
+    /// (moduleId, testSetId, objectiveId, parentKind, parentIndex). Returns
+    /// <paramref name="err"/> set to a Results.* response when anything can't
+    /// be found — callers short-circuit with <c>if (err is not null) return err;</c>.
+    /// </summary>
+    private static async Task<(
+        AiTestCrew.Agents.Persistence.PersistedTestSet? TestSet,
+        AiTestCrew.Agents.Persistence.TestObjective? Objective,
+        List<AiTestCrew.Agents.AseXmlAgent.VerificationStep>? List,
+        Microsoft.AspNetCore.Http.IResult? Err)>
+    ResolvePostStepListAsync(
+        AiTestCrew.Agents.Persistence.ITestSetRepository tsRepo,
+        string moduleId, string tsId, string objectiveId,
+        string parentKind, int parentIndex)
+    {
+        var testSet = await tsRepo.LoadAsync(moduleId, tsId);
+        if (testSet is null)
+            return (null, null, null,
+                Microsoft.AspNetCore.Http.Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" }));
+
+        var objective = testSet.TestObjectives.FirstOrDefault(o =>
+            string.Equals(o.Id, objectiveId, StringComparison.OrdinalIgnoreCase));
+        if (objective is null)
+            return (testSet, null, null,
+                Microsoft.AspNetCore.Http.Results.NotFound(new { error = $"Objective '{objectiveId}' not found in test set '{tsId}'" }));
+
+        List<AiTestCrew.Agents.AseXmlAgent.VerificationStep>? list;
+        int count;
+        switch (parentKind)
+        {
+            case "Api":
+                count = objective.ApiSteps.Count;
+                if (parentIndex < 0 || parentIndex >= count) goto BadIndex;
+                list = objective.ApiSteps[parentIndex].PostSteps;
+                break;
+            case "WebUi":
+                count = objective.WebUiSteps.Count;
+                if (parentIndex < 0 || parentIndex >= count) goto BadIndex;
+                list = objective.WebUiSteps[parentIndex].PostSteps;
+                break;
+            case "DesktopUi":
+                count = objective.DesktopUiSteps.Count;
+                if (parentIndex < 0 || parentIndex >= count) goto BadIndex;
+                list = objective.DesktopUiSteps[parentIndex].PostSteps;
+                break;
+            case "AseXml":
+                count = objective.AseXmlSteps.Count;
+                if (parentIndex < 0 || parentIndex >= count) goto BadIndex;
+                list = objective.AseXmlSteps[parentIndex].PostSteps;
+                break;
+            case "AseXmlDeliver":
+                count = objective.AseXmlDeliverySteps.Count;
+                if (parentIndex < 0 || parentIndex >= count) goto BadIndex;
+                list = objective.AseXmlDeliverySteps[parentIndex].PostSteps;
+                break;
+            default:
+                return (testSet, objective, null,
+                    Microsoft.AspNetCore.Http.Results.BadRequest(new { error = $"Unknown parentKind '{parentKind}'. Expected one of: Api, WebUi, DesktopUi, AseXml, AseXmlDeliver." }));
+        }
+
+        return (testSet, objective, list, null);
+
+        BadIndex:
+        return (testSet, objective, null,
+            Microsoft.AspNetCore.Http.Results.BadRequest(new { error = $"parentIndex {parentIndex} out of range for '{parentKind}' (0..{count - 1})" }));
     }
 
     private static object TestSetResponse(PersistedTestSet testSet, IExecutionHistoryRepository historyRepo)

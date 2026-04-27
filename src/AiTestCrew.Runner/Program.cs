@@ -328,7 +328,9 @@ if (cli.RecordVerification)
         Target: verifyTarget,
         WaitBeforeSeconds: cli.VerificationWait ?? 0,
         DeliveryStepIndex: cli.DeliveryStepIndex,
-        EnvironmentKey: cli.EnvironmentKey));
+        EnvironmentKey: cli.EnvironmentKey,
+        ParentKind: cli.ParentKind,
+        ParentStepIndex: cli.ParentStepIndex));
     PrintRecordingResult(verifyResult);
     return;
 }
@@ -447,12 +449,18 @@ builder.Services.AddSingleton<IApiTargetResolver>(sp => new ApiTargetResolver(
     sp.GetRequiredService<ILoggerFactory>(),
     sp.GetRequiredService<IEnvironmentResolver>()
 ));
+// Shared post-step orchestrator — any agent that supports PostSteps on its
+// parent test cases consumes this via its constructor. Lives at singleton
+// scope because it's stateless and can safely resolve sibling agents lazily.
+builder.Services.AddSingleton<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>();
+
 builder.Services.AddSingleton<ApiTestAgent>(sp => new ApiTestAgent(
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<ApiTestAgent>>(),
     sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
     sp.GetRequiredService<TestEnvironmentConfig>(),
-    sp.GetRequiredService<IApiTargetResolver>()
+    sp.GetRequiredService<IApiTargetResolver>(),
+    sp.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<ApiTestAgent>());
 
@@ -460,7 +468,8 @@ builder.Services.AddSingleton<LegacyWebUiTestAgent>(sp => new LegacyWebUiTestAge
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<LegacyWebUiTestAgent>>(),
     sp.GetRequiredService<TestEnvironmentConfig>(),
-    sp.GetRequiredService<IEnvironmentResolver>()
+    sp.GetRequiredService<IEnvironmentResolver>(),
+    sp.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<LegacyWebUiTestAgent>());
 
@@ -468,7 +477,8 @@ builder.Services.AddSingleton<BraveCloudUiTestAgent>(sp => new BraveCloudUiTestA
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<BraveCloudUiTestAgent>>(),
     sp.GetRequiredService<TestEnvironmentConfig>(),
-    sp.GetRequiredService<IEnvironmentResolver>()
+    sp.GetRequiredService<IEnvironmentResolver>(),
+    sp.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<BraveCloudUiTestAgent>());
 
@@ -476,7 +486,8 @@ builder.Services.AddSingleton<WinFormsUiTestAgent>(sp => new WinFormsUiTestAgent
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<WinFormsUiTestAgent>>(),
     sp.GetRequiredService<TestEnvironmentConfig>(),
-    sp.GetRequiredService<IEnvironmentResolver>()
+    sp.GetRequiredService<IEnvironmentResolver>(),
+    sp.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<WinFormsUiTestAgent>());
 
@@ -489,7 +500,8 @@ builder.Services.AddSingleton<AseXmlGenerationAgent>(sp => new AseXmlGenerationA
     sp.GetRequiredService<Kernel>(),
     sp.GetRequiredService<ILogger<AseXmlGenerationAgent>>(),
     sp.GetRequiredService<TestEnvironmentConfig>(),
-    sp.GetRequiredService<TemplateRegistry>()
+    sp.GetRequiredService<TemplateRegistry>(),
+    sp.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AseXmlGenerationAgent>());
 
@@ -507,9 +519,19 @@ builder.Services.AddSingleton<AseXmlDeliveryAgent>(sp => new AseXmlDeliveryAgent
     sp.GetRequiredService<TemplateRegistry>(),
     sp.GetRequiredService<IEndpointResolver>(),
     sp.GetRequiredService<DropTargetFactory>(),
-    sp  // IServiceProvider — siblings resolved lazily to avoid DI recursion at construction
+    sp,  // IServiceProvider — siblings resolved lazily to avoid DI recursion at construction
+    sp.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>()
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AseXmlDeliveryAgent>());
+
+// DB check agent — only invoked as a Db_SqlServer post-step, never standalone.
+builder.Services.AddSingleton<AiTestCrew.Agents.DbAgent.DbCheckAgent>(sp => new AiTestCrew.Agents.DbAgent.DbCheckAgent(
+    sp.GetRequiredService<Kernel>(),
+    sp.GetRequiredService<ILogger<AiTestCrew.Agents.DbAgent.DbCheckAgent>>(),
+    sp.GetRequiredService<IEnvironmentResolver>(),
+    sp.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>()
+));
+builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AiTestCrew.Agents.DbAgent.DbCheckAgent>());
 
 // Test set persistence + execution history + modules
 if (!string.IsNullOrWhiteSpace(envConfig.ServerUrl))
@@ -654,7 +676,8 @@ if (cli.AgentMode)
     var agentClient = new AiTestCrew.Runner.AgentMode.AgentClient(envConfig.ServerUrl, envConfig.ApiKey);
     var jobExecutor = new AiTestCrew.Runner.AgentMode.JobExecutor(
         host.Services.GetRequiredService<TestOrchestrator>(),
-        host.Services.GetRequiredService<AiTestCrew.Agents.Recording.IRecordingService>());
+        host.Services.GetRequiredService<AiTestCrew.Agents.Recording.IRecordingService>(),
+        host.Services.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>());
     var agentRunner = new AiTestCrew.Runner.AgentMode.AgentRunner(
         agentClient, jobExecutor, envConfig, agentLogger, agentName, caps);
 
@@ -927,6 +950,9 @@ static CliArgs ParseArgs(string[] args)
     string? objectiveId = null, verificationName = null;
     int? verificationWait = null;
     int deliveryStepIndex = 0;
+    string? parentKind = null;
+    int parentStepIndex = 0;
+    bool parentStepIndexProvided = false;
     bool agentMode = false;
     string? agentName = null, agentCapabilities = null;
     bool teardownDryRun = false, skipTeardown = false;
@@ -1030,7 +1056,21 @@ static CliArgs ParseArgs(string[] args)
                 migrateToSqlite = true;
                 break;
             case "--record-verification":
+                // Legacy alias — equivalent to --record-post-step with
+                // --parent-kind AseXmlDeliver (the only parent type the
+                // pre-Slice-2 recorder supported).
                 recordVerification = true;
+                break;
+            case "--record-post-step":
+                recordVerification = true;
+                break;
+            case "--parent-kind":
+                parentKind = args[++i];
+                break;
+            case "--parent-step-index":
+                if (!int.TryParse(args[++i], out parentStepIndex))
+                    throw new ArgumentException("--parent-step-index requires an integer.");
+                parentStepIndexProvided = true;
                 break;
             case "--objective" when i + 1 < args.Length:
                 // Context-dependent:
@@ -1118,6 +1158,8 @@ static CliArgs ParseArgs(string[] args)
         VerificationName = verificationName,
         VerificationWait = verificationWait,
         DeliveryStepIndex = deliveryStepIndex,
+        ParentKind = parentKind,
+        ParentStepIndex = parentStepIndexProvided ? parentStepIndex : (int?)null,
         AgentMode = agentMode,
         AgentName = agentName,
         AgentCapabilities = agentCapabilities,
@@ -1170,6 +1212,19 @@ class CliArgs
     public string? VerificationName { get; init; }
     public int? VerificationWait { get; init; }
     public int DeliveryStepIndex { get; init; }
+
+    /// <summary>
+    /// --parent-kind &lt;kind&gt; — one of Api, WebUi, DesktopUi, AseXml, AseXmlDeliver.
+    /// When null, <see cref="RecordingService.RecordVerificationAsync"/> defaults to
+    /// "AseXmlDeliver" to match the legacy <c>--record-verification</c> flow.
+    /// </summary>
+    public string? ParentKind { get; init; }
+
+    /// <summary>
+    /// --parent-step-index &lt;n&gt; — 0-based index into the parent step list.
+    /// When null, falls back to <see cref="DeliveryStepIndex"/>.
+    /// </summary>
+    public int? ParentStepIndex { get; init; }
 
     /// <summary>--teardown-dry-run: log substituted teardown SQL but don't execute.</summary>
     public bool TeardownDryRun { get; init; }

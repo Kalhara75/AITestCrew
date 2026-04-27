@@ -12,7 +12,9 @@ export interface StartRecordingRequest {
   objectiveId?: string;
   verificationName?: string;
   waitBeforeSeconds?: number;
-  deliveryStepIndex?: number;
+  deliveryStepIndex?: number;       // legacy — aseXML delivery parents only
+  parentKind?: 'Api' | 'WebUi' | 'DesktopUi' | 'AseXml' | 'AseXmlDeliver';
+  parentStepIndex?: number;
   environmentKey?: string;
 }
 

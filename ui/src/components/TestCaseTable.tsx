@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { updateObjective, deleteObjective } from '../api/modules';
 import { EditTestCaseDialog } from './EditTestCaseDialog';
+import { PostStepsPanel } from './PostStepsPanel';
 import type { TestObjective } from '../types';
 
 const methodColor: Record<string, { fg: string; bg: string }> = {
@@ -138,6 +139,24 @@ export function TestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdat
           ))}
         </tbody>
       </table>
+
+      {allCases.some(tc => (tc.postSteps?.length ?? 0) > 0) && (
+        <div style={{ marginTop: 16 }}>
+          {allCases.map(tc => (tc.postSteps?.length ?? 0) > 0 && (
+            <PostStepsPanel
+              key={`${tc.key}-poststeps`}
+              parentKind="Api"
+              parentIndex={tc.stepIndex}
+              objectiveId={tc.objectiveId}
+              caseName={tc.objectiveName}
+              postSteps={tc.postSteps ?? []}
+              moduleId={moduleId}
+              testSetId={testSetId}
+              onChanged={onTestCaseUpdated}
+            />
+          ))}
+        </div>
+      )}
 
       {editing && moduleId && testSetId && (
         <EditTestCaseDialog

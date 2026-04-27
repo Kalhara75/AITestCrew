@@ -5,6 +5,7 @@ using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using AiTestCrew.Agents.Base;
 using AiTestCrew.Agents.Environment;
+using AiTestCrew.Agents.PostSteps;
 using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
@@ -44,8 +45,11 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
     /// <summary>Config key name shown in error messages when TargetBaseUrl is empty.</summary>
     protected abstract string TargetBaseUrlConfigKey { get; }
 
-    protected BaseWebUiTestAgent(Kernel kernel, ILogger logger, TestEnvironmentConfig config, IEnvironmentResolver envResolver)
-        : base(kernel, logger)
+    protected BaseWebUiTestAgent(
+        Kernel kernel, ILogger logger,
+        TestEnvironmentConfig config, IEnvironmentResolver envResolver,
+        PostStepOrchestrator postStepOrchestrator)
+        : base(kernel, logger, postStepOrchestrator)
     {
         _config = config;
         _envResolver = envResolver;
@@ -200,11 +204,23 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
             }
 
             // ── Execute each test case — individual Playwright steps become separate TestSteps ──
-            foreach (var tc in testCases)
+            for (var tcIdx = 0; tcIdx < testCases.Count; tcIdx++)
             {
                 ct.ThrowIfCancellationRequested();
+                var tc = testCases[tcIdx];
                 var tcSteps = await ExecuteUiTestCaseAsync(browser, tc, setupSteps, setupStartUrl, ct);
                 steps.AddRange(tcSteps);
+
+                // Post-steps (sub-actions / sub-verifications) attached to this
+                // test case. Runs via the shared PostStepOrchestrator — long-wait
+                // post-steps defer to the queue (when enabled) so a remote agent
+                // can pick them up later; short-wait ones run inline.
+                if (tc.PostSteps.Count > 0)
+                {
+                    await RunPostStepsAsync(
+                        tc.PostSteps, tc, tcSteps, tcIdx + 1,
+                        steps, CurrentEnvironmentKey, envParams, ct, task);
+                }
             }
 
             var summary = await SummariseResultsAsync(steps, ct);
@@ -226,6 +242,27 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
             if (browser is not null) await browser.CloseAsync();
             playwright?.Dispose();
         }
+    }
+
+    protected override string PostStepParentKind => "WebUi";
+
+    /// <summary>
+    /// Publishes the {{Token}} values a web UI parent case contributes to its
+    /// post-steps. Parent test case is always a <see cref="WebUiTestCase"/>
+    /// because we set PreloadedTestCases to that type before executing.
+    /// </summary>
+    protected override IDictionary<string, string> BuildPostStepContext(
+        object parentTestCase, IReadOnlyList<TestStep> parentSteps)
+    {
+        var ctx = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (parentTestCase is WebUiTestCase tc)
+        {
+            if (!string.IsNullOrEmpty(tc.StartUrl)) ctx["StartUrl"] = tc.StartUrl;
+            if (!string.IsNullOrEmpty(tc.Name))     ctx["ParentCaseName"] = tc.Name;
+        }
+        if (!string.IsNullOrEmpty(TargetBaseUrl))   ctx["BaseUrl"] = TargetBaseUrl;
+        if (!string.IsNullOrEmpty(CurrentEnvironmentKey)) ctx["EnvironmentKey"] = CurrentEnvironmentKey;
+        return ctx;
     }
 
     private TestResult BuildResult(

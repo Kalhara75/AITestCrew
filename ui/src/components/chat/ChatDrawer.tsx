@@ -6,7 +6,9 @@ import type { ChatMessageEntry } from '../../contexts/ChatContext';
 import type { ChatAction, ChatRequestContext } from '../../api/chat';
 import { useQuery } from '@tanstack/react-query';
 import { triggerRun } from '../../api/runs';
-import { createModule, createTestSet } from '../../api/modules';
+import { createModule, createTestSet, addPostStep } from '../../api/modules';
+import type { PostStepParentKind } from '../../api/modules';
+import type { PostStep } from '../../types';
 import { fetchAgents } from '../../api/agents';
 import { fetchQueue } from '../../api/queue';
 import { startRecording } from '../../api/recordings';
@@ -187,6 +189,7 @@ function ActionCard({ action }: { action: ChatAction }) {
   if (action.kind === 'confirmRun') return <ConfirmRunCard summary={action.summary} data={action.data} />;
   if (action.kind === 'confirmCreate') return <ConfirmCreateCard summary={action.summary} data={action.data} />;
   if (action.kind === 'confirmRecord') return <ConfirmRecordCard summary={action.summary} data={action.data} />;
+  if (action.kind === 'confirmCreatePostStep') return <ConfirmCreatePostStepCard summary={action.summary} data={action.data} />;
   return null;
 }
 
@@ -465,7 +468,9 @@ type RecordPayload = {
   objectiveId?: string;
   verificationName?: string;
   waitBeforeSeconds?: number;
-  deliveryStepIndex?: number;
+  deliveryStepIndex?: number;       // legacy
+  parentKind?: 'Api' | 'WebUi' | 'DesktopUi' | 'AseXml' | 'AseXmlDeliver';
+  parentStepIndex?: number;
   environmentKey?: string;
 };
 
@@ -518,6 +523,8 @@ function ConfirmRecordCard({ summary, data }: { summary?: string; data: unknown 
         verificationName: payload.verificationName,
         waitBeforeSeconds: payload.waitBeforeSeconds,
         deliveryStepIndex: payload.deliveryStepIndex,
+        parentKind: payload.parentKind,
+        parentStepIndex: payload.parentStepIndex,
         environmentKey: payload.environmentKey,
       };
       const res = await startRecording(req);
@@ -543,6 +550,8 @@ function ConfirmRecordCard({ summary, data }: { summary?: string; data: unknown 
     ['case name', payload.caseName],
     ['objective', payload.objectiveId],
     ['verification', payload.verificationName],
+    ['parent kind', payload.parentKind],
+    ['parent step', payload.parentStepIndex?.toString()],
     ['environment', payload.environmentKey],
     ['wait (s)', payload.waitBeforeSeconds?.toString()],
   ];
@@ -682,6 +691,90 @@ const successCardStyle: React.CSSProperties = {
 const errorLineStyle: React.CSSProperties = {
   marginTop: 6, fontSize: 12, color: '#991b1b',
 };
+
+// ────────────────────────────────────────────────────────────────────────
+// ConfirmCreatePostStepCard — handles post-step authoring that doesn't
+// need a live recorder session (DB checks, API, aseXML gen/deliver).
+// Directly POSTs to the generalized /post-steps endpoint on confirm.
+// ────────────────────────────────────────────────────────────────────────
+
+type CreatePostStepPayload = {
+  moduleId?: string;
+  testSetId?: string;
+  objectiveId?: string;
+  parentKind?: PostStepParentKind;
+  parentStepIndex?: number;
+  postStep?: PostStep;
+};
+
+function ConfirmCreatePostStepCard({ summary, data }: { summary?: string; data: unknown }) {
+  const payload = (data ?? {}) as CreatePostStepPayload;
+  const [state, setState] = useState<'idle' | 'sending' | 'done' | 'error'>('idle');
+  const [message, setMessage] = useState<string>('');
+
+  async function execute() {
+    if (!payload.moduleId || !payload.testSetId || !payload.objectiveId
+        || !payload.parentKind || payload.parentStepIndex === undefined
+        || !payload.postStep) {
+      setState('error');
+      setMessage('Missing moduleId / testSetId / objectiveId / parentKind / parentStepIndex / postStep.');
+      return;
+    }
+    setState('sending');
+    try {
+      await addPostStep(
+        payload.moduleId, payload.testSetId, payload.objectiveId,
+        payload.parentKind, payload.parentStepIndex,
+        payload.postStep);
+      setState('done');
+      setMessage(`Added '${payload.postStep.description || payload.postStep.target}' to ${payload.parentKind}[${payload.parentStepIndex}].`);
+    } catch (err) {
+      setState('error');
+      setMessage(err instanceof Error ? err.message : 'Create failed.');
+    }
+  }
+
+  if (state === 'done') {
+    return <div style={successCardStyle}>{message}</div>;
+  }
+
+  const ps = payload.postStep;
+  const rows: [string, string | undefined][] = [
+    ['objective', payload.objectiveId],
+    ['parent', payload.parentKind !== undefined && payload.parentStepIndex !== undefined
+      ? `${payload.parentKind}[${payload.parentStepIndex}]` : undefined],
+    ['target', ps?.target],
+    ['description', ps?.description],
+    ['wait (s)', ps?.waitBeforeSeconds?.toString()],
+    ['role', ps?.role],
+  ];
+  if (ps?.dbCheck) {
+    rows.push(['sql', ps.dbCheck.sql]);
+    if (ps.dbCheck.expectedRowCount !== undefined)
+      rows.push(['expect rows', ps.dbCheck.expectedRowCount.toString()]);
+    if (ps.dbCheck.expectedColumnValues && Object.keys(ps.dbCheck.expectedColumnValues).length > 0)
+      rows.push(['expect cols', JSON.stringify(ps.dbCheck.expectedColumnValues)]);
+    rows.push(['connection', ps.dbCheck.connectionKey]);
+  }
+
+  return (
+    <div style={confirmCardStyle}>
+      <div style={confirmHeaderStyle}>Confirm: add post-step</div>
+      {summary && <div style={{ fontSize: 13, marginBottom: 6, color: '#78350f' }}>{summary}</div>}
+      <KeyValueGrid rows={rows} />
+      {state === 'error' && <div style={errorLineStyle}>{message}</div>}
+      <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+        <button
+          onClick={execute}
+          disabled={state === 'sending'}
+          style={{ ...primaryBtnStyle, opacity: state === 'sending' ? 0.6 : 1 }}
+        >
+          {state === 'sending' ? 'Adding…' : 'Add'}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 const primaryBtnStyle: React.CSSProperties = {
   background: '#0f172a', color: '#fff', border: 'none',

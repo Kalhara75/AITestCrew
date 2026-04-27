@@ -1,3 +1,5 @@
+using AiTestCrew.Agents.AseXmlAgent;
+
 namespace AiTestCrew.Agents.Shared;
 
 /// <summary>
@@ -19,6 +21,15 @@ public class WebUiTestDefinition
     public bool TakeScreenshotOnFailure { get; set; } = true;
 
     /// <summary>
+    /// Optional post-steps (sub-actions / sub-verifications) that run AFTER this
+    /// web UI case completes. Each post-step targets a UI surface, API, aseXML
+    /// delivery, or DB check and receives the parent case's context via
+    /// <c>{{Token}}</c> substitution. Long waits queue for a remote agent via the
+    /// shared <c>PostStepOrchestrator</c>; short waits run inline.
+    /// </summary>
+    public List<VerificationStep> PostSteps { get; set; } = [];
+
+    /// <summary>
     /// Creates a <see cref="WebUiTestDefinition"/> from a legacy <see cref="WebUiTestCase"/>.
     /// </summary>
     public static WebUiTestDefinition FromTestCase(WebUiTestCase tc) => new()
@@ -26,7 +37,8 @@ public class WebUiTestDefinition
         Description = tc.Description,
         StartUrl = tc.StartUrl,
         Steps = tc.Steps,
-        TakeScreenshotOnFailure = tc.TakeScreenshotOnFailure
+        TakeScreenshotOnFailure = tc.TakeScreenshotOnFailure,
+        PostSteps = tc.PostSteps
     };
 
     /// <summary>
@@ -38,6 +50,7 @@ public class WebUiTestDefinition
         Description = Description,
         StartUrl = StartUrl,
         Steps = Steps,
-        TakeScreenshotOnFailure = TakeScreenshotOnFailure
+        TakeScreenshotOnFailure = TakeScreenshotOnFailure,
+        PostSteps = PostSteps
     };
 }

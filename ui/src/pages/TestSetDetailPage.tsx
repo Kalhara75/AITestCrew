@@ -287,7 +287,12 @@ export function TestSetDetailPage() {
             />
           )}
           {selectedObjective.aseXmlSteps?.length > 0 && (
-            <AseXmlTestCaseTable objectives={[selectedObjective]} />
+            <AseXmlTestCaseTable
+              objectives={[selectedObjective]}
+              moduleId={moduleId}
+              testSetId={id}
+              onTestCaseUpdated={handleTestCaseUpdated}
+            />
           )}
           {selectedObjective.aseXmlDeliverySteps?.length > 0 && (
             <AseXmlDeliveryTestCaseTable
@@ -440,7 +445,7 @@ function ObjectiveListTable({
                     apiStackKey={apiStackKey}
                     apiModule={apiModule}
                     environmentKey={environmentKey}
-                    hasDeliveryVerifications={obj.aseXmlDeliverySteps?.some(s => s.postDeliveryVerifications?.length > 0)}
+                    hasDeliveryVerifications={obj.aseXmlDeliverySteps?.some(s => ((s.postSteps?.length ?? s.postDeliveryVerifications?.length) ?? 0) > 0)}
                   />
                 </td>
                 {onMove && (

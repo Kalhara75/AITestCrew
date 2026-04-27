@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { updateObjective, deleteObjective } from '../api/modules';
 import { EditWebUiTestCaseDialog } from './EditWebUiTestCaseDialog';
+import { PostStepsPanel } from './PostStepsPanel';
 import type { TestObjective } from '../types';
 
 interface Props {
@@ -127,6 +128,24 @@ export function WebUiTestCaseTable({ objectives, moduleId, testSetId, onTestCase
           ))}
         </tbody>
       </table>
+
+      {allCases.some(tc => (tc.postSteps?.length ?? 0) > 0) && (
+        <div style={{ marginTop: 16 }}>
+          {allCases.map(tc => (tc.postSteps?.length ?? 0) > 0 && (
+            <PostStepsPanel
+              key={`${tc.key}-poststeps`}
+              parentKind="WebUi"
+              parentIndex={tc.stepIndex}
+              objectiveId={tc.objectiveId}
+              caseName={tc.objectiveName}
+              postSteps={tc.postSteps ?? []}
+              moduleId={moduleId}
+              testSetId={testSetId}
+              onChanged={onTestCaseUpdated}
+            />
+          ))}
+        </div>
+      )}
 
       {editing && moduleId && testSetId && (
         <EditWebUiTestCaseDialog

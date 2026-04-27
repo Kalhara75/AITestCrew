@@ -1,7 +1,11 @@
 import type { TestObjective, AseXmlTestDefinition } from '../types';
+import { PostStepsPanel } from './PostStepsPanel';
 
 interface Props {
   objectives: TestObjective[];
+  moduleId?: string;
+  testSetId?: string;
+  onTestCaseUpdated?: () => void;
 }
 
 /**
@@ -11,7 +15,7 @@ interface Props {
  * planned edit dialog (Phase 1.5) will be driven by the template manifest's
  * field specs, letting users edit user-source fields directly.
  */
-export function AseXmlTestCaseTable({ objectives }: Props) {
+export function AseXmlTestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdated }: Props) {
   const allCases = objectives
     .filter(o => o.aseXmlSteps && o.aseXmlSteps.length > 0)
     .flatMap(o => o.aseXmlSteps.map((step, idx) => ({
@@ -74,6 +78,24 @@ export function AseXmlTestCaseTable({ objectives }: Props) {
           ))}
         </tbody>
       </table>
+
+      {allCases.some(tc => (tc.step.postSteps?.length ?? 0) > 0) && (
+        <div style={{ marginTop: 16 }}>
+          {allCases.map(tc => (tc.step.postSteps?.length ?? 0) > 0 && (
+            <PostStepsPanel
+              key={`${tc.key}-poststeps`}
+              parentKind="AseXml"
+              parentIndex={tc.stepIndex}
+              objectiveId={tc.objectiveId}
+              caseName={tc.objectiveName}
+              postSteps={tc.step.postSteps ?? []}
+              moduleId={moduleId}
+              testSetId={testSetId}
+              onChanged={onTestCaseUpdated}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
