@@ -69,6 +69,12 @@ public class RecordingService : IRecordingService
         var testSet = await _testSetRepo.LoadAsync(moduleId, testSetId)
                       ?? await _testSetRepo.CreateEmptyAsync(moduleId, r.TestSetId);
 
+        // Persist the recording env on the test set so reuse opens the same
+        // customer client/URL the user recorded against. Mirrors MergeAsync:
+        // only override when the user explicitly passed --environment.
+        if (!string.IsNullOrWhiteSpace(r.EnvironmentKey))
+            testSet.EnvironmentKey = envKey;
+
         var objectiveId = $"recorded-{SlugHelper.ToSlug(r.CaseName)}";
 
         if (isDesktop)
@@ -210,6 +216,8 @@ public class RecordingService : IRecordingService
 
         var testSet = await _testSetRepo.LoadAsync(moduleId, testSetId)
                       ?? await _testSetRepo.CreateEmptyAsync(moduleId, r.TestSetId);
+        if (!string.IsNullOrWhiteSpace(r.EnvironmentKey))
+            testSet.EnvironmentKey = envKey;
         testSet.SetupStartUrl = recorded.StartUrl;
         testSet.SetupSteps = recorded.Steps;
         await _testSetRepo.SaveAsync(testSet, moduleId);
@@ -324,6 +332,8 @@ public class RecordingService : IRecordingService
         }
 
         parentList!.Add(verifyStep);
+        if (!string.IsNullOrWhiteSpace(r.EnvironmentKey))
+            testSet.EnvironmentKey = envKey;
         await _testSetRepo.SaveAsync(testSet, moduleId);
 
         return new RecordingResult(true,
