@@ -134,6 +134,7 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
             app = LaunchApplication();
             var mainWindow = WaitForMainWindow(app, automation);
             WaitForAppReady(app, mainWindow);
+            NormalizeAppWindow(app);
 
             steps.Add(TestStep.Pass("app-launch",
                 $"Launched {Path.GetFileName(TargetAppPath)} — main window: \"{mainWindow.Title}\""));
@@ -178,6 +179,7 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
                     app = LaunchApplication();
                     mainWindow = WaitForMainWindow(app, automation);
                     WaitForAppReady(app, mainWindow);
+                    NormalizeAppWindow(app);
                 }
                 else if (tcIdx > 0)
                 {
@@ -353,6 +355,11 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
             }
             catch { /* keep existing reference */ }
 
+            // Re-normalize on every step so that window transitions
+            // (e.g. login dialog → main form) get caught and resized to
+            // the configured target dimensions before the next click fires.
+            NormalizeAppWindow(app);
+
             var result = DesktopStepExecutor.ExecuteStep(
                 window, app, tc.Steps[i], automation,
                 tc.Name, i, tc.Steps.Count, Logger);
@@ -390,6 +397,29 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
     // ─────────────────────────────────────────────────────
     // Helpers
     // ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Forces the app's main window to the configured fixed size so recorded
+    /// window-relative click coordinates are portable across monitors. Cheap
+    /// and idempotent — safe to call on every step. No-op when normalization
+    /// is disabled in config.
+    /// </summary>
+    private void NormalizeAppWindow(Application app)
+    {
+        if (!_config.WinFormsNormalizeWindow) return;
+        try
+        {
+            DesktopWindowNormalizer.TryNormalize(
+                (uint)app.ProcessId,
+                _config.WinFormsWindowWidth,
+                _config.WinFormsWindowHeight,
+                Logger);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "[{Agent}] Window normalization failed (non-fatal)", Name);
+        }
+    }
 
     private Window WaitForMainWindow(Application app, UIA3Automation automation)
     {

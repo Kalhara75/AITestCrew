@@ -102,7 +102,15 @@ public static class StepParameterSubstituter
                 Value = Sub(s.Value, context, unknownTokens),
                 MenuPath = Sub(s.MenuPath, context, unknownTokens),
                 WindowTitle = Sub(s.WindowTitle, context, unknownTokens),
-                TimeoutMs = s.TimeoutMs
+                TimeoutMs = s.TimeoutMs,
+                // Recorded coordinates and pacing must round-trip through
+                // {{Token}} substitution — they aren't strings to substitute,
+                // they're the literal pixel offsets that drive coord-first
+                // replay. Dropping them turns every click into a coords-less
+                // selector-only lookup, which fails on owner-drawn surfaces.
+                WindowRelativeX = s.WindowRelativeX,
+                WindowRelativeY = s.WindowRelativeY,
+                DelayBeforeMs = s.DelayBeforeMs
             }).ToList(),
             TakeScreenshotOnFailure = source.TakeScreenshotOnFailure,
             PostSteps = ApplyPostSteps(source.PostSteps, context, unknownTokens)
@@ -221,7 +229,15 @@ public static class StepParameterSubstituter
                 Value = Sub(s.Value, context, unknownTokens),
                 MenuPath = Sub(s.MenuPath, context, unknownTokens),
                 WindowTitle = Sub(s.WindowTitle, context, unknownTokens),
-                TimeoutMs = s.TimeoutMs
+                TimeoutMs = s.TimeoutMs,
+                // Recorded coordinates and pacing must round-trip through
+                // {{Token}} substitution — they aren't strings to substitute,
+                // they're the literal pixel offsets that drive coord-first
+                // replay. Dropping them turns every click into a coords-less
+                // selector-only lookup, which fails on owner-drawn surfaces.
+                WindowRelativeX = s.WindowRelativeX,
+                WindowRelativeY = s.WindowRelativeY,
+                DelayBeforeMs = s.DelayBeforeMs
             }).ToList(),
             TakeScreenshotOnFailure = source.TakeScreenshotOnFailure,
             PostSteps = ApplyPostSteps(source.PostSteps, context, unknownTokens)

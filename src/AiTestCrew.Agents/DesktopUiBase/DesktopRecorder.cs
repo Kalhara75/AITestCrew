@@ -129,7 +129,14 @@ public static class DesktopRecorder
                         && dct != FlaUI.Core.Definitions.ControlType.Hyperlink
                         && dct != FlaUI.Core.Definitions.ControlType.CheckBox
                         && dct != FlaUI.Core.Definitions.ControlType.SplitButton
-                        && dct != FlaUI.Core.Definitions.ControlType.RadioButton)
+                        && dct != FlaUI.Core.Definitions.ControlType.RadioButton
+                        // Grid / list / tree row types — well-behaved grids expose rows as
+                        // DataItem (or ListItem / TreeItem), and the user clicking a row to
+                        // select it before pressing a toolbar button is a critical action
+                        // that must be captured for replay to land on the right record.
+                        && dct != FlaUI.Core.Definitions.ControlType.DataItem
+                        && dct != FlaUI.Core.Definitions.ControlType.ListItem
+                        && dct != FlaUI.Core.Definitions.ControlType.TreeItem)
                         continue;
 
                     var rect = d.BoundingRectangle;
@@ -149,6 +156,51 @@ public static class DesktopRecorder
         }
         catch { }
 
+        return hit;
+    }
+
+    /// <summary>
+    /// Forces the app's main window to the configured fixed size so recorded
+    /// click coordinates are portable across monitors. Cheap and idempotent.
+    /// No-op when normalization is disabled in config.
+    /// </summary>
+    private static void TryNormalizeWindow(uint processId, TestEnvironmentConfig config, ILogger logger)
+    {
+        if (!config.WinFormsNormalizeWindow) return;
+        try
+        {
+            DesktopWindowNormalizer.TryNormalize(
+                processId, config.WinFormsWindowWidth, config.WinFormsWindowHeight, logger);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[DesktopRecorder] Window normalization failed (non-fatal)");
+        }
+    }
+
+    /// <summary>
+    /// Returns true when (x, y) screen coordinates fall inside the bounding
+    /// rectangle of any visible top-level window owned by
+    /// <paramref name="processId"/>. Used as a geometry-based confirmation
+    /// that a recorded click really landed on the target app, not on a
+    /// different window that happens to have just received focus.
+    /// </summary>
+    private static bool IsPointInsideProcessWindow(uint processId, int x, int y)
+    {
+        var hit = false;
+        EnumWindows((hwnd, _) =>
+        {
+            if (!IsWindowVisible(hwnd)) return true;
+            GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid != processId) return true;
+            if (!GetWindowRect(hwnd, out var rect)) return true;
+            if (x >= rect.Left && x < rect.Right && y >= rect.Top && y < rect.Bottom)
+            {
+                hit = true;
+                return false; // stop enumerating
+            }
+            return true;
+        }, IntPtr.Zero);
         return hit;
     }
 
@@ -336,6 +388,13 @@ public static class DesktopRecorder
 
             logger.LogInformation("[DesktopRecorder] Main window: \"{Title}\"", mainWindow.Title);
 
+            // Force the app's main window to the configured fixed size so that
+            // the WindowRelative coordinates we capture here are reproducible
+            // when this test is replayed on a different monitor/resolution/DPI.
+            // Same call lives in BaseDesktopUiTestAgent at replay time, so the
+            // coord reference frame round-trips exactly.
+            TryNormalizeWindow(targetProcessId, config, logger);
+
             // When the recorder is invoked from a long-running agent process (polling, no
             // recent user input), Windows' SetForegroundWindow restrictions cause the newly
             // launched app to open behind the browser/console — the user never sees it.
@@ -395,36 +454,120 @@ public static class DesktopRecorder
                     {
                         try
                         {
-                            // Check if the click is on the target app (not our control panel)
+                            // Check if the click is on the target app (not our control panel).
+                            // Two filters in series so neither alone has to be perfect:
+                            //   1. Foreground-window process must match — fast, but lies during
+                            //      focus transitions (clicking a different app fires the hook
+                            //      *before* Windows updates the foreground window).
+                            //   2. Cursor position must fall inside one of the target process's
+                            //      visible top-level windows — geometry doesn't lie. Catches
+                            //      clicks that slip through (1)'s race window onto PowerShell,
+                            //      Explorer, the recorder's own console, etc.
                             var fgWnd = GetForegroundWindow();
                             GetWindowThreadProcessId(fgWnd, out var fgProcId);
 
-                            if (fgProcId == targetProcessId)
+                            GetCursorPos(out var pt);
+                            var clickOnTarget =
+                                fgProcId == targetProcessId
+                                && IsPointInsideProcessWindow(targetProcessId, pt.X, pt.Y);
+
+                            if (!clickOnTarget)
+                            {
+                                // Promoted to Information so the user can see exactly which
+                                // clicks the recorder rejected and why. Default log level
+                                // hides Debug, leaving silent drops invisible — that has
+                                // already cost hours of "missing-step" debugging.
+                                logger.LogInformation(
+                                    "[DesktopRecorder] DROP click at ({X},{Y}) — not on target (fgPid={FgPid}, targetPid={Pid}, fgMatches={FgOk}, insideRect={Inside})",
+                                    pt.X, pt.Y, fgProcId, targetProcessId,
+                                    fgProcId == targetProcessId,
+                                    IsPointInsideProcessWindow(targetProcessId, pt.X, pt.Y));
+                            }
+                            else
                             {
                                 FlushKeyBuffer();
 
-                                GetCursorPos(out var pt);
-                                var element = automation.FromPoint(new System.Drawing.Point(pt.X, pt.Y));
+                                FlaUI.Core.AutomationElements.AutomationElement? element = null;
+                                try
+                                {
+                                    element = automation.FromPoint(new System.Drawing.Point(pt.X, pt.Y));
+                                }
+                                catch (Exception ex)
+                                {
+                                    logger.LogInformation(
+                                        "[DesktopRecorder] FromPoint threw at ({X},{Y}): {Msg} — falling back to coord-only capture",
+                                        pt.X, pt.Y, ex.Message);
+                                }
 
+                                // Skip non-interactive chrome (TitleBar drag, ScrollBar thumb,
+                                // etc.) — those aren't meaningful test interactions even when
+                                // they fall inside the app's window rect. Everything else is
+                                // captured, including null FromPoint results AND elements that
+                                // throw NotSupportedException on property access — owner-drawn
+                                // grid rows commonly aren't fully exposed to UIA, but the
+                                // user's click on a row pixel is still a real interaction
+                                // that needs to be replayed.
+                                bool isChromeOrSystem = false;
                                 if (element is not null)
                                 {
-                                    // Skip non-interactive chrome and system UI elements
-                                    if (IsWindowChrome(element) || IsSystemElement(element))
+                                    try { isChromeOrSystem = IsWindowChrome(element) || IsSystemElement(element); }
+                                    catch { /* property read may throw — treat as not-chrome */ }
+                                }
+
+                                if (isChromeOrSystem)
+                                {
+                                    var ctName = "";
+                                    try { ctName = element!.Properties.ControlType.ValueOrDefault.ToString(); } catch { }
+                                    logger.LogInformation(
+                                        "[DesktopRecorder] DROP click at ({X},{Y}) — chrome/system element ({Ct})",
+                                        pt.X, pt.Y, ctName);
+                                }
+                                else
+                                {
+                                    // Refine: if FromPoint landed on a generic container (ToolBar /
+                                    // Pane / Group / Custom), look for a specific actionable child
+                                    // (Button, MenuItem, Hyperlink, CheckBox, DataItem, ListItem,
+                                    // TreeItem) whose rect contains the click pixel and use that
+                                    // instead. This catches:
+                                    //  • Disabled buttons that UIA hit-test skips → returns parent ToolBar
+                                    //  • Grid rows in well-behaved grids that expose DataItem children
+                                    //
+                                    // ANY exception during refine / property-read collapses to
+                                    // coord-only capture so the click is never lost. Owner-drawn
+                                    // grid rows have been seen to throw NotSupportedException
+                                    // when BuildSelector reads their properties — this used to
+                                    // crash out of the hook callback entirely and silently drop
+                                    // the click, leaving "fill REVERSE" jumping straight to the
+                                    // toolbar Open click with no row selection between them.
+                                    DesktopUiStep selector;
+                                    if (element is not null)
                                     {
-                                        // Skip — not a target app interaction
+                                        try
+                                        {
+                                            var refined = RefineContainerHit(element, pt.X, pt.Y, logger);
+                                            selector = DesktopElementResolver.BuildSelector(refined, mainWindow);
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            selector = new DesktopUiStep();
+                                            logger.LogInformation(
+                                                "[DesktopRecorder] Coord-only capture at ({X},{Y}) — UIA property access threw: {Msg}",
+                                                pt.X, pt.Y, ex.Message);
+                                            element = null; // don't use this element for focus tracking
+                                        }
                                     }
                                     else
                                     {
-                                    // Refine: if FromPoint landed on a generic container (ToolBar /
-                                    // Pane / Group / Custom), look for a specific actionable child
-                                    // (Button, MenuItem, Hyperlink, CheckBox) whose rect contains the
-                                    // click pixel and use that instead. This catches cases where the
-                                    // user clicked a *disabled* button — UIA hit-testing skips disabled
-                                    // elements and returns the parent, which makes the recorded step a
-                                    // no-op at replay. Refining to the child captures the intended
-                                    // Name / AutomationId / ControlType.
-                                    var refined = RefineContainerHit(element, pt.X, pt.Y, logger);
-                                    var selector = DesktopElementResolver.BuildSelector(refined, mainWindow);
+                                        // Coord-only capture — owner-drawn grid rows, custom-drawn
+                                        // controls, and other non-UIA-exposed surfaces land here.
+                                        // Replay is coord-first anyway, so an empty-selector step
+                                        // with valid WindowRelativeX/Y still clicks the right pixel.
+                                        selector = new DesktopUiStep();
+                                        logger.LogInformation(
+                                            "[DesktopRecorder] Coord-only capture at ({X},{Y}) — element not exposed to UIA",
+                                            pt.X, pt.Y);
+                                    }
+
                                     var action = msg switch
                                     {
                                         WM_RBUTTONDOWN => "right-click",
@@ -461,20 +604,35 @@ public static class DesktopRecorder
                                     lastStepUtc = now;
 
                                     steps.Add(selector);
-                                    logger.LogDebug("[DesktopRecorder] Captured {Action}: {Id}",
-                                        action, selector.AutomationId ?? selector.Name ?? selector.TreePath);
+                                    logger.LogInformation("[DesktopRecorder] Captured {Action}: {Id} at rel=({Rx},{Ry})",
+                                        action,
+                                        selector.AutomationId ?? selector.Name ?? selector.TreePath ?? "(coord-only)",
+                                        selector.WindowRelativeX, selector.WindowRelativeY);
 
-                                    // Update tracking
-                                    lastClickedElement = element;
-                                    currentFocusedElement = element;
-                                    currentFocusSelector = DesktopElementResolver.BuildSelector(element, mainWindow);
-                                    // Carry the click's window-relative coords onto the focus
-                                    // selector so a subsequent fill step (built from this
-                                    // selector when the user types) can locate the field by
-                                    // hit-testing instead of an ambiguous Name match.
-                                    currentFocusSelector.WindowRelativeX = selector.WindowRelativeX;
-                                    currentFocusSelector.WindowRelativeY = selector.WindowRelativeY;
-                                    } // end else (non-chrome click)
+                                    // Update tracking — only when we have a real element to remember.
+                                    // A coord-only click can't anchor a subsequent fill step (no
+                                    // selector to attach), and we don't want to reset focus to
+                                    // nothing — the previous focus may still be the right text
+                                    // field for any keyboard input that follows. Property access
+                                    // on the focus selector is also wrapped — same NotSupported
+                                    // failure mode as the click selector above.
+                                    if (element is not null)
+                                    {
+                                        try
+                                        {
+                                            currentFocusSelector = DesktopElementResolver.BuildSelector(element, mainWindow);
+                                            currentFocusSelector.WindowRelativeX = selector.WindowRelativeX;
+                                            currentFocusSelector.WindowRelativeY = selector.WindowRelativeY;
+                                            lastClickedElement = element;
+                                            currentFocusedElement = element;
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            logger.LogDebug(
+                                                "[DesktopRecorder] Skipped focus tracking for clicked element: {Msg}",
+                                                ex.Message);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -658,6 +816,9 @@ public static class DesktopRecorder
             var lastStepCount = 0;
             var loopSw = Stopwatch.StartNew();
             var timeoutMs = 15 * 60 * 1000; // 15 minutes
+            // Throttle window normalization to once per second — cheap, but no
+            // need to scan EnumWindows on every 50ms tick.
+            var lastNormalizeMs = 0L;
 
             while (!stopSignal.Task.IsCompleted && loopSw.ElapsedMilliseconds < timeoutMs)
             {
@@ -671,6 +832,17 @@ public static class DesktopRecorder
                 {
                     TranslateMessage(ref msg);
                     DispatchMessage(ref msg);
+                }
+
+                // Re-normalize periodically. The post-login main form is a
+                // brand-new window that often comes up maximized at the app's
+                // saved size — without this, recorded coords on the main form
+                // would revert to being window-specific. The normalizer is a
+                // no-op when the largest window is already at target size.
+                if (loopSw.ElapsedMilliseconds - lastNormalizeMs >= 1000)
+                {
+                    TryNormalizeWindow(targetProcessId, config, logger);
+                    lastNormalizeMs = loopSw.ElapsedMilliseconds;
                 }
 
                 // Check if a new step was added and we have a pending assertion

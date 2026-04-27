@@ -131,6 +131,16 @@ public class TestEnvironmentConfig
     public string? WinFormsScreenshotDir { get; set; }
     public bool WinFormsCloseAppBetweenTests { get; set; } = true;
 
+    // Window-size normalization: forces the app's main window to a known
+    // (width, height) at launch and on every detected window transition (e.g.
+    // login → main form). Both the recorder and replay engine apply identical
+    // normalization, so window-relative click coordinates are portable across
+    // monitors / resolutions / DPI settings. Set NormalizeWindow=false to
+    // honour whatever size the app picks for itself (legacy behaviour).
+    public bool WinFormsNormalizeWindow { get; set; } = true;
+    public int WinFormsWindowWidth { get; set; } = 1600;
+    public int WinFormsWindowHeight { get; set; } = 900;
+
     // --- Data teardown (per-test-set SQL DELETE statements) ---
     // Global fallback opt-in: applied when an EnvironmentConfig block leaves
     // DataTeardownEnabled unset (null). Defaults to false so legacy configs

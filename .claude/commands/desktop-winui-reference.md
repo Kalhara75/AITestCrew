@@ -21,9 +21,11 @@ This is a **read-only reference** — do not modify this file as part of a task.
 | `src/AiTestCrew.Agents/DesktopUiBase/DesktopRecorder.cs` | Recording — hooks, message pump, click/keyboard capture, Ctrl+V, assertion pick mode |
 | `src/AiTestCrew.Agents/DesktopUiBase/DesktopStepExecutor.cs` | Replay — action dispatch, multi-strategy click, polling assertions, element search |
 | `src/AiTestCrew.Agents/DesktopUiBase/DesktopElementResolver.cs` | Selector building (recording) + cascading element lookup (replay) |
-| `src/AiTestCrew.Agents/DesktopUiBase/BaseDesktopUiTestAgent.cs` | Agent base — app lifecycle, two-phase LLM generation, test case execution loop |
+| `src/AiTestCrew.Agents/DesktopUiBase/DesktopWindowNormalizer.cs` | Forces app's main window to a fixed size at record + replay so coords round-trip across monitors / DPI / resolutions |
+| `src/AiTestCrew.Agents/DesktopUiBase/BaseDesktopUiTestAgent.cs` | Agent base — app lifecycle, two-phase LLM generation, test case execution loop, calls normalizer post-launch + per-step |
 | `src/AiTestCrew.Agents/DesktopUiBase/DesktopAutomationTools.cs` | Semantic Kernel plugin for LLM exploration (snapshot, click, fill, screenshot) |
 | `src/AiTestCrew.Agents/WinFormsUiAgent/WinFormsUiTestAgent.cs` | Concrete agent — config wiring, `CanHandleAsync` for `UI_Desktop_WinForms` |
+| `src/AiTestCrew.Agents/Environment/StepParameterSubstituter.cs` | Clones `DesktopUiStep` for `{{Token}}` substitution — **must copy every field** including coords/delay (see schema-change checklist) |
 | `src/AiTestCrew.Agents/Shared/DesktopUiTestCase.cs` | `DesktopUiTestCase` + `DesktopUiStep` models |
 | `src/AiTestCrew.Agents/Shared/DesktopUiTestDefinition.cs` | Persistence model with `FromTestCase`/`ToTestCase` converters |
 | `ui/src/components/DesktopUiTestCaseTable.tsx` | React table listing desktop test cases |
@@ -55,6 +57,62 @@ Meanwhile, **WinForms always processes raw mouse input at the pixel level** rega
 | Stale `TreePath` | Tree shifts after login / MDI | Pixel click doesn't use the tree |
 
 UIA tree lookup is still the fallback for pre-existing recordings that have no `WindowRelativeX`/`Y`.
+
+---
+
+## Window-size normalization — make recordings portable across monitors
+
+Without normalization, recorded coords are tied to the monitor they were recorded on. Bravo (and most legacy WinForms apps) remembers its last `Form.WindowState` per user — record on a 5K monitor at 5120×1440, replay on a 1920×1080 office screen, and recorded X coords like `5079` fall off the right edge. The harness *itself* doesn't force maximize; the app does, based on its own saved prefs.
+
+**`DesktopWindowNormalizer.TryNormalize(processId, targetWidth, targetHeight, logger)`** — shared helper that finds the largest visible window owned by the process, un-maximizes it via `ShowWindow(SW_RESTORE)`, and resizes via `SetWindowPos(0, 0, W, H, SWP_NOZORDER | SWP_NOACTIVATE)`. It's idempotent (no-op when already at target ±16 px) and skips windows under 500×400 (login dialogs / transient popups).
+
+Both call sites use the same helper so coords round-trip exactly:
+
+| Caller | When |
+|---|---|
+| `DesktopRecorder.RecordAsync` | Once after main window appears; then once per second inside the polling loop (catches login → main-form transitions, where the main form is a brand-new window that would come up at the app's saved size) |
+| `BaseDesktopUiTestAgent.ExecuteAsync` | After `WaitForAppReady`; after each between-test relaunch; **on every per-step window refresh inside `ExecuteDesktopTestCase`** (catches the same login → main-form transition during replay) |
+
+**Config** (`TestEnvironmentConfig` → `appsettings.json`):
+
+| Key | Default | Purpose |
+|---|---|---|
+| `WinFormsNormalizeWindow` | `true` | Master switch. Set `false` to honour whatever size the app picks. |
+| `WinFormsWindowWidth` | `1600` | Target main-form width in pixels. Should fit the smallest target monitor. |
+| `WinFormsWindowHeight` | `900` | Target main-form height. Leave room for taskbar (~40 px). |
+
+**Pitfall — DPI scaling differences**: even with normalization, if recorder runs at 100% DPI and replay runs at 150%, WinForms scales controls and pixel offsets no longer line up. Match Windows scaling on both machines. The app must also run un-maximized — `WindowState=Maximized` means "fill the monitor" and the saved size is ignored.
+
+---
+
+## The recording filter chain — why clicks get silently dropped
+
+The mouse hook (`DesktopRecorder.cs`, `mouseProc`) runs every click through this chain. Each filter has its own log line at `Information` level — when a click goes "missing", read the filter logs first, never guess.
+
+| # | Filter | Log line on reject | Reason it exists |
+|---|---|---|---|
+| 1 | `fgProcId == targetProcessId` (foreground process must be the target app) | `DROP click — not on target (fgMatches=False, ...)` | Cheap process check. Lies during focus-change races (the click that activates a window fires the hook *before* the OS updates fg). |
+| 2 | `IsPointInsideProcessWindow(targetProcessId, x, y)` (cursor must fall inside one of the target process's visible top-level windows) | `DROP click — not on target (insideRect=False, ...)` | Geometry doesn't lie. Closes the focus-race gap — even if `GetForegroundWindow` says target, geometry confirms the click really landed on it. |
+| 3 | `automation.FromPoint(point)` exception | `FromPoint threw at (X,Y): ... — falling back to coord-only capture` | Some legacy controls throw COMException from FromPoint. Falls through to coord-only. |
+| 4 | `IsWindowChrome(element)` (TitleBar / ScrollBar / Thumb) | `DROP click — chrome/system element (TitleBar)` | Drag-resize, scroll-thumb-drag aren't meaningful test interactions. |
+| 5 | `IsSystemElement(element)` (taskbar `TaskListButton`, `Shell_*` shell tray, UWP `*!App` peers) | `DROP click — chrome/system element (...)` | Catches taskbar clicks that slip through process-id checks. |
+| 6 | `RefineContainerHit + BuildSelector` exception (e.g. `NotSupportedException` from owner-drawn grid rows) | `Coord-only capture — UIA property access threw: ...` | Owner-drawn surfaces (Infragistics UltraGrid rows, DevExpress cells, custom controls) often expose enough to UIA for `FromPoint` to return *something*, but `Properties.AutomationId.ValueOrDefault` or `BuildTreePath`'s parent-walk throws. **Without this catch the click was lost forever** — outer hook catch swallowed the entire callback. |
+| 7 | `FromPoint` returned `null` → coord-only capture | `Coord-only capture — element not exposed to UIA` | True null hit-test result. Owner-drawn grid rows in some grids return null entirely. |
+| ✓ | Captured normally | `Captured click: <id> at rel=(X,Y)` | Element resolved cleanly. |
+
+**Critical invariant**: every click on the target app produces exactly one log line at `Information` level. If the user reports "missing click" and you don't see *any* line for that click, the OS-level mouse hook didn't fire — different problem entirely (message pump issue, or click happened before/after recorder window).
+
+### Coord-only capture — the universal fallback
+
+When element resolution can't produce a useful selector (null FromPoint, exception, etc.), the recorder still creates a `DesktopUiStep` with:
+- Empty `AutomationId` / `Name` / `ClassName` / `ControlType` / `TreePath`
+- Populated `WindowRelativeX` / `WindowRelativeY`
+- Populated `Action` (`click` / `right-click` / `double-click`)
+- Populated `DelayBeforeMs`
+
+At replay, the readiness probe times out (no Name to match), then `Mouse.Click(recorded_screen_x, recorded_screen_y)` fires regardless. WinForms processes the raw mouse input and the underlying control's handler runs — exactly what happened during recording. **Owner-drawn grid rows, custom popups, ribbon items not in the UIA tree all rely on this path.**
+
+Don't add new filters that reject coord-only steps. They look "empty" in the editor but they're load-bearing.
 
 ---
 
@@ -280,9 +338,15 @@ Critical for container elements (Pane, Group) where the visible text lives in a 
 | Coords relative to dropdown popup, not main window | `GetForegroundWindow()` returned the transient popup | Never use `GetForegroundWindow` as the reference; always `FindLargestVisibleWindow` |
 | Clicks fire too fast — search hasn't completed before next click | No inter-step delay | Recorder writes `DelayBeforeMs` (delta from previous step); executor honours it. Cap at 30,000 ms |
 | New `DesktopUiStep` field works on PC but disappears at replay | Docker-hosted WebApi is running older build; `System.Text.Json` silently drops unknown fields on deserialisation before persisting to SQLite | Rebuild the Docker image (`docker compose build && docker compose up -d`) whenever `DesktopUiStep` / `DesktopUiTestDefinition` schema changes. The schema lives in `AiTestCrew.Storage` which is compiled into the WebApi image |
-| Recorded step shows `Name='Invoice Actions' ControlType='ToolBar'` instead of the Button the user clicked | Button was either disabled at click time (UIA hit-test skips disabled) or the click landed a few pixels off the button icon | `RefineContainerHit` in the recorder walks the ToolBar's descendants for any Button/MenuItem/Hyperlink/CheckBox/SplitButton whose `BoundingRectangle` contains the click pixel and captures that instead. If the child button doesn't exist in the UIA tree at all (Infragistics custom ribbon), the recorder can't do better — coord-first replay compensates |
+| Recorded step shows `Name='Invoice Actions' ControlType='ToolBar'` instead of the Button the user clicked | Button was either disabled at click time (UIA hit-test skips disabled) or the click landed a few pixels off the button icon | `RefineContainerHit` in the recorder walks the ToolBar's descendants for any Button/MenuItem/Hyperlink/CheckBox/SplitButton/RadioButton/**DataItem/ListItem/TreeItem** whose `BoundingRectangle` contains the click pixel and captures that instead. If the child button doesn't exist in the UIA tree at all (Infragistics custom ribbon), the recorder can't do better — coord-first replay compensates |
 | Replay hits the wrong "Open" button (name collision) | Multiple buttons share the name; `FindFirstDescendant(ByName)` returns the first one | Coord-first: `Mouse.Click` at the recorded pixel is unambiguous by definition |
 | `FromPoint` hits wrong element at replay (e.g. grid row instead of menu item) | Menu wasn't open at replay because a preceding step (container click) did nothing | Inspect `[DesktopStepExecutor] FromPoint(...) hit Ct='X' Name='Y' (recorded Name='Z')` in the logs. If hit differs from recorded, the UI state upstream is wrong — usually a missing `DelayBeforeMs` or a recorded click on a generic container — the fix is at the recording, not the executor |
+| Recording test on a smaller monitor than where it was recorded fails with "Element not found" or wrong-control clicks; recorded coords like `5079`, `3901` show in the editor | Bravo's `Form.WindowState` was `Maximized` on the original 5K monitor, so the captured window-relative coords belong to a 5120-wide window. The harness doesn't force any size. | Enable `WinFormsNormalizeWindow` (default `true`) and set `WinFormsWindowWidth` / `WinFormsWindowHeight` to a size that fits *every* target monitor. Re-record — coords are then captured against the normalized rect and round-trip everywhere. |
+| Click on PowerShell / recorder console / Explorer gets recorded as a step | Original mouse hook only checked `GetForegroundWindow()`'s process — but `GetForegroundWindow` returns the *previous* foreground during the click that activates a new window (focus-change race) | Filter chain now requires BOTH `fgProcId == targetProcessId` AND `IsPointInsideProcessWindow(targetProcessId, x, y)`. Geometry check closes the focus-race gap. Look for `DROP click — not on target` log line for diagnostics. |
+| Grid row click on owner-drawn grids (Infragistics, DevExpress, Bravo's custom grid) silently missing — no step between fill and the next button click | The mouse hook fires, but `automation.FromPoint` returns null OR `BuildSelector` throws `NotSupportedException` reading properties on the row element. Pre-fix outer hook catch swallowed the entire click without logging. | Coord-only fallback path always captures the click with empty selectors but valid coords. Replay clicks the recorded pixel via `Mouse.Click`. Look for `Coord-only capture at (X,Y) — UIA property access threw: ...` or `... — element not exposed to UIA` in the recorder log. **Do not add filters that reject coord-only steps** — they're load-bearing. |
+| Replay log shows `Coords=(null,null)` on every step but storage clearly has coords like `(387,195)` | `StepParameterSubstituter.Apply` clones `DesktopUiStep` field-by-field for `{{Token}}` substitution and forgot to copy `WindowRelativeX` / `WindowRelativeY` / `DelayBeforeMs`. Triggers whenever the test set has any environment parameters set. | Add new `DesktopUiStep` fields to **both** Apply methods in `StepParameterSubstituter.cs` (one for `DesktopUiTestDefinition`, one for `DesktopUiTestCase`). This file is now in the schema-change checklist. |
+| User reports "still broken" after a fix; latest run timestamp is *before* the latest DLL build timestamp | Long-running Runner / agent process holds an old DLL in memory. `dotnet build` doesn't restart already-running processes. | Kill the process (`taskkill /F /IM AiTestCrew.Runner.exe`) and re-launch. Verify with `ls -la --time-style=full-iso bin/Debug/net8.0-windows/AiTestCrew.Agents.dll` that the DLL is newer than the source change. |
+| Mouse hook log says `Mouse hook error: Specified method is not supported.` and the click is missing | `NotSupportedException` thrown inside the hook callback (most often from `BuildSelector`'s `Properties.X.ValueOrDefault` access on owner-drawn elements). Outer try/catch swallowed it before a step could be added. | Each property-access block inside the hook is now wrapped in its own try/catch; failure falls through to coord-only capture. If a *new* hook-internal exception starts swallowing clicks, add another fine-grained catch around the throwing operation rather than fixing the symptom downstream. |
 
 ---
 
@@ -290,17 +354,73 @@ Critical for container elements (Pane, Group) where the visible text lives in a 
 
 Use this before making any code change when a test fails. It prevents whack-a-mole patching.
 
-1. **Look at the per-step `[DesktopStepExecutor] click step — Name='X' Aid='Y' Coords=(N,M)` line** for each failing step:
-   - `Coords=(null,null)` → recorder didn't capture coords. Either the recording pre-dates the feature, or `FindLargestVisibleWindow` returned 0 at record time (rare — process has no visible window). Re-record.
-   - `Coords=(huge_X, ...)` → the coord reference is wrong. Verify recorder and executor both use `FindLargestVisibleWindow`; check for regressions to `Process.MainWindowHandle` or `GetForegroundWindow`.
-2. **Look at the `FromPoint(X,Y) hit Ct='C' Name='N' (recorded Name='R') match=yes/no` line.**
-   - `match=yes` → the right element is under the click pixel at replay. If the click doesn't fire the expected action, the step captured the wrong element at record time (typically a `ToolBar`/`Pane` container when the user intended a child button). Inspect the step's `ControlType`: if it's `ToolBar`/`Pane`/`Group`/`Custom`, re-record clicking squarely on the intended control.
-   - `match=no` (timeout) → the UI isn't in the expected state at this point of the test. Something upstream didn't happen: a menu didn't open, a search didn't complete, a dialog didn't appear. Usually fixed by increasing `DelayBeforeMs` on the preceding step or adding an intermediate step that was missed during recording.
-3. **Check recording quality in the UI editor** (`EditDesktopUiTestCaseDialog`):
-   - Every click should have `Coords` populated.
-   - `ControlType` should ideally be a specific actionable type (`Button`/`Hyperlink`/`MenuItem`/`CheckBox`), not a container.
-   - `DelayBeforeMs` should reflect reality — if a step fires right after a search button click, expect 5,000–15,000 ms here; if less, re-record with a natural pause.
-4. **Check the Docker image version.** If you added a field to `DesktopUiStep` and values are arriving as `null` at the agent despite being captured correctly, the Docker-hosted WebApi is an older build stripping them. Rebuild the image.
+### Step 0 — verify the deployed binary is current
+
+Before believing *any* user report of "still broken":
+
+```bash
+ls -la --time-style=full-iso \
+  C:/MyCode/github/AITestCrew/src/AiTestCrew.Runner/bin/Debug/net8.0-windows/AiTestCrew.Agents.dll \
+  C:/MyCode/github/AITestCrew/src/AiTestCrew.Agents/DesktopUiBase/DesktopRecorder.cs
+```
+
+DLL mtime must be ≥ source mtime, AND the process running the test must have started *after* that DLL was built. Long-running agent processes (`--agent` mode) hold the old DLL in memory until killed:
+
+```bash
+taskkill /F /IM AiTestCrew.Runner.exe
+```
+
+If you skip this step you will burn an hour debugging a fix that's already deployed.
+
+### Step 1 — recording-time logs (the recorder console)
+
+Every click on the target app produces exactly one `Information`-level log line. Find the line for the missing/broken click:
+
+| Log line | Meaning |
+|---|---|
+| `Captured click: <id> at rel=(X,Y)` | OK — element resolved cleanly |
+| `Coord-only capture at (X,Y) — element not exposed to UIA` | OK — `FromPoint` returned null, click captured with coords only |
+| `Coord-only capture at (X,Y) — UIA property access threw: ...` | OK — owner-drawn element threw `NotSupportedException`, click captured with coords only |
+| `FromPoint threw at (X,Y): ... — falling back to coord-only capture` | OK — UIA exception, fell through to coord-only |
+| `DROP click — not on target (fgMatches=False, insideRect=...)` | Filter chain rejected the click. Usually means user clicked outside the app. |
+| `DROP click — chrome/system element (TitleBar)` | Click was on TitleBar / ScrollBar / Thumb / shell tray |
+| **No log line at all for that click** | OS-level mouse hook didn't fire. Different problem — message pump issue, or click happened before/after the recording window |
+
+### Step 2 — replay-time logs (the test run console)
+
+For each failing step, two log lines tell the whole story:
+
+1. **`[DesktopStepExecutor] click step — Name='X' Aid='Y' Coords=(N,M)`**
+   - `Coords=(null,null)` → either the recording pre-dates coord capture, OR `StepParameterSubstituter` is dropping fields (when the test set has env params set). **Check storage directly via the WebApi** — if storage shows coords but the executor sees null, the substituter is the bug.
+   - `Coords=(huge_X, ...)` → the recording was captured against a much wider window. Either re-record on the target monitor, or enable `WinFormsNormalizeWindow` in config (default `true` on new builds — but old recordings need re-recording).
+
+2. **`FromPoint(X,Y) hit Ct='C' Name='N' (recorded Name='R') match=yes/no`**
+   - `match=yes` → right element under the click pixel at replay. If the click doesn't fire the expected action, the step captured the wrong element at record time (typically a `ToolBar`/`Pane` container when the user intended a child button). Inspect the step's `ControlType`: if it's `ToolBar`/`Pane`/`Group`/`Custom`, re-record clicking squarely on the intended control.
+   - `match=no` (timeout) → the UI isn't in the expected state. Something upstream didn't happen: a menu didn't open, a search didn't complete, a dialog didn't appear. Usually fixed by increasing `DelayBeforeMs` on the preceding step or adding an intermediate step that was missed during recording.
+
+### Step 3 — confirm storage matches the user's experience
+
+If you're not sure whether the user re-recorded with the latest build, query the WebApi directly and inspect the steps:
+
+```bash
+KEY="<api-key-from-appsettings.json>"
+curl -s -H "X-Api-Key: $KEY" \
+  http://localhost:5050/api/modules/<moduleId>/testsets/<testSetId> \
+  | python -c "import json,sys; d=json.load(sys.stdin); ..."
+```
+
+Look for: are coord values 5K-monitor-sized (recording is stale)? Is there a step between `fill X` and `click <button>` (row-select captured)? Does the post-step's `delayBeforeMs` between the suspected actions account for the missing step?
+
+### Step 4 — check recording quality in the UI editor
+
+(`EditDesktopUiTestCaseDialog`):
+- Every click should have `Coords` populated.
+- `ControlType` should ideally be a specific actionable type (`Button`/`Hyperlink`/`MenuItem`/`CheckBox`/`DataItem`), not a container. Empty `ControlType` is fine for legitimate coord-only captures.
+- `DelayBeforeMs` should reflect reality — if a step fires right after a search button click, expect 5,000–15,000 ms here; if less, re-record with a natural pause.
+
+### Step 5 — check the Docker image version
+
+If you added a field to `DesktopUiStep` and values are arriving as `null` at the agent despite being captured correctly, the Docker-hosted WebApi is an older build stripping them. Rebuild the image.
 
 ---
 
@@ -314,8 +434,10 @@ A checklist — forgetting any one of these causes silent round-trip data loss, 
 4. Surface it in the dialog UI if it's human-meaningful.
 5. Update `DesktopRecorder.cs` to populate it at capture time.
 6. Update `DesktopStepExecutor.cs` to honour it at replay time.
-7. **Rebuild the Docker image** (`cd ui && npx vite build && cd .. && docker compose build && docker compose up -d`) — the WebApi hosted there holds the server-side copy of the schema, and `System.Text.Json` will silently drop unknown fields on the way into the SQLite DB without this rebuild.
-8. Re-record any tests whose saved JSON was written by the old WebApi — the field will be `null` on those steps and cannot be back-filled.
+7. **Update both `Apply` overloads in `src/AiTestCrew.Agents/Environment/StepParameterSubstituter.cs`** — one clones `DesktopUiTestDefinition`, one clones `DesktopUiTestCase`. They build a fresh `DesktopUiStep` field-by-field; **any field you forget here gets nulled on every test where the test set has env params set**. The symptom is replay-time `Coords=(null,null)` while storage clearly shows the field populated. This file has caused multi-hour debugging sessions — always update it.
+8. **Rebuild the Docker image** (`cd ui && npx vite build && cd .. && docker compose build && docker compose up -d`) — the WebApi hosted there holds the server-side copy of the schema, and `System.Text.Json` will silently drop unknown fields on the way into the SQLite DB without this rebuild.
+9. **Rebuild AND restart the local Runner** — `dotnet build` updates the DLL but does not restart already-running processes. `taskkill /F /IM AiTestCrew.Runner.exe` then re-launch.
+10. Re-record any tests whose saved JSON was written by the old WebApi — the field will be `null` on those steps and cannot be back-filled.
 
 ---
 
