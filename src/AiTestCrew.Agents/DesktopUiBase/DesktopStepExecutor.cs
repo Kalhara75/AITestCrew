@@ -103,6 +103,12 @@ public static class DesktopStepExecutor
                 case "assert-disabled":
                     return ExecuteAssertEnabled(window, step, automation, logger, label, sw, expectEnabled: false);
 
+                case "assert-count":
+                    return ExecuteAssertCount(window, step, automation, logger, label, sw);
+
+                case "assert-text-ocr":
+                    return ExecuteAssertTextOcr(window, step, logger, label, sw);
+
                 case "wait-for-window":
                     ExecuteWaitForWindow(app, step, logger);
                     break;
@@ -526,30 +532,112 @@ public static class DesktopStepExecutor
         var timeout = Math.Max(step.TimeoutMs, 15_000); // at least 15s for assertions
         var actual = "";
 
+        // Resolve target rect once for coord-based FromPoint translation.
+        var hasCoords = step.WindowRelativeX is int && step.WindowRelativeY is int
+                        && TryGetReferenceRect(window, out _);
+
         // Poll until the expected text appears or timeout expires.
-        // Uses quick single-attempt searches (not the full-retry FindElementAcrossWindows)
-        // so we can re-read the text every 500ms as it changes (e.g. "in progress" → "completed").
+        // Two lookup paths per iteration:
+        //   1. Coord-first FromPoint at recorded screen pos — necessary for owner-drawn
+        //      cells where the step has empty UIA selectors but valid coords. The
+        //      element returned may differ from the one captured at recording time
+        //      (UIA may expose properties at replay that threw at capture, or vice
+        //      versa); ExtractTextFromElement handles both ValuePattern and Name.
+        //   2. Selector-based QuickFindElement — for steps whose selectors uniquely
+        //      identify the target. Used both as primary (legacy / no-coord steps)
+        //      and as a fallback when the FromPoint hit produced no text.
         while (sw.ElapsedMilliseconds < timeout)
         {
-            // Quick search — try all scopes once without retrying
+            actual = "";
+
+            if (hasCoords
+                && TryGetReferenceRect(window, out var refRect)
+                && step.WindowRelativeX is int relX && step.WindowRelativeY is int relY)
+            {
+                try
+                {
+                    var hit = automation.FromPoint(
+                        new System.Drawing.Point(refRect.Left + relX, refRect.Top + relY));
+                    if (hit is not null)
+                    {
+                        actual = GetElementText(hit);
+                        if (string.IsNullOrEmpty(actual))
+                        {
+                            try
+                            {
+                                var parent = hit.Parent;
+                                if (parent is not null) actual = GetElementText(parent);
+                            }
+                            catch { }
+                        }
+                        if (!string.IsNullOrEmpty(actual)
+                            && actual.Contains(expected, StringComparison.OrdinalIgnoreCase))
+                            return TestStep.Pass(label,
+                                $"assert-text passed: coord-FromPoint text '{Truncate(actual, 80)}' contains '{expected}' ({sw.ElapsedMilliseconds}ms)");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogDebug("[DesktopStepExecutor] assert-text: coord FromPoint threw: {Msg}", ex.Message);
+                }
+            }
+
+            // Fallback: selector-based search.
             var element = QuickFindElement(window, step, automation);
             if (element is not null)
             {
-                actual = GetElementText(element);
-                if (actual.Contains(expected, StringComparison.OrdinalIgnoreCase))
+                var t = GetElementText(element);
+                if (string.IsNullOrEmpty(actual)) actual = t;
+                if (!string.IsNullOrEmpty(t)
+                    && t.Contains(expected, StringComparison.OrdinalIgnoreCase))
                     return TestStep.Pass(label,
-                        $"assert-text passed: '{actual}' contains '{expected}' ({sw.ElapsedMilliseconds}ms)");
+                        $"assert-text passed: selector-found text '{Truncate(t, 80)}' contains '{expected}' ({sw.ElapsedMilliseconds}ms)");
             }
 
             Thread.Sleep(500);
         }
 
+        // OCR fallback — only when UIA produced no usable text. Owner-drawn cells
+        // (Bravo's Infragistics-style grids) hit this path: UIA returns an element
+        // but property reads either throw or yield empty strings at replay, even
+        // though they worked at capture-time. The recorded coords point at the
+        // visible cell pixels, so OCR over the same region recovers the text.
+        if (hasCoords && string.IsNullOrEmpty(actual))
+        {
+            try
+            {
+                if (TryGetReferenceRect(window, out var refRect2)
+                    && step.WindowRelativeX is int relX2 && step.WindowRelativeY is int relY2)
+                {
+                    var ocr = new WindowsOcrService(logger);
+                    if (ocr.IsAvailable)
+                    {
+                        var w = step.OcrRegionWidth ?? 200;
+                        var h = step.OcrRegionHeight ?? 40;
+                        var sx = refRect2.Left + relX2 - w / 2;
+                        var sy = refRect2.Top + relY2 - h / 2;
+                        var ocrText = ocr.RecognizeRegion(sx, sy, w, h);
+                        if (!string.IsNullOrEmpty(ocrText)
+                            && ocrText.Contains(expected, StringComparison.OrdinalIgnoreCase))
+                            return TestStep.Pass(label,
+                                $"assert-text passed via OCR fallback: '{Truncate(ocrText, 80)}' contains '{expected}' ({sw.ElapsedMilliseconds}ms)");
+                        if (!string.IsNullOrEmpty(ocrText))
+                            actual = $"(OCR) {ocrText}";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug("[DesktopStepExecutor] assert-text: OCR fallback threw: {Msg}", ex.Message);
+            }
+        }
+
         if (string.IsNullOrEmpty(actual))
             return TestStep.Fail(label, "Element not found for assert-text",
-                $"assert-text failed: element not found ({sw.ElapsedMilliseconds}ms)");
+                $"assert-text failed: no UIA element and no OCR text at recorded coords ({sw.ElapsedMilliseconds}ms)");
 
         return TestStep.Fail(label,
-            $"Expected text containing '{expected}' but got '{actual}'",
+            $"Expected text containing '{expected}' but got '{Truncate(actual, 100)}'",
             $"assert-text failed after {sw.ElapsedMilliseconds}ms");
     }
 
@@ -645,6 +733,191 @@ public static class DesktopStepExecutor
         return TestStep.Fail(label,
             $"Element is {(isEnabled ? "enabled" : "disabled")} (expected {(expectEnabled ? "enabled" : "disabled")})",
             $"assertion failed ({sw.ElapsedMilliseconds}ms)");
+    }
+
+    /// <summary>
+    /// OCR-based text assertion for owner-drawn cells / regions where UIA returns
+    /// no text. OCRs the recorded screen region (defaults to 200×40 px centred on
+    /// the click) and asserts the result contains <see cref="DesktopUiStep.Value"/>.
+    /// Polls every 500 ms until the text appears or <see cref="DesktopUiStep.TimeoutMs"/>
+    /// expires (handles async loaders without explicit waits).
+    /// </summary>
+    private static TestStep ExecuteAssertTextOcr(
+        Window window, DesktopUiStep step, ILogger logger, string label, Stopwatch sw)
+    {
+        var expected = step.Value ?? "";
+        if (string.IsNullOrEmpty(expected))
+            return TestStep.Fail(label, "assert-text-ocr requires Value (expected text)",
+                $"assert-text-ocr failed: empty Value ({sw.ElapsedMilliseconds}ms)");
+
+        if (step.WindowRelativeX is not int relX || step.WindowRelativeY is not int relY)
+            return TestStep.Fail(label,
+                "assert-text-ocr requires recorded coordinates (WindowRelativeX/Y)",
+                $"assert-text-ocr failed: no coords ({sw.ElapsedMilliseconds}ms)");
+
+        if (!TryGetReferenceRect(window, out var refRect))
+            return TestStep.Fail(label, "Cannot resolve main-window rect for OCR translation",
+                $"assert-text-ocr failed: no reference rect ({sw.ElapsedMilliseconds}ms)");
+
+        var width = step.OcrRegionWidth ?? 200;
+        var height = step.OcrRegionHeight ?? 40;
+        var screenX = refRect.Left + relX - width / 2;
+        var screenY = refRect.Top + relY - height / 2;
+
+        var ocr = new WindowsOcrService(logger);
+        if (!ocr.IsAvailable)
+            return TestStep.Fail(label, "OCR engine not available on this machine",
+                $"assert-text-ocr failed: OCR engine missing ({sw.ElapsedMilliseconds}ms). Install a Windows OCR language pack.");
+
+        var timeout = Math.Max(step.TimeoutMs, 5_000);
+        var lastSeen = "";
+
+        while (sw.ElapsedMilliseconds < timeout)
+        {
+            var actual = ocr.RecognizeRegion(screenX, screenY, width, height);
+            lastSeen = actual;
+            if (actual.Contains(expected, StringComparison.OrdinalIgnoreCase))
+                return TestStep.Pass(label,
+                    $"assert-text-ocr passed: OCR='{Truncate(actual, 60)}' contains '{expected}' ({sw.ElapsedMilliseconds}ms)");
+            Thread.Sleep(500);
+        }
+
+        return TestStep.Fail(label,
+            $"Expected text containing '{expected}' but OCR returned '{Truncate(lastSeen, 80)}' over region ({screenX},{screenY}) {width}x{height}",
+            $"assert-text-ocr failed after {sw.ElapsedMilliseconds}ms");
+    }
+
+    private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "...";
+
+    /// <summary>
+    /// Counts the resolved container's UIA descendants matching <see cref="DesktopUiStep.ItemControlType"/>
+    /// (or, when unset, the first non-empty result among DataItem → ListItem → TreeItem).
+    /// Compares to <see cref="DesktopUiStep.Value"/>, which may be a bare integer
+    /// (default comparator <c>=</c>) or a comparator expression: <c>"=2"</c>,
+    /// <c>"&gt;=1"</c>, <c>"&lt;5"</c>, <c>"&gt;0"</c>, <c>"!=0"</c>.
+    /// Polls until the count matches or <see cref="DesktopUiStep.TimeoutMs"/> expires —
+    /// lets searches/loaders finish without a hardcoded wait.
+    /// </summary>
+    private static TestStep ExecuteAssertCount(
+        Window window, DesktopUiStep step, UIA3Automation automation, ILogger logger,
+        string label, Stopwatch sw)
+    {
+        if (!TryParseCountAssertion(step.Value, out var op, out var expected, out var parseErr))
+            return TestStep.Fail(label, parseErr ?? "Bad count expression",
+                $"assert-count failed: invalid Value '{step.Value}' ({sw.ElapsedMilliseconds}ms)");
+
+        var typesToTry = ResolveItemControlTypes(step.ItemControlType);
+        var timeout = Math.Max(step.TimeoutMs, 5_000);
+        var lastCount = -1;
+        FlaUI.Core.Definitions.ControlType lastType = default;
+
+        while (sw.ElapsedMilliseconds < timeout)
+        {
+            // Resolve the container fresh each poll — coord-first, then UIA cascade.
+            var container = TryFindWithFallback(window, step, automation, logger);
+            if (container is not null)
+            {
+                foreach (var ct in typesToTry)
+                {
+                    int count;
+                    try
+                    {
+                        var matches = container.FindAllDescendants(
+                            container.ConditionFactory.ByControlType(ct));
+                        count = matches.Length;
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogDebug("[DesktopStepExecutor] assert-count: descendant scan threw for {Ct}: {Msg}",
+                            ct, ex.Message);
+                        count = -1;
+                    }
+
+                    if (count >= 0)
+                    {
+                        lastCount = count;
+                        lastType = ct;
+                        if (CountMatches(op, count, expected))
+                            return TestStep.Pass(label,
+                                $"assert-count passed: {count} {ct} descendants {op} {expected} ({sw.ElapsedMilliseconds}ms)");
+                        // If the user explicitly named a single ItemControlType,
+                        // don't keep trying other types — the verdict for this
+                        // type IS the verdict.
+                        if (typesToTry.Count == 1) break;
+                    }
+                }
+            }
+
+            Thread.Sleep(300);
+        }
+
+        if (lastCount < 0)
+            return TestStep.Fail(label, "Could not resolve container or count descendants",
+                $"assert-count failed: no descendant scan succeeded ({sw.ElapsedMilliseconds}ms)");
+
+        return TestStep.Fail(label,
+            $"Expected count {op} {expected}, got {lastCount} ({lastType})",
+            $"assert-count failed after {sw.ElapsedMilliseconds}ms");
+    }
+
+    /// <summary>
+    /// Parses a count-assertion <c>Value</c> into a comparator + integer.
+    /// Accepts: <c>"2"</c>, <c>"=2"</c>, <c>"&gt;=1"</c>, <c>"&lt;=4"</c>, <c>"&gt;0"</c>,
+    /// <c>"&lt;5"</c>, <c>"!=0"</c>. Whitespace tolerated.
+    /// </summary>
+    private static bool TryParseCountAssertion(string? value, out string op, out int expected, out string? error)
+    {
+        op = "="; expected = 0; error = null;
+        var s = (value ?? "").Trim();
+        if (s.Length == 0) { error = "assert-count requires Value (expected count)"; return false; }
+
+        // Longest operators first so '>=' isn't shadowed by '>'.
+        string[] ops = { ">=", "<=", "!=", "==", "=", ">", "<" };
+        foreach (var candidate in ops)
+        {
+            if (s.StartsWith(candidate, StringComparison.Ordinal))
+            {
+                op = candidate == "==" ? "=" : candidate;
+                s = s[candidate.Length..].Trim();
+                break;
+            }
+        }
+        if (!int.TryParse(s, out expected))
+        {
+            error = $"assert-count Value must be an integer (optionally prefixed with =, >, >=, <, <=, !=) — got '{value}'";
+            return false;
+        }
+        return true;
+    }
+
+    private static bool CountMatches(string op, int actual, int expected) => op switch
+    {
+        "="  => actual == expected,
+        "!=" => actual != expected,
+        ">"  => actual >  expected,
+        ">=" => actual >= expected,
+        "<"  => actual <  expected,
+        "<=" => actual <= expected,
+        _    => actual == expected
+    };
+
+    /// <summary>
+    /// Returns the ordered list of UIA control types to count for an
+    /// <c>assert-count</c> step. Honours an explicit <see cref="DesktopUiStep.ItemControlType"/>
+    /// when provided; otherwise tries the common row types in order.
+    /// </summary>
+    private static List<FlaUI.Core.Definitions.ControlType> ResolveItemControlTypes(string? itemControlType)
+    {
+        if (!string.IsNullOrWhiteSpace(itemControlType)
+            && Enum.TryParse<FlaUI.Core.Definitions.ControlType>(itemControlType, true, out var explicitCt))
+            return new List<FlaUI.Core.Definitions.ControlType> { explicitCt };
+
+        return new List<FlaUI.Core.Definitions.ControlType>
+        {
+            FlaUI.Core.Definitions.ControlType.DataItem,
+            FlaUI.Core.Definitions.ControlType.ListItem,
+            FlaUI.Core.Definitions.ControlType.TreeItem,
+        };
     }
 
     // ─────────────────────────────────────────────────────
@@ -910,9 +1183,9 @@ public static class DesktopStepExecutor
             var screenX = refRect.Left + relX;
             var screenY = refRect.Top + relY;
             Mouse.Click(new System.Drawing.Point(screenX, screenY));
-            logger.LogWarning(
-                "[DesktopStepExecutor] UIA resolution failed for '{Sel}' — clicked at recorded coordinates screen=({X},{Y}) rel=({Rx},{Ry}) ref=({RefL},{RefT})",
-                step.AutomationId ?? step.Name ?? step.TreePath ?? "(none)",
+            logger.LogDebug(
+                "[DesktopStepExecutor] coord-click for '{Sel}' at screen=({X},{Y}) rel=({Rx},{Ry}) ref=({RefL},{RefT})",
+                step.AutomationId ?? step.Name ?? step.TreePath ?? "(coord-only)",
                 screenX, screenY, relX, relY, refRect.Left, refRect.Top);
             return true;
         }

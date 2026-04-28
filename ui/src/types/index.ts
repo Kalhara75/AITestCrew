@@ -72,6 +72,16 @@ export interface DesktopUiStep {
   windowRelativeY: number | null;
   /** Recorded pause (ms) before this step during recording — honoured at replay. */
   delayBeforeMs: number | null;
+  /**
+   * For assert-count: which UIA ControlType to count among the resolved
+   * element's descendants (e.g. "DataItem", "ListItem", "TreeItem", "Button").
+   * When null/empty, executor tries DataItem → ListItem → TreeItem.
+   */
+  itemControlType: string | null;
+  /** For assert-text-ocr: width (px) of OCR region centred on click. Null = 200. */
+  ocrRegionWidth: number | null;
+  /** For assert-text-ocr: height (px) of OCR region centred on click. Null = 40. */
+  ocrRegionHeight: number | null;
 }
 
 export interface DesktopUiTestDefinition {

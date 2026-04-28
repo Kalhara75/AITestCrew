@@ -336,6 +336,13 @@ public static class DesktopRecorder
         var lastStepUtc = (DateTime?)null;
         var stopSignal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        // OCR service (Windows.Media.Ocr) — used as a fallback in [T] capture
+        // when UIA returns empty text. Owner-drawn grid cells (Bravo's
+        // Infragistics-style grid) are visually rendered but not exposed as
+        // text in the UIA tree, so OCR over the click region is the only way
+        // to capture them.
+        var ocr = new WindowsOcrService(logger);
+
         logger.LogInformation("[DesktopRecorder] Starting recording for '{Name}' — launching {App}",
             caseName, Path.GetFileName(appPath));
 
@@ -767,6 +774,7 @@ public static class DesktopRecorder
             Console.WriteLine("  │    [T] Assert Text  — then click target element      │");
             Console.WriteLine("  │    [V] Assert Visible — then click target element    │");
             Console.WriteLine("  │    [E] Assert Enabled — then click target element    │");
+            Console.WriteLine("  │    [N] Assert Count — then click a grid/list (rows)  │");
             Console.WriteLine("  │    [S] Save & Stop                                   │");
             Console.WriteLine("  └─────────────────────────────────────────────────────┘");
             Console.WriteLine();
@@ -795,6 +803,10 @@ public static class DesktopRecorder
                             case ConsoleKey.E:
                                 pendingAssertType = "assert-enabled";
                                 Console.WriteLine("  → Click the target element to assert enabled state...");
+                                break;
+                            case ConsoleKey.N:
+                                pendingAssertType = "assert-count";
+                                Console.WriteLine("  → Click anywhere on the grid/list to count its rows...");
                                 break;
                             case ConsoleKey.S:
                                 FlushKeyBuffer();
@@ -856,19 +868,77 @@ public static class DesktopRecorder
 
                         if (pendingAssertType == "assert-text")
                         {
-                            // Use the stored element reference directly — re-searching
-                            // via FindElement can fail when mainWindow is stale (after
-                            // navigating through MDI forms, dialogs, etc.)
+                            // 1. Fresh FromPoint at recorded coords + UIA text extraction.
+                            //    `lastClickedElement` is stale for coord-only clicks and
+                            //    can be invalidated when the form reloads.
+                            // 2. If UIA returned nothing AND coords exist AND the OCR
+                            //    engine is available, OCR the click region as a fallback.
+                            //    Owner-drawn grid cells (Bravo's Infragistics-style grid)
+                            //    fall through to this path. When OCR succeeds, we promote
+                            //    the action to `assert-text-ocr` so replay knows to OCR
+                            //    again instead of trying UIA (which would always be empty).
                             try
                             {
-                                var text = ExtractTextFromElement(lastClickedElement);
-                                lastStep.Value = text;
+                                var text = ExtractTextAtClick(lastStep, lastClickedElement, automation, targetProcessId, logger);
                                 if (!string.IsNullOrEmpty(text))
-                                    logger.LogDebug("[DesktopRecorder] Extracted text: '{Text}'", text);
+                                {
+                                    lastStep.Value = text;
+                                    logger.LogInformation("[DesktopRecorder] assert-text: UIA extracted '{Text}'", text);
+                                }
+                                else if (ocr.IsAvailable
+                                    && lastStep.WindowRelativeX is int relX
+                                    && lastStep.WindowRelativeY is int relY)
+                                {
+                                    var (sx, sy, w, h) = OcrRegionAtClick(targetProcessId, relX, relY,
+                                        lastStep.OcrRegionWidth ?? 200,
+                                        lastStep.OcrRegionHeight ?? 40);
+                                    var ocrText = ocr.RecognizeRegion(sx, sy, w, h);
+                                    if (!string.IsNullOrWhiteSpace(ocrText))
+                                    {
+                                        // Promote to OCR-mode so replay uses OCR too.
+                                        lastStep.Action = "assert-text-ocr";
+                                        lastStep.Value = ocrText;
+                                        logger.LogInformation(
+                                            "[DesktopRecorder] assert-text → assert-text-ocr: OCR over ({X},{Y}) {W}x{H} → '{Text}'",
+                                            sx, sy, w, h, ocrText);
+                                    }
+                                    else
+                                    {
+                                        lastStep.Value = "";
+                                        logger.LogWarning(
+                                            "[DesktopRecorder] assert-text: UIA returned empty AND OCR found no text at ({X},{Y}) {W}x{H}. Region may be too small/large, or text colour blends with background. Try widening OcrRegionWidth in the editor.",
+                                            sx, sy, w, h);
+                                    }
+                                }
                                 else
-                                    logger.LogDebug("[DesktopRecorder] No text found on element");
+                                {
+                                    lastStep.Value = "";
+                                    logger.LogWarning(
+                                        "[DesktopRecorder] assert-text: no UIA text and OCR unavailable. Saved with empty Value.");
+                                }
                             }
-                            catch { /* best effort */ }
+                            catch (Exception ex)
+                            {
+                                logger.LogWarning("[DesktopRecorder] assert-text capture failed: {Msg}", ex.Message);
+                            }
+                        }
+                        else if (pendingAssertType == "assert-count")
+                        {
+                            // Walk up from a FRESH FromPoint at the recorded coords (not
+                            // `lastClickedElement` — that's stale across coord-only clicks).
+                            // Stop at the first ancestor whose row-type descendant count is
+                            // grid-sized, not application-sized.
+                            try
+                            {
+                                CaptureCountAssertion(lastStep, lastClickedElement, mainWindow, automation, targetProcessId, logger);
+                            }
+                            catch (Exception ex)
+                            {
+                                logger.LogWarning(
+                                    "[DesktopRecorder] assert-count capture failed: {Msg} — saving step with Value=0",
+                                    ex.Message);
+                                lastStep.Value = "0";
+                            }
                         }
 
                         var displayId = lastStep.AutomationId ?? lastStep.Name ?? "(element)";
@@ -1101,6 +1171,207 @@ public static class DesktopRecorder
             }
         }
         catch { }
+
+        return "";
+    }
+
+    /// <summary>
+    /// Resolve a fresh <see cref="FlaUI.Core.AutomationElements.AutomationElement"/>
+    /// at the step's recorded screen position by translating
+    /// <see cref="DesktopUiStep.WindowRelativeX"/>/<see cref="DesktopUiStep.WindowRelativeY"/>
+    /// using the same <c>FindLargestVisibleWindow</c> reference the recorder
+    /// captured against. This avoids relying on a stale
+    /// <c>lastClickedElement</c> reference (which never updates for coord-only
+    /// clicks and may be invalidated when the underlying form reloads).
+    /// Returns <c>null</c> if coords are missing or <c>FromPoint</c> fails.
+    /// </summary>
+    private static FlaUI.Core.AutomationElements.AutomationElement? FreshHitFromStep(
+        DesktopUiStep step, UIA3Automation automation, uint targetProcessId)
+    {
+        if (step.WindowRelativeX is not int relX || step.WindowRelativeY is not int relY)
+            return null;
+        var hwnd = FindLargestVisibleWindow(targetProcessId);
+        if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var rect))
+            return null;
+        try
+        {
+            return automation.FromPoint(new System.Drawing.Point(rect.Left + relX, rect.Top + relY));
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Walk up from <paramref name="start"/> looking for the first ancestor
+    /// whose descendants include row-type elements. Returns
+    /// <c>(container, count, controlType)</c> on success, or
+    /// <c>(null, 0, default)</c> when no row-like descendants are found
+    /// within <paramref name="maxDepth"/> ancestors.
+    /// </summary>
+    private static (FlaUI.Core.AutomationElements.AutomationElement? Container, int Count, FlaUI.Core.Definitions.ControlType Type)
+        FindFirstRowAncestor(
+            FlaUI.Core.AutomationElements.AutomationElement? start,
+            int maxDepth)
+    {
+        var rowTypes = new[]
+        {
+            FlaUI.Core.Definitions.ControlType.DataItem,
+            FlaUI.Core.Definitions.ControlType.ListItem,
+            FlaUI.Core.Definitions.ControlType.TreeItem,
+        };
+
+        var current = start;
+        for (var depth = 0; depth < maxDepth && current is not null; depth++)
+        {
+            foreach (var rt in rowTypes)
+            {
+                int count;
+                try
+                {
+                    count = current.FindAllDescendants(
+                        current.ConditionFactory.ByControlType(rt)).Length;
+                }
+                catch { continue; }
+
+                // Stop at the FIRST ancestor with any row descendants — that's
+                // the closest grid. Walking further up will keep finding more
+                // rows from sibling grids and inflate the count to "every row
+                // in the application" (the original 80-instead-of-2 bug).
+                if (count > 0) return (current, count, rt);
+            }
+            try { current = current.Parent; } catch { break; }
+        }
+        return (null, 0, default);
+    }
+
+    /// <summary>
+    /// Capture a row-count assertion. Strategy:
+    /// 1. Fresh <c>FromPoint</c> at the recorded click coords — primary truth source.
+    /// 2. Walk up from there looking for the first ancestor with row descendants.
+    /// 3. Falls back to <paramref name="clicked"/> only when (1) fails entirely.
+    /// </summary>
+    private static void CaptureCountAssertion(
+        DesktopUiStep step,
+        FlaUI.Core.AutomationElements.AutomationElement? clicked,
+        Window mainWindow,
+        UIA3Automation automation,
+        uint targetProcessId,
+        ILogger logger)
+    {
+        var fresh = FreshHitFromStep(step, automation, targetProcessId);
+        var startElement = fresh ?? clicked;
+
+        if (startElement is null)
+        {
+            step.Value = "0";
+            logger.LogWarning(
+                "[DesktopRecorder] assert-count: no element at recorded click — saved Value=0, fill in grid selectors manually");
+            return;
+        }
+
+        var (container, count, type) = FindFirstRowAncestor(startElement, maxDepth: 8);
+
+        if (container is null)
+        {
+            step.Value = "0";
+            logger.LogWarning(
+                "[DesktopRecorder] assert-count: no row-like descendants found within 8 ancestors of the click — grid is likely owner-drawn (rows not in UIA tree). Saved Value=0; needs OCR or a different counting strategy.");
+            return;
+        }
+
+        // Rewrite selectors to point at the container we found. BuildSelector
+        // can throw (NotSupportedException) on partially-exposed elements;
+        // when it does, leave the existing click selectors and keep just the
+        // count + ItemControlType — replay's coord-first lookup will still
+        // hit-test inside the grid via the recorded coords.
+        try
+        {
+            var containerSelector = DesktopElementResolver.BuildSelector(container, mainWindow);
+            step.AutomationId = containerSelector.AutomationId;
+            step.Name = containerSelector.Name;
+            step.ClassName = containerSelector.ClassName;
+            step.ControlType = containerSelector.ControlType;
+            step.TreePath = containerSelector.TreePath;
+        }
+        catch (Exception ex)
+        {
+            logger.LogInformation(
+                "[DesktopRecorder] assert-count: container BuildSelector threw ({Msg}) — keeping click-target selectors, replay falls back to coords",
+                ex.Message);
+        }
+
+        step.Value = count.ToString();
+        step.ItemControlType = type.ToString();
+
+        logger.LogInformation(
+            "[DesktopRecorder] assert-count: captured {Count} {Type} descendants in nearest grid ancestor (Ct='{Ct}' Aid='{Aid}' Name='{Name}')",
+            count, type,
+            step.ControlType ?? "", step.AutomationId ?? "", step.Name ?? "");
+    }
+
+    /// <summary>
+    /// Translate a window-relative click into a screen-coordinate rectangle
+    /// suitable for OCR, centred on the click pixel. Uses the same
+    /// <c>FindLargestVisibleWindow</c> reference the recorder used at click
+    /// time so the rectangle lands where the user actually clicked.
+    /// </summary>
+    private static (int X, int Y, int W, int H) OcrRegionAtClick(
+        uint targetProcessId, int relX, int relY, int regionWidth, int regionHeight)
+    {
+        var hwnd = FindLargestVisibleWindow(targetProcessId);
+        var refLeft = 0;
+        var refTop = 0;
+        if (hwnd != IntPtr.Zero && GetWindowRect(hwnd, out var rect))
+        {
+            refLeft = rect.Left;
+            refTop = rect.Top;
+        }
+        var screenX = refLeft + relX - regionWidth / 2;
+        var screenY = refTop + relY - regionHeight / 2;
+        return (screenX, screenY, regionWidth, regionHeight);
+    }
+
+    /// <summary>
+    /// Extract text for an <c>assert-text</c> capture. Tries, in order:
+    /// 1. Fresh <c>FromPoint</c> at recorded coords + <see cref="ExtractTextFromElement"/>.
+    /// 2. The fresh hit's parent (in case the cell exposes nothing but its row does).
+    /// 3. Falls back to <paramref name="lastClicked"/> only when fresh hit-test fails.
+    /// Returns empty string when nothing produced text — owner-drawn cells need OCR.
+    /// </summary>
+    private static string ExtractTextAtClick(
+        DesktopUiStep step,
+        FlaUI.Core.AutomationElements.AutomationElement? lastClicked,
+        UIA3Automation automation,
+        uint targetProcessId,
+        ILogger logger)
+    {
+        var fresh = FreshHitFromStep(step, automation, targetProcessId);
+
+        // 1. Fresh hit at click coords.
+        if (fresh is not null)
+        {
+            var t = ExtractTextFromElement(fresh);
+            if (!string.IsNullOrEmpty(t)) return t;
+
+            // 2. Walk up one parent — owner-drawn cells often expose nothing
+            //    but their row may have a Name. (Doesn't help on Bravo's
+            //    fully owner-drawn grid, but it's free.)
+            try
+            {
+                var parent = fresh.Parent;
+                if (parent is not null)
+                {
+                    t = ExtractTextFromElement(parent);
+                    if (!string.IsNullOrEmpty(t)) return t;
+                }
+            }
+            catch { }
+        }
+
+        // 3. Fall back to the stale-but-not-null reference — only useful when
+        //    coords aren't recorded (legacy steps). For modern recordings the
+        //    fresh hit is always preferred.
+        if (fresh is null && lastClicked is not null)
+            return ExtractTextFromElement(lastClicked);
 
         return "";
     }

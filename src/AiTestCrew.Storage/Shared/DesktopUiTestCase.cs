@@ -51,6 +51,14 @@ public class DesktopUiStep
     ///   assert-hidden     — assert element is not visible
     ///   assert-enabled    — assert element is enabled
     ///   assert-disabled   — assert element is disabled
+    ///   assert-count      — assert the resolved container has N descendants of ItemControlType.
+    ///                       Value = expected count or comparator (e.g. "2", ">=1", "&lt;5", "=0").
+    ///                       ItemControlType = which UIA descendant type to count (default tries
+    ///                       DataItem, then ListItem, TreeItem). Captured by the recorder via [N].
+    ///   assert-text-ocr   — OCR the screen region around the recorded coords and assert the
+    ///                       recognised text contains Value. Used for owner-drawn cells where
+    ///                       UIA returns no text. Region size = OcrRegionWidth × OcrRegionHeight
+    ///                       centred on the click pixel (defaults to 200×40).
     ///   wait-for-window   — wait for a window with matching WindowTitle to appear
     ///   switch-window     — set focus to a window matching WindowTitle
     ///   close-window      — close a window matching WindowTitle
@@ -113,6 +121,31 @@ public class DesktopUiStep
 
     /// <summary>Per-step timeout in milliseconds. Defaults to 5000 ms.</summary>
     public int TimeoutMs { get; set; } = 5000;
+
+    /// <summary>
+    /// For <c>assert-count</c>: which UIA <c>ControlType</c> to count among the
+    /// resolved element's descendants. Examples: <c>DataItem</c> (most grids),
+    /// <c>ListItem</c> (list controls / dropdowns), <c>TreeItem</c> (tree views),
+    /// <c>Button</c> (count toolbar buttons), <c>MenuItem</c>, <c>TabItem</c>.
+    /// When null/empty, the executor tries DataItem, then ListItem, then TreeItem
+    /// in order and uses whichever yields a non-zero count.
+    /// Ignored by every other action.
+    /// </summary>
+    public string? ItemControlType { get; set; }
+
+    /// <summary>
+    /// For <c>assert-text-ocr</c>: width (in pixels) of the screen region
+    /// centred on the recorded click that gets OCR'd. When null, the executor
+    /// uses 200. Increase for wide cells / multi-word labels; decrease to
+    /// avoid catching adjacent cell text.
+    /// </summary>
+    public int? OcrRegionWidth { get; set; }
+
+    /// <summary>
+    /// For <c>assert-text-ocr</c>: height (in pixels) of the screen region
+    /// centred on the recorded click. When null, the executor uses 40.
+    /// </summary>
+    public int? OcrRegionHeight { get; set; }
 
     /// <summary>
     /// Screen X of the recorded click, relative to the main window's top-left.

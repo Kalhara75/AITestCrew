@@ -1521,6 +1521,8 @@ dotnet run --project src/AiTestCrew.Runner -- --record --module sdr --testset ca
 | `assert-text` | Assert element's text contains expected value — **polls every 500ms** until text matches or timeout expires (handles async operations like search completion) |
 | `assert-visible` / `assert-hidden` | Assert element visibility (IsOffscreen property) |
 | `assert-enabled` / `assert-disabled` | Assert element enabled state |
+| `assert-count` | Assert N descendants of a chosen UIA `ControlType` exist inside the resolved container. `Value` = expected count or comparator (`"2"`, `">=1"`, `"<5"`, `"!=0"`). `ItemControlType` = which type to count (default tries `DataItem` → `ListItem` → `TreeItem`). Captured by the recorder via the **[N]** key — click anywhere on the grid/list and the recorder walks up to find the container, snapshots the live count, and rewrites the step's selectors to point at the container. |
+| `assert-text-ocr` | OCR the screen region around the recorded click coords (Windows.Media.Ocr — built into Windows, no extra packages or model files) and assert the recognised text contains `Value`. Used for owner-drawn cells / custom-rendered surfaces where UIA returns no text. Region defaults to 200×40 px centred on the click; tune via `OcrRegionWidth` / `OcrRegionHeight`. The recorder auto-promotes a `[T]` capture to `assert-text-ocr` when UIA returns empty text but OCR finds a match — owner-drawn grid cells "just work" without needing a different hotkey. Requires a Windows OCR language pack (en-US is pre-installed on most Windows 10/11 machines). |
 | `wait-for-window` | Wait for a window with matching title to appear |
 | `switch-window` | Set focus to a window matching title |
 | `close-window` | Close a window matching title |

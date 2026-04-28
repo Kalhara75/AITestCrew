@@ -5,6 +5,7 @@ const ACTIONS = [
   'click', 'double-click', 'right-click', 'fill', 'select',
   'check', 'uncheck', 'press', 'hover',
   'assert-text', 'assert-visible', 'assert-hidden', 'assert-enabled', 'assert-disabled',
+  'assert-count', 'assert-text-ocr',
   'wait-for-window', 'switch-window', 'close-window', 'menu-navigate', 'wait',
 ];
 
@@ -14,6 +15,10 @@ const NO_ELEMENT = new Set(['press', 'wait-for-window', 'switch-window', 'close-
 const USES_MENU_PATH = new Set(['menu-navigate']);
 // Actions that use the windowTitle field
 const USES_WINDOW_TITLE = new Set(['wait-for-window', 'switch-window', 'close-window']);
+// Actions that use the itemControlType field (which UIA ControlType to count)
+const USES_ITEM_CONTROL_TYPE = new Set(['assert-count']);
+// Actions that use the OCR region size fields
+const USES_OCR_REGION = new Set(['assert-text-ocr']);
 
 function emptyStep(): DesktopUiStep {
   return {
@@ -21,6 +26,8 @@ function emptyStep(): DesktopUiStep {
     controlType: null, treePath: null, value: null, menuPath: null,
     windowTitle: null, timeoutMs: 5000,
     windowRelativeX: null, windowRelativeY: null, delayBeforeMs: null,
+    itemControlType: null,
+    ocrRegionWidth: null, ocrRegionHeight: null,
   };
 }
 
@@ -158,6 +165,8 @@ export function EditDesktopUiTestCaseDialog({
             const noElement = NO_ELEMENT.has(s.action);
             const showMenu = USES_MENU_PATH.has(s.action);
             const showWindow = USES_WINDOW_TITLE.has(s.action);
+            const showItemCt = USES_ITEM_CONTROL_TYPE.has(s.action);
+            const showOcrRegion = USES_OCR_REGION.has(s.action);
 
             return (
               <div key={i} style={stepBlockStyle}>
@@ -258,6 +267,45 @@ export function EditDesktopUiTestCaseDialog({
                     <input placeholder="Window Title (substring match)" value={s.windowTitle ?? ''}
                       onChange={e => setStep(i, { ...s, windowTitle: e.target.value || null })}
                       style={{ ...inputStyle, flex: 1 }} />
+                  </div>
+                )}
+
+                {/* Row 3: OCR region size (for assert-text-ocr). Value above = expected substring. */}
+                {showOcrRegion && (
+                  <div style={{ ...stepRowStyle, paddingLeft: 34, gap: 6 }}>
+                    <span style={{ flexShrink: 0, fontSize: 12, color: '#64748b' }}>
+                      OCR region (px):
+                    </span>
+                    <input type="number" placeholder="W (default 200)" value={s.ocrRegionWidth ?? ''}
+                      onChange={e => setStep(i, { ...s, ocrRegionWidth: e.target.value === '' ? null : Number(e.target.value) })}
+                      style={{ ...inputStyle, width: 120, flexShrink: 0 }}
+                      title="OCR region width centred on the recorded click pixel" />
+                    <input type="number" placeholder="H (default 40)" value={s.ocrRegionHeight ?? ''}
+                      onChange={e => setStep(i, { ...s, ocrRegionHeight: e.target.value === '' ? null : Number(e.target.value) })}
+                      style={{ ...inputStyle, width: 120, flexShrink: 0 }}
+                      title="OCR region height centred on the recorded click pixel" />
+                    <span style={{ flexShrink: 0, fontSize: 12, color: '#94a3b8' }}>
+                      (Value above = expected substring; widen W if cell text is being clipped)
+                    </span>
+                  </div>
+                )}
+
+                {/* Row 3: ItemControlType (for assert-count). Value field above
+                    holds the expected count or comparator (e.g. "2", ">=1", "<5"). */}
+                {showItemCt && (
+                  <div style={{ ...stepRowStyle, paddingLeft: 34, gap: 6 }}>
+                    <span style={{ flexShrink: 0, fontSize: 12, color: '#64748b' }}>
+                      Item ControlType:
+                    </span>
+                    <input
+                      placeholder="DataItem (auto: tries DataItem, ListItem, TreeItem)"
+                      value={s.itemControlType ?? ''}
+                      onChange={e => setStep(i, { ...s, itemControlType: e.target.value || null })}
+                      style={{ ...inputStyle, flex: 1 }}
+                      title="UIA ControlType to count: DataItem, ListItem, TreeItem, Button, MenuItem, TabItem, etc. Leave empty to auto-try grid row types." />
+                    <span style={{ flexShrink: 0, fontSize: 12, color: '#94a3b8' }}>
+                      (Value above = expected count, e.g. "2" or "&gt;=1")
+                    </span>
                   </div>
                 )}
               </div>

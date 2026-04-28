@@ -9,7 +9,8 @@ This is a **read-only reference** — do not modify this file as part of a task.
 - **FlaUI.UIA3** — .NET wrapper around Windows UI Automation 3 (COM interop)
 - **Windows hooks** — `WH_MOUSE_LL` and `WH_KEYBOARD_LL` via P/Invoke for event capture
 - **Message pump** — `PeekMessage`/`TranslateMessage`/`DispatchMessage` required for hook callbacks
-- **Target framework** — `net8.0-windows` with `UseWindowsForms=true` (for Clipboard access)
+- **Target framework** — `net8.0-windows10.0.19041.0` with `UseWindowsForms=true` and `SupportedOSPlatformVersion=10.0.17763.0`. The `.19041.0` suffix is required for `Windows.Media.Ocr` access (used by `assert-text-ocr` and the auto-OCR fallback inside `assert-text`). All three Windows-bound projects (`Agents`, `Runner`, `WebApi`) target the same TFM — they must, since WebApi references Agents.
+- **OCR engine** — `Windows.Media.Ocr.OcrEngine` (built into Windows; no NuGet package, no model files to ship). Wrapped in `WindowsOcrService`. Requires a Windows OCR language pack at runtime (en-US is preinstalled on most Win10/11; otherwise Settings → Time & Language → Language → Optional features → Optical character recognition).
 - **Global using** — `GlobalUsings.cs` aliases `Application = FlaUI.Core.Application` to resolve ambiguity with `System.Windows.Forms.Application`
 
 ---
@@ -21,8 +22,9 @@ This is a **read-only reference** — do not modify this file as part of a task.
 | `src/AiTestCrew.Agents/DesktopUiBase/DesktopRecorder.cs` | Recording — hooks, message pump, click/keyboard capture, Ctrl+V, assertion pick mode |
 | `src/AiTestCrew.Agents/DesktopUiBase/DesktopStepExecutor.cs` | Replay — action dispatch, multi-strategy click, polling assertions, element search |
 | `src/AiTestCrew.Agents/DesktopUiBase/DesktopElementResolver.cs` | Selector building (recording) + cascading element lookup (replay) |
-| `src/AiTestCrew.Agents/DesktopUiBase/DesktopWindowNormalizer.cs` | Forces app's main window to a fixed size at record + replay so coords round-trip across monitors / DPI / resolutions |
-| `src/AiTestCrew.Agents/DesktopUiBase/BaseDesktopUiTestAgent.cs` | Agent base — app lifecycle, two-phase LLM generation, test case execution loop, calls normalizer post-launch + per-step |
+| `src/AiTestCrew.Agents/DesktopUiBase/DesktopWindowNormalizer.cs` | Forces app's main window to a fixed size at record + replay so coords round-trip across monitors / DPI / resolutions. Also exposes `EnsureForeground(processId)` — used by both recorder and replay agent before each step so coord-based reads (FromPoint, OCR) hit the target window, not whatever drifted on top |
+| `src/AiTestCrew.Agents/DesktopUiBase/WindowsOcrService.cs` | Thin wrapper over `Windows.Media.Ocr.OcrEngine`. `RecognizeRegion(x, y, w, h)` captures screen pixels via `System.Drawing.Graphics.CopyFromScreen` → `Bitmap` → PNG → `SoftwareBitmap` → OCR. Used by `assert-text-ocr` and the auto-OCR fallback inside `assert-text` |
+| `src/AiTestCrew.Agents/DesktopUiBase/BaseDesktopUiTestAgent.cs` | Agent base — app lifecycle, two-phase LLM generation, test case execution loop, calls `NormalizeAppWindow` + `EnsureForeground` per-step |
 | `src/AiTestCrew.Agents/DesktopUiBase/DesktopAutomationTools.cs` | Semantic Kernel plugin for LLM exploration (snapshot, click, fill, screenshot) |
 | `src/AiTestCrew.Agents/WinFormsUiAgent/WinFormsUiTestAgent.cs` | Concrete agent — config wiring, `CanHandleAsync` for `UI_Desktop_WinForms` |
 | `src/AiTestCrew.Agents/Environment/StepParameterSubstituter.cs` | Clones `DesktopUiStep` for `{{Token}}` substitution — **must copy every field** including coords/delay (see schema-change checklist) |
@@ -230,12 +232,16 @@ Clipboard must be read on an STA thread (`Thread.SetApartmentState(ApartmentStat
 
 ### Assertion capture flow
 
-1. User presses T/V/E in console → `pendingAssertType` set
-2. User clicks element in target app → mouse hook fires, step added to `steps` list, `lastClickedElement` stored
+1. User presses T / V / E / N in console → `pendingAssertType` set:
+   - **T** → `assert-text` (UIA text + auto-promoted to `assert-text-ocr` when UIA returns nothing)
+   - **V** → `assert-visible`
+   - **E** → `assert-enabled`
+   - **N** → `assert-count` (row count in a grid/list)
+2. User clicks element in target app → mouse hook fires, step added to `steps` list, `lastClickedElement` stored (only when not coord-only)
 3. Main loop detects `steps.Count > lastStepCount && pendingAssertType != ""`
 4. Converts last step's action from "click" to the assert type
-5. For `assert-text`: calls `ExtractTextFromElement(lastClickedElement)` — uses the **stored element reference**, not a re-search from stale `mainWindow`
-6. Text extraction searches: ValuePattern → Name → children → descendant Text/Edit controls
+5. For `assert-text`: `ExtractTextAtClick` does a **fresh `FromPoint` at the recorded coords** (not the stale `lastClickedElement`, which doesn't update for coord-only clicks and may be invalidated when the form reloads). Text extraction searches: ValuePattern → Name → children → descendant Text/Edit. If empty AND OCR engine available, falls back to OCR over a 200×40 region around the click and **promotes the action to `assert-text-ocr`** so replay uses OCR too.
+6. For `assert-count`: `CaptureCountAssertion` does a fresh `FromPoint` and walks UP the UIA tree, stopping at the **first** ancestor whose descendants include row-type elements (DataItem → ListItem → TreeItem). Stores the live count in `Value` and the matched type in `ItemControlType`. Rewrites the step's selectors to point at the container (the row/cell coords stay for replay readiness probing).
 
 ---
 
@@ -290,7 +296,72 @@ Polls across three scopes with 300ms intervals until timeout:
 
 For assertions, `QuickFindElement` does a **single-attempt** (no retry) across all three scopes. The polling happens in the assertion's own loop, allowing text to be re-read every 500ms.
 
+### Foreground enforcement (every step)
+
+`BaseDesktopUiTestAgent.ExecuteDesktopTestCase` calls `DesktopWindowNormalizer.EnsureForeground` before every step. **Do not remove it.** Clicks naturally bring their target window to focus via the OS, but coord-based reads (`FromPoint`, OCR) capture whatever's topmost at the click pixel — meaning any other window that drifts on top of the target between steps (browser, IDE, notification toast) silently corrupts the read. A real failure mode this caught: the agent OCR'd the user-pill text from the AITestCrew dashboard browser and reported it as the Bravo grid cell's content.
+
+`EnsureForeground` is fast-pathed when the target is already foreground — no Alt-key flicker.
+
 ### Assertion polling (assert-text)
+
+`ExecuteAssertText` is **coord-first** and has a built-in **OCR fallback**:
+
+```
+while (elapsed < timeout):       // minimum 15 seconds
+    if step has coords:
+        hit = FromPoint(screenX, screenY)
+        if hit: text = GetElementText(hit) || GetElementText(hit.Parent)
+        if text contains expected: PASS
+    element = QuickFindElement()  // selector fallback
+    if element: text = GetElementText(element)
+    if text contains expected: PASS
+    sleep 500ms
+
+# UIA loop expired — try OCR over the recorded region
+if step has coords:
+    ocrText = WindowsOcrService.RecognizeRegion(coords ± OcrRegionWidth/Height)
+    if ocrText contains expected: PASS via OCR fallback
+
+return FAIL with last-seen text
+```
+
+This means owner-drawn cells "just work" without users needing to manually edit to `assert-text-ocr`. The explicit `assert-text-ocr` action is only needed when you want to force OCR (e.g. UIA returns *wrong* text rather than empty text).
+
+### Assertion polling (assert-text-ocr)
+
+```
+ocrEngine = new WindowsOcrService(logger)
+if !ocrEngine.IsAvailable: FAIL  # OCR language pack missing
+
+while (elapsed < timeout):       // minimum 5 seconds
+    text = ocrEngine.RecognizeRegion(coords ± OcrRegionWidth/Height)  # default 200×40
+    if text contains expected: PASS
+    sleep 500ms
+
+return FAIL with last OCR'd text + region coords
+```
+
+Region defaults to 200×40 px centred on the recorded click. Tune via `OcrRegionWidth` / `OcrRegionHeight` in the editor — widen if cell text is being clipped, narrow if adjacent-column text is bleeding in.
+
+### Assertion polling (assert-count)
+
+```
+parse Value: "2", "=2", ">=1", "<5", "!=0"  → (op, expected)
+itemTypes = ItemControlType set (or [DataItem, ListItem, TreeItem])
+
+while (elapsed < timeout):
+    container = TryFindWithFallback(window, step, automation)  # coord-first, then UIA
+    if container:
+        for ct in itemTypes:
+            count = container.FindAllDescendants(ByControlType(ct)).Length
+            if (count, op, expected) matches: PASS
+            if user named one ItemControlType: break  # don't cascade
+    sleep 300ms
+
+return FAIL with last count + matched type
+```
+
+### Old `assert-text` capture flow (legacy reference)
 
 ```
 while (elapsed < timeout):       // minimum 15 seconds
@@ -345,6 +416,12 @@ Critical for container elements (Pane, Group) where the visible text lives in a 
 | Click on PowerShell / recorder console / Explorer gets recorded as a step | Original mouse hook only checked `GetForegroundWindow()`'s process — but `GetForegroundWindow` returns the *previous* foreground during the click that activates a new window (focus-change race) | Filter chain now requires BOTH `fgProcId == targetProcessId` AND `IsPointInsideProcessWindow(targetProcessId, x, y)`. Geometry check closes the focus-race gap. Look for `DROP click — not on target` log line for diagnostics. |
 | Grid row click on owner-drawn grids (Infragistics, DevExpress, Bravo's custom grid) silently missing — no step between fill and the next button click | The mouse hook fires, but `automation.FromPoint` returns null OR `BuildSelector` throws `NotSupportedException` reading properties on the row element. Pre-fix outer hook catch swallowed the entire click without logging. | Coord-only fallback path always captures the click with empty selectors but valid coords. Replay clicks the recorded pixel via `Mouse.Click`. Look for `Coord-only capture at (X,Y) — UIA property access threw: ...` or `... — element not exposed to UIA` in the recorder log. **Do not add filters that reject coord-only steps** — they're load-bearing. |
 | Replay log shows `Coords=(null,null)` on every step but storage clearly has coords like `(387,195)` | `StepParameterSubstituter.Apply` clones `DesktopUiStep` field-by-field for `{{Token}}` substitution and forgot to copy `WindowRelativeX` / `WindowRelativeY` / `DelayBeforeMs`. Triggers whenever the test set has any environment parameters set. | Add new `DesktopUiStep` fields to **both** Apply methods in `StepParameterSubstituter.cs` (one for `DesktopUiTestDefinition`, one for `DesktopUiTestCase`). This file is now in the schema-change checklist. |
+| `assert-text` returns wildly wrong text (e.g. expected "Completed" got "ksamarasinghe" — the dashboard's user-pill text) | The Bravo window was occluded by another app (typically the AITestCrew dashboard browser) at assertion time. Coord-based `FromPoint` and OCR both capture whatever's topmost at the click pixel — they ignore process ownership. | Fixed by `BaseDesktopUiTestAgent` now calling `DesktopWindowNormalizer.EnsureForeground` before every step. If the symptom returns, check that call wasn't deleted, and don't actively click into other windows during replay (Windows occasionally refuses `SetForegroundWindow` when the user's foreground-set permission has expired). |
+| `assert-count` returns a count vastly larger than the visible grid rows (e.g. 80 instead of 2) | Old recorder bug — used stale `lastClickedElement` (typically pointing at the previous toolbar button click) and walked up to the main window, then counted *every* `DataItem` in the application. Fixed by `CaptureCountAssertion` using a fresh `FromPoint` at the recorded coords + walking up to the FIRST ancestor with row descendants (not "best count"). | If a similar walk-up algorithm is reused for any new feature, follow the same rule: stop at the first hit going upward, never aggregate across the whole window. |
+| `assert-text` on a Bravo grid cell at recording time correctly captures "Completed" / "Reversal" but at replay time fails with empty text | Owner-drawn Infragistics-style cells: UIA's `FromPoint` returns *something*, but property reads (`Name`, `ValuePattern`) throw `NotSupportedException` — sometimes at recording, sometimes at replay, inconsistently. | `ExecuteAssertText` is now coord-first AND has an automatic OCR fallback at the recorded region. Owner-drawn cells "just work" without users editing the action to `assert-text-ocr`. The explicit `assert-text-ocr` action exists only for the case where UIA returns *wrong* text rather than empty text — force-OCR mode. |
+| Recorder log says `assert-text → assert-text-ocr: OCR over (X,Y) WxH → '{Text}'` but replay still uses UIA path | The action *was* promoted to `assert-text-ocr` at capture time. Replay's `ExecuteAssertTextOcr` does OCR-only; if it's somehow running UIA, the action enum string in storage is probably `assert-text` not `assert-text-ocr`. Inspect the saved JSON via the WebApi to confirm. | Recorder writes the promoted action correctly; if storage shows `assert-text` the auto-OCR fallback inside `ExecuteAssertText` will still kick in after UIA fails — just slower (it waits the full UIA timeout first). |
+| `WindowsOcrService` logs `[OCR] No OCR engine available` and assertion always fails | Windows OCR language pack not installed on the machine running the agent. | Settings → Time & Language → Language → (Add English (US) if missing) → Optional features → "Optical character recognition (OCR)" → Install. Verify with `OcrEngine.AvailableRecognizerLanguages` from a quick PowerShell snippet if needed. |
+| Build fails with `error NU1301: Unable to load the service index for source ...braveenergy.pkgs.visualstudio.com... 401 Unauthorized` after a TFM bump or new package | Restore tries all configured sources; the private Brave feed has no cached credentials in this shell session. | `dotnet restore <project> --source "https://api.nuget.org/v3/index.json"` to bypass private feed for that restore. Long-term: configure NuGet credentials properly via `dotnet nuget update source` or `%APPDATA%/NuGet/NuGet.Config`. |
 | User reports "still broken" after a fix; latest run timestamp is *before* the latest DLL build timestamp | Long-running Runner / agent process holds an old DLL in memory. `dotnet build` doesn't restart already-running processes. | Kill the process (`taskkill /F /IM AiTestCrew.Runner.exe`) and re-launch. Verify with `ls -la --time-style=full-iso bin/Debug/net8.0-windows/AiTestCrew.Agents.dll` that the DLL is newer than the source change. |
 | Mouse hook log says `Mouse hook error: Specified method is not supported.` and the click is missing | `NotSupportedException` thrown inside the hook callback (most often from `BuildSelector`'s `Properties.X.ValueOrDefault` access on owner-drawn elements). Outer try/catch swallowed it before a step could be added. | Each property-access block inside the hook is now wrapped in its own try/catch; failure falls through to coord-only capture. If a *new* hook-internal exception starts swallowing clicks, add another fine-grained catch around the throwing operation rather than fixing the symptom downstream. |
 
@@ -446,9 +523,22 @@ A checklist — forgetting any one of these causes silent round-trip data loss, 
 1. Add the action string to `DesktopUiStep.Action` XML doc comment
 2. Add the case to `DesktopStepExecutor.ExecuteStep` switch statement
 3. Add the action to `ACTIONS` array in `EditDesktopUiTestCaseDialog.tsx`
-4. If the action needs new fields, add properties to `DesktopUiStep` and `DesktopUiStep` TypeScript interface
-5. Update `NO_ELEMENT`, `USES_MENU_PATH`, or `USES_WINDOW_TITLE` sets in the dialog if applicable
-6. Update `docs/functional.md` step actions table
+4. If the action needs new fields, add properties to `DesktopUiStep` and the TS interface (and follow the schema-change checklist above)
+5. Update `NO_ELEMENT`, `USES_MENU_PATH`, `USES_WINDOW_TITLE`, `USES_ITEM_CONTROL_TYPE`, or `USES_OCR_REGION` sets in the dialog if applicable; add a new `USES_*` set if the action introduces a distinct field cluster
+6. If the action should be capturable at recording time, add a console hotkey case in the recorder's main loop (`ConsoleKey.X` → `pendingAssertType = "..."`) and a conversion branch alongside `assert-text` / `assert-count`
+7. Update `docs/functional.md` step actions table
+
+## Available action-specific field clusters
+
+| Action | `Value` semantics | Extra fields | Capture hotkey |
+|---|---|---|---|
+| `assert-text` | expected substring | — (uses `WindowRelativeX/Y` for coord-FromPoint + auto-OCR fallback) | `[T]` |
+| `assert-text-ocr` | expected substring | `OcrRegionWidth`, `OcrRegionHeight` (defaults 200 × 40 px centred on click) | `[T]` auto-promotes when UIA returns empty but OCR finds text |
+| `assert-count` | `"2"`, `"=2"`, `">=1"`, `"<5"`, `"!=0"` | `ItemControlType` (UIA type to count; default tries DataItem → ListItem → TreeItem) | `[N]` |
+| `assert-visible` / `assert-hidden` | — | — | `[V]` |
+| `assert-enabled` / `assert-disabled` | — | — | `[E]` |
+| `menu-navigate` | — | `MenuPath` (`"File > Save As"`) | manual edit |
+| `wait-for-window` / `switch-window` / `close-window` | — | `WindowTitle` | manual edit |
 
 ---
 

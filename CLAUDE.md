@@ -276,6 +276,7 @@ Adding a ___ is → ___
 | A new UI surface for verification (e.g. React single-page app) | `/add-agent` first (for standalone use) → then `VerificationStep.Target` already routes to it via `CanHandleAsync` | New agent + recorder; `VerificationStep.cs` already supports any `TestTargetType` |
 | A new test target type (e.g. message bus, database check) | `/add-agent` | New agent; `TestTargetType` enum; DI registration |
 | A new response validation rule | `/add-validation` | `ValidateResponseAsync` in the target agent |
+| A new desktop assertion (count / region OCR / screenshot diff / pixel sampling) | Manual — read `/desktop-winui-reference` first | Add action string + `DesktopStepExecutor` switch case + recorder hotkey + UI editor option. Existing primitives: `assert-text` (UIA + auto-OCR fallback), `assert-text-ocr` (force OCR), `assert-count` (UIA descendant count of `ItemControlType`). For new primitives, follow the schema-change checklist in the skill. |
 | A new CLI flag | Manual — `src/AiTestCrew.Runner/Program.cs` | `ParseArgs` + `CliArgs` + handler. Thread through `orchestrator.RunAsync` if it affects execution. |
 | A new WebApi endpoint | Manual — `src/AiTestCrew.WebApi/Endpoints/*Endpoints.cs` | Map into `app.MapGroup` in `Program.cs`. Match naming style of sibling routes. |
 | A new UI edit dialog | Manual — parallel to `EditWebUiTestCaseDialog.tsx` | Or reuse the existing one via its generic `definition` / `onSave` / `onDelete` props |

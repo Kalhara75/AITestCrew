@@ -360,6 +360,23 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
             // the configured target dimensions before the next click fires.
             NormalizeAppWindow(app);
 
+            // Ensure the target app is in the foreground BEFORE every step.
+            // Clicks naturally focus their target via the OS, but coord-based
+            // reads (FromPoint, OCR for assert-text / assert-text-ocr /
+            // assert-count) capture whatever window is topmost at that pixel.
+            // Without this, any other window that drifts on top between steps
+            // (browser, IDE, notification toast) corrupts the assertion result —
+            // e.g. asserting on a Bravo grid cell silently OCRs the dashboard's
+            // user-pill text instead.
+            try
+            {
+                DesktopWindowNormalizer.EnsureForeground((uint)app.ProcessId, Logger);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogDebug("[{Agent}] EnsureForeground failed (non-fatal): {Msg}", Name, ex.Message);
+            }
+
             var result = DesktopStepExecutor.ExecuteStep(
                 window, app, tc.Steps[i], automation,
                 tc.Name, i, tc.Steps.Count, Logger);

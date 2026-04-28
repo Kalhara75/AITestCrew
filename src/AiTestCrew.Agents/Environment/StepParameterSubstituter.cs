@@ -110,7 +110,10 @@ public static class StepParameterSubstituter
                 // selector-only lookup, which fails on owner-drawn surfaces.
                 WindowRelativeX = s.WindowRelativeX,
                 WindowRelativeY = s.WindowRelativeY,
-                DelayBeforeMs = s.DelayBeforeMs
+                DelayBeforeMs = s.DelayBeforeMs,
+                ItemControlType = Sub(s.ItemControlType, context, unknownTokens),
+                OcrRegionWidth = s.OcrRegionWidth,
+                OcrRegionHeight = s.OcrRegionHeight
             }).ToList(),
             TakeScreenshotOnFailure = source.TakeScreenshotOnFailure,
             PostSteps = ApplyPostSteps(source.PostSteps, context, unknownTokens)
@@ -237,7 +240,10 @@ public static class StepParameterSubstituter
                 // selector-only lookup, which fails on owner-drawn surfaces.
                 WindowRelativeX = s.WindowRelativeX,
                 WindowRelativeY = s.WindowRelativeY,
-                DelayBeforeMs = s.DelayBeforeMs
+                DelayBeforeMs = s.DelayBeforeMs,
+                ItemControlType = Sub(s.ItemControlType, context, unknownTokens),
+                OcrRegionWidth = s.OcrRegionWidth,
+                OcrRegionHeight = s.OcrRegionHeight
             }).ToList(),
             TakeScreenshotOnFailure = source.TakeScreenshotOnFailure,
             PostSteps = ApplyPostSteps(source.PostSteps, context, unknownTokens)
