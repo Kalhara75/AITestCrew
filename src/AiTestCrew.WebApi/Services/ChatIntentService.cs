@@ -146,14 +146,23 @@ public class ChatIntentService : IChatIntentService
             kvp => kvp.Key,
             kvp => new { modules = kvp.Value.Modules.Keys.ToArray() });
 
-        var endpoints = new List<string>();
-        try
+        // Endpoints are sourced from each environment's Bravo DB
+        // (Environments[env].BravoDbConnectionString), so the catalog
+        // surfaces one list per env. A single env's broken/absent DB
+        // is logged and reported as null — the rest still load.
+        var endpointsByEnv = new Dictionary<string, string[]?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var key in _envResolver.ListKeys())
         {
-            endpoints.AddRange(await _endpointResolver.ListCodesAsync(ct));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Endpoint catalog unavailable (Bravo DB connection).");
+            try
+            {
+                var codes = await _endpointResolver.ListCodesAsync(key, ct);
+                endpointsByEnv[key] = codes.ToArray();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Endpoint catalog unavailable for env '{Env}'.", key);
+                endpointsByEnv[key] = null;
+            }
         }
 
         object[] agents = Array.Empty<object>();
@@ -196,7 +205,7 @@ public class ChatIntentService : IChatIntentService
             apiStacks = stacks,
             defaultStack = _cfg.DefaultApiStack,
             defaultModule = _cfg.DefaultApiModule,
-            endpoints,
+            endpointsByEnv,
             agents,
             currentTestSet,
             postStepConfig
@@ -417,6 +426,12 @@ public class ChatIntentService : IChatIntentService
             Create rules:
             - For "testSet" target, moduleId is required and must be present in the catalog.
             - For "module" target, only name is required. Don't invent a description unless the user provided one.
+
+            Endpoint catalog rules:
+            - catalog.endpointsByEnv is a map keyed by environment key (e.g. "sumo-retail", "tesla-retail"). The value is the list of MIL endpoint codes available in THAT environment's Bravo DB. Endpoints are NOT global — each customer environment has its own Bravo DB and its own set of `mil.V2_MIL_EndPoint` rows, so the same code may exist in one env and not another.
+            - When the user asks "what endpoints are in <env>?", read endpointsByEnv["<envKey>"] and list those codes; never tell the user endpoints are global or environment-agnostic.
+            - If endpointsByEnv["<envKey>"] is null, that environment's Bravo DB is unreachable or unconfigured — say so plainly rather than falling back to another env's list.
+            - When picking an endpointCode for a confirmRun / confirmRecord / confirmCreatePostStep against a specific env, only use codes that appear in endpointsByEnv for that env.
 
             Universal rules:
             - Only use ids/keys/codes that appear literally in the catalog. Never invent values.
