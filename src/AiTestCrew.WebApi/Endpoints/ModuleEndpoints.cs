@@ -4,6 +4,7 @@ using AiTestCrew.Agents.Base;
 using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Configuration;
+using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
 using AiTestCrew.Orchestrator;
 using AiTestCrew.WebApi.Services;
@@ -498,6 +499,36 @@ public static class ModuleEndpoints
             return Results.Ok(TestSetResponse(testSet, historyRepo));
         });
 
+        // PUT /api/modules/{moduleId}/testsets/{tsId}/environment-key — change the
+        // default environment a test set runs against. Accepts null/empty to clear
+        // (which makes the orchestrator fall back to the configured default env).
+        // Validates the key against the configured environments so a typo can't
+        // silently leave the test set bound to a non-existent customer.
+        group.MapPut("/{moduleId}/testsets/{tsId}/environment-key",
+            async (string moduleId, string tsId, EnvironmentKeyRequest request,
+                ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo,
+                IEnvironmentResolver envResolver) =>
+        {
+            var testSet = await tsRepo.LoadAsync(moduleId, tsId);
+            if (testSet is null)
+                return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
+
+            var requested = request.EnvironmentKey?.Trim();
+            if (!string.IsNullOrEmpty(requested))
+            {
+                var known = envResolver.ListKeys();
+                if (!known.Contains(requested, StringComparer.OrdinalIgnoreCase))
+                    return Results.BadRequest(new
+                    {
+                        error = $"Unknown environment '{requested}'. Known: {string.Join(", ", known)}"
+                    });
+            }
+
+            testSet.EnvironmentKey = string.IsNullOrEmpty(requested) ? null : requested;
+            await tsRepo.SaveAsync(testSet, moduleId);
+            return Results.Ok(TestSetResponse(testSet, historyRepo));
+        });
+
         // POST /api/modules/{moduleId}/run — run all test sets in a module (parallel)
         group.MapPost("/{moduleId}/run", async (string moduleId,
             IModuleRepository moduleRepo, ITestSetRepository tsRepo,
@@ -939,3 +970,4 @@ public record AiPatchPreview(List<ObjectivePatchEntry> Original, List<ObjectiveP
 public record AiPatchApplyRequest(List<ObjectivePatchEntry> Patches);
 public record SetupStepsRequest(string? SetupStartUrl, List<WebUiStep>? SetupSteps);
 public record TeardownStepsRequest(List<SqlTeardownStep>? TeardownSteps);
+public record EnvironmentKeyRequest(string? EnvironmentKey);

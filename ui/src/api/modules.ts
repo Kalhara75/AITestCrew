@@ -183,6 +183,16 @@ export const clearTeardownSteps = (moduleId: string, tsId: string) =>
     { method: 'DELETE' }
   );
 
+export const updateTestSetEnvironmentKey = (
+  moduleId: string,
+  tsId: string,
+  environmentKey: string | null
+) =>
+  apiFetch<TestSetDetail>(
+    `/modules/${moduleId}/testsets/${tsId}/environment-key`,
+    { method: 'PUT', body: JSON.stringify({ environmentKey }) }
+  );
+
 export const triggerModuleRun = (moduleId: string) =>
   apiFetch<TriggerModuleRunResponse>(`/modules/${moduleId}/run`, { method: 'POST' });
 

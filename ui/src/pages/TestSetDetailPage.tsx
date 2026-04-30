@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchTestSet, fetchRuns } from '../api/testSets';
-import { fetchModuleTestSet, fetchModuleRuns, fetchModule, deleteTestSet, deleteObjective } from '../api/modules';
+import { fetchModuleTestSet, fetchModuleRuns, fetchModule, deleteTestSet, deleteObjective, updateTestSetEnvironmentKey } from '../api/modules';
 import { TestCaseTable } from '../components/TestCaseTable';
 import { WebUiTestCaseTable } from '../components/WebUiTestCaseTable';
 import { DesktopUiTestCaseTable } from '../components/DesktopUiTestCaseTable';
@@ -20,7 +20,7 @@ import { TeardownStepsPanel } from '../components/TeardownStepsPanel';
 import { EnvironmentParametersEditor } from '../components/EnvironmentParametersEditor';
 import { fetchEnvironments } from '../api/config';
 import { useActiveRun } from '../contexts/ActiveRunContext';
-import type { TestObjective, ObjectiveStatus } from '../types';
+import type { TestObjective, ObjectiveStatus, EnvironmentsResponse } from '../types';
 
 export function TestSetDetailPage() {
   const { id, moduleId } = useParams<{ id: string; moduleId?: string }>();
@@ -148,10 +148,19 @@ export function TestSetDetailPage() {
             <h1 style={{ margin: '0 0 16px', fontSize: 22, fontWeight: 700, color: '#0f172a', lineHeight: 1.4 }}>
               {displayTitle}
             </h1>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <StatPill label="Test Cases" value={totalObjectives} />
               <StatPill label="Runs" value={testSet.runCount} />
               <StatPill label="Created" value={new Date(testSet.createdAt).toLocaleDateString()} />
+              {isModuleScoped && (
+                <EnvironmentPill
+                  moduleId={moduleId!}
+                  testSetId={testSet.id}
+                  environmentKey={testSet.environmentKey ?? null}
+                  envInfo={envInfo}
+                  onSaved={() => queryClient.invalidateQueries({ queryKey: ['testSet', moduleId, id] })}
+                />
+              )}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexDirection: 'column' }}>
@@ -552,4 +561,122 @@ function cardStyle(extra: React.CSSProperties): React.CSSProperties {
     background: '#fff', borderRadius: 10,
     border: '1px solid #e2e8f0', padding: 24, ...extra,
   };
+}
+
+// Display + inline-edit control for the test set's default environment.
+// The persisted key wins; if it doesn't match a configured env we show a warning
+// chip so users can spot orphaned values (e.g. an env that was renamed in config).
+function EnvironmentPill(props: {
+  moduleId: string;
+  testSetId: string;
+  environmentKey: string | null;
+  envInfo: EnvironmentsResponse | undefined;
+  onSaved: () => void;
+}) {
+  const { moduleId, testSetId, environmentKey, envInfo, onSaved } = props;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<string>(environmentKey ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const persistedRow = environmentKey
+    ? envInfo?.environments.find(e => e.key === environmentKey)
+    : undefined;
+  const isOrphan = !!environmentKey && !persistedRow;
+  const defaultKey = envInfo?.defaultEnvironment ?? null;
+  const displayLabel = persistedRow
+    ? persistedRow.displayName
+    : environmentKey
+      ? `${environmentKey} (not configured)`
+      : defaultKey
+        ? `${envInfo?.environments.find(e => e.key === defaultKey)?.displayName ?? defaultKey} (default)`
+        : '(default)';
+
+  const beginEdit = () => {
+    setDraft(environmentKey ?? '');
+    setError(null);
+    setEditing(true);
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await updateTestSetEnvironmentKey(moduleId, testSetId, draft.trim() === '' ? null : draft.trim());
+      setEditing(false);
+      onSaved();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!editing) {
+    return (
+      <span
+        onClick={beginEdit}
+        title="Click to change the environment this test set runs against"
+        style={{
+          fontSize: 13,
+          color: isOrphan ? '#b45309' : '#475569',
+          background: isOrphan ? '#fffbeb' : '#f8fafc',
+          padding: '4px 12px',
+          borderRadius: 6,
+          border: `1px solid ${isOrphan ? '#fde68a' : '#f1f5f9'}`,
+          cursor: 'pointer',
+        }}
+      >
+        <span style={{ color: '#94a3b8', marginRight: 4 }}>Environment:</span>
+        <span style={{ fontWeight: 600 }}>{displayLabel}</span>
+        <span style={{ color: '#94a3b8', marginLeft: 6, fontSize: 11 }}>edit</span>
+      </span>
+    );
+  }
+
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      fontSize: 13, background: '#f8fafc',
+      padding: '4px 8px', borderRadius: 6, border: '1px solid #e2e8f0',
+    }}>
+      <span style={{ color: '#94a3b8' }}>Environment:</span>
+      <select
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        disabled={saving}
+        style={{ fontSize: 13, padding: '2px 6px', borderRadius: 4, border: '1px solid #cbd5e1' }}
+      >
+        <option value="">(use default{defaultKey ? ` — ${defaultKey}` : ''})</option>
+        {envInfo?.environments.map(env => (
+          <option key={env.key} value={env.key}>
+            {env.displayName}{env.isDefault ? ' (default)' : ''}
+          </option>
+        ))}
+        {/* Preserve the current orphan key so users can see what's persisted before they overwrite it. */}
+        {environmentKey && !envInfo?.environments.some(e => e.key === environmentKey) && (
+          <option value={environmentKey}>{environmentKey} (not configured)</option>
+        )}
+      </select>
+      <button
+        onClick={handleSave}
+        disabled={saving}
+        style={{
+          fontSize: 12, fontWeight: 600, padding: '3px 10px', borderRadius: 4,
+          border: '1px solid #2563eb', background: '#2563eb', color: '#fff',
+          cursor: saving ? 'wait' : 'pointer',
+        }}
+      >{saving ? 'Saving…' : 'Save'}</button>
+      <button
+        onClick={() => { setEditing(false); setError(null); }}
+        disabled={saving}
+        style={{
+          fontSize: 12, padding: '3px 10px', borderRadius: 4,
+          border: '1px solid #cbd5e1', background: '#fff', color: '#475569',
+          cursor: 'pointer',
+        }}
+      >Cancel</button>
+      {error && <span style={{ color: '#dc2626', fontSize: 12 }}>{error}</span>}
+    </span>
+  );
 }
