@@ -147,6 +147,16 @@ public class TestEnvironmentConfig
     // without any teardown awareness remain safe.
     public bool DataTeardownEnabled { get; set; } = false;
 
+    /// <summary>
+    /// Stored-procedure name prefixes that teardown SQL is allowed to invoke
+    /// via <c>EXEC</c>. Procs whose name does not start with one of these
+    /// prefixes (case-insensitive) are rejected by <c>SqlGuardrails</c>.
+    /// Default: <c>["usp_"]</c> — pairs with the standard convention for
+    /// dev-installed teardown procs shipped via the data-pack runner. Set to
+    /// an empty array to disallow EXEC entirely.
+    /// </summary>
+    public string[] TeardownExecAllowedPrefixes { get; set; } = ["usp_"];
+
     // --- Data packs (version-controlled SQL scripts run at WebApi startup) ---
     /// <summary>
     /// Path to the datapacks root. Relative paths resolve against

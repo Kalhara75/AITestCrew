@@ -567,6 +567,7 @@ else
 // objective when the test set defines TeardownSteps and the env opts in.
 builder.Services.AddSingleton<ITeardownExecutor>(sp => new BravoTeardownExecutor(
     sp.GetRequiredService<IEnvironmentResolver>(),
+    sp.GetRequiredService<TestEnvironmentConfig>(),
     sp.GetRequiredService<ILogger<BravoTeardownExecutor>>()
 ));
 

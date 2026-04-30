@@ -1,5 +1,6 @@
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
+using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
 using AiTestCrew.Core.Utilities;
@@ -24,13 +25,16 @@ namespace AiTestCrew.Agents.Teardown;
 public sealed class BravoTeardownExecutor : ITeardownExecutor
 {
     private readonly IEnvironmentResolver _envResolver;
+    private readonly TestEnvironmentConfig _config;
     private readonly ILogger<BravoTeardownExecutor> _logger;
 
     public BravoTeardownExecutor(
         IEnvironmentResolver envResolver,
+        TestEnvironmentConfig config,
         ILogger<BravoTeardownExecutor> logger)
     {
         _envResolver = envResolver;
+        _config = config;
         _logger = logger;
     }
 
@@ -80,7 +84,7 @@ public sealed class BravoTeardownExecutor : ITeardownExecutor
                 return result;
             }
 
-            var (ok, reason) = SqlGuardrails.Validate(sql);
+            var (ok, reason) = SqlGuardrails.Validate(sql, _config.TeardownExecAllowedPrefixes);
             if (!ok)
             {
                 result.Success = false;

@@ -99,6 +99,18 @@ Each env's scripts run against the connection string in
 `TestEnvironment.Environments.<envKey>.BravoDbConnectionString`. Falls back to
 `TestEnvironment.AseXml.BravoDb.ConnectionString` when the env-block omits it.
 
+### Calling installed procs from per-test-set teardown
+
+Once a script in `datateardown/<env>/.../` installs a stored proc, you can invoke it from the per-test-set **Data Teardown (SQL)** panel on the test set detail page:
+
+```sql
+EXEC dbo.usp_RestoreAccountDataFromBackup @AccountId = {{AccountId}};
+```
+
+`SqlGuardrails` allows `EXEC` of any proc whose name starts with one of `TestEnvironment.TeardownExecAllowedPrefixes` (default `["usp_"]`). Naming installed procs `usp_*` is the standard convention. `{{Token}}` substitution and the rest of the teardown safety stack still apply.
+
+See `docs/functional.md` *Data Teardown (SQL) → Guardrails* for the full rules.
+
 ---
 
 ## Opting an environment in

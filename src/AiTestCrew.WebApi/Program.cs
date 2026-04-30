@@ -199,6 +199,7 @@ else
 // ── Teardown executor ──
 builder.Services.AddSingleton<ITeardownExecutor>(sp => new BravoTeardownExecutor(
     sp.GetRequiredService<IEnvironmentResolver>(),
+    sp.GetRequiredService<TestEnvironmentConfig>(),
     sp.GetRequiredService<ILogger<BravoTeardownExecutor>>()
 ));
 

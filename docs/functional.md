@@ -609,9 +609,22 @@ The dashboard's Data Teardown panel queries `/api/config/environments` to know w
 
 #### Guardrails (applied at save AND run time)
 
-- Every statement must contain `WHERE` (word-boundary) — prevents accidental table-wide deletes.
+`SqlGuardrails.Validate` accepts two statement shapes:
+
+**1. Constrained DML** (DELETE / UPDATE):
+- Must contain `WHERE` (word-boundary) — prevents accidental table-wide deletes.
 - Denylist: `TRUNCATE`, `DROP`, `ALTER`, `CREATE`, `EXEC`, `EXECUTE`, `SHUTDOWN`, `GRANT`, `REVOKE`, `MERGE`.
-- Line (`-- ...`) and block (`/* ... */`) comments are stripped before checking so they can't conceal or smuggle keywords.
+
+**2. Stored-procedure call** — `EXEC[UTE] [schema.]<procName> [params]`:
+- `<procName>` must start with one of `TestEnvironment.TeardownExecAllowedPrefixes` (default `["usp_"]`, case-insensitive).
+- `WHERE` is not required (params are passed positionally or by name).
+- Other destructive keywords are still rejected (catches `EXEC usp_X; DROP TABLE Y;`).
+- Only one EXEC per teardown step — chained `EXEC usp_X; EXEC sp_executesql ...` is rejected.
+- `{{Token}}` substitution still works in proc parameters: `EXEC dbo.usp_RestoreAccountDataFromBackup @AccountId = {{AccountId}}`.
+
+Pairs with the convention for dev-installed teardown procs shipped via the data-pack runner (see [Startup Data Packs](#startup-data-packs)): install procs at startup with the data-pack runner, invoke them per-objective via this guardrail. Set `TeardownExecAllowedPrefixes` to `[]` to disallow EXEC entirely.
+
+Line (`-- ...`) and block (`/* ... */`) comments are stripped before checking so they can't conceal or smuggle keywords.
 
 #### CLI flags
 

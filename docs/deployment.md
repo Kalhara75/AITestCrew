@@ -621,6 +621,7 @@ Open `http://<team-server>:5050` in any browser, log in with your API key. Resul
 | `MaxParallelAgents` | int | `4` | Maximum concurrent test agent executions |
 | `MaxExecutionRunsPerTestSet` | int | `10` | Retention: old runs auto-pruned beyond this count |
 | `DataTeardownEnabled` | bool | `false` | Top-level fallback for SQL data teardown opt-in. Per-env override is `Environments.<key>.DataTeardownEnabled`. Set to `true` only on dev/test envs — never production. |
+| `TeardownExecAllowedPrefixes` | string[] | `["usp_"]` | Stored-procedure name prefixes that per-test-set teardown SQL is allowed to invoke via `EXEC`. Procs whose name doesn't start with one of these are rejected by `SqlGuardrails`. Pairs with the convention for dev-installed teardown procs shipped via the data-pack runner. Set to `[]` to disallow EXEC entirely. |
 | `DataPacksPath` | string | `"datapacks"` | Path to the startup data-packs root, relative to `AppContext.BaseDirectory`. Layout: `{path}/{phase}/{envKey}/{NN.subfolder}/{NN.script}.sql`. Per-env opt-in via `Environments.<key>.RunDataPacksOnStartup`. See `docs/data-packs.md`. |
 | `PlaywrightBrowser` | string | `"chromium"` | Browser for web UI testing |
 | `PlaywrightHeadless` | bool | `true` | Run browser headless (server) or visible (recording) |
