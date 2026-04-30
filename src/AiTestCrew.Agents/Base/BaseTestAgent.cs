@@ -185,6 +185,24 @@ public abstract class BaseTestAgent : ITestAgent
     {
         if (postSteps.Count == 0 || PostStepOrchestrator is null) return;
 
+        // Fail-fast: if the primary test case produced any failed/errored steps,
+        // skip the entire post-step block. Running follow-ups after the parent
+        // failed is never useful — they depend on the primary case having done
+        // its thing. Cleanup belongs in TeardownSteps, which runs separately.
+        if (parentSteps.Any(s => s.Status is TestStatus.Failed or TestStatus.Error))
+        {
+            for (var i = 0; i < postSteps.Count; i++)
+            {
+                stepSink.Add(new TestStep
+                {
+                    Action = $"post[{parentStepIndex}.{i + 1}]",
+                    Summary = "Skipped — parent test case failed",
+                    Status = TestStatus.Skipped,
+                });
+            }
+            return;
+        }
+
         var context = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var (k, v) in environmentParameters)
             if (!string.IsNullOrEmpty(v)) context[k] = v;
