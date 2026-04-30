@@ -25,7 +25,9 @@ namespace AiTestCrew.Agents.DesktopUiBase;
 ///   3. LLM explores the app via <see cref="DesktopAutomationTools"/> SK plugin
 ///   4. LLM generates test cases as JSON
 ///   5. Each test case executes sequentially using <see cref="DesktopStepExecutor"/>
-///   6. Application is optionally relaunched between test cases for clean state
+///   6. Application is closed and relaunched between every test case so each one
+///      starts from a clean process (child windows, dialogs, and any sibling
+///      processes from the prior case are reaped via Process.Kill(entireProcessTree:true))
 /// </summary>
 public abstract class BaseDesktopUiTestAgent : BaseTestAgent
 {
@@ -61,6 +63,11 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
     /// <summary>Extension point: override to customize app launch.</summary>
     protected virtual Application LaunchApplication()
     {
+        // Reap any pre-existing instance so we never attach to a stale window
+        // (crashed prior run, manually-opened instance, or a process leaked by
+        // a silent CloseApp failure on the previous test case).
+        SweepStaleProcesses();
+
         // Set WorkingDirectory to the app's own folder so it can find sibling DLLs.
         // Many WinForms apps load assemblies relative to their exe directory.
         var psi = new System.Diagnostics.ProcessStartInfo
@@ -172,19 +179,19 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
                 ct.ThrowIfCancellationRequested();
                 var tc = testCases[tcIdx];
 
-                // Optionally relaunch the app between test cases for clean state
-                if (tcIdx > 0 && _config.WinFormsCloseAppBetweenTests)
+                // Each test case starts from a freshly launched application.
+                // The LLM generation prompt promises this contract (see Phase 2
+                // prompt below: "Each test case is self-contained and assumes a
+                // freshly launched application.") and recorded cases assume the
+                // same — child windows, dialogs, and any sibling processes from
+                // the previous case must be torn down before the next begins.
+                if (tcIdx > 0)
                 {
                     CloseApp(app);
                     app = LaunchApplication();
                     mainWindow = WaitForMainWindow(app, automation);
                     WaitForAppReady(app, mainWindow);
                     NormalizeAppWindow(app);
-                }
-                else if (tcIdx > 0)
-                {
-                    // Refresh the window reference
-                    mainWindow = WaitForMainWindow(app, automation);
                 }
 
                 var tcSteps = ExecuteDesktopTestCase(app, mainWindow, automation, tc);
@@ -478,22 +485,125 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
         return fileName;
     }
 
-    private static void CloseApp(Application? app)
+    private void CloseApp(Application? app)
     {
         if (app is null) return;
+
+        // Capture pid before any close attempt — once the FlaUI Application is
+        // disposed the property may throw, and we still want to reap orphans.
+        int pid;
+        try { pid = app.ProcessId; }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "[{Agent}] CloseApp: could not read ProcessId; falling back to app.Kill()", Name);
+            try { app.Kill(); } catch (Exception killEx) { Logger.LogError(killEx, "[{Agent}] CloseApp: app.Kill() threw", Name); }
+            return;
+        }
+
+        // Phase 1: polite close — posts WM_CLOSE to the main window.
         try
         {
             app.Close();
             app.WaitWhileBusy(TimeSpan.FromSeconds(5));
         }
-        catch { /* best effort */ }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "[{Agent}] CloseApp: app.Close() threw (pid {Pid})", Name, pid);
+        }
 
+        // Phase 2: did it actually exit? If not, force-kill the process tree
+        // (reaps child windows and any sibling processes the app spawned).
         try
         {
-            if (!app.HasExited)
-                app.Kill();
+            using var proc = Process.GetProcessById(pid);
+            if (proc.HasExited) return;
+
+            Logger.LogWarning(
+                "[{Agent}] CloseApp: pid {Pid} did not exit after Close() — force-killing process tree (likely modal dialog or unsaved-changes prompt blocked WM_CLOSE)",
+                Name, pid);
+            proc.Kill(entireProcessTree: true);
+            proc.WaitForExit(5000);
+
+            if (!proc.HasExited)
+                Logger.LogError("[{Agent}] CloseApp: pid {Pid} still alive 5s after Kill(entireProcessTree:true)", Name, pid);
         }
-        catch { /* already exited */ }
+        catch (ArgumentException)
+        {
+            // Process already gone — Close() succeeded, nothing to do.
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "[{Agent}] CloseApp: failed to force-kill pid {Pid}", Name, pid);
+        }
+    }
+
+    /// <summary>
+    /// Reaps any pre-existing processes whose main module path equals
+    /// <see cref="TargetAppPath"/>. Called before each <see cref="LaunchApplication"/>
+    /// so a crashed prior run, a manually-launched instance, or a leaked process
+    /// from the previous test case cannot leave us attaching to the wrong window.
+    /// </summary>
+    private void SweepStaleProcesses()
+    {
+        var targetPath = TargetAppPath;
+        if (string.IsNullOrWhiteSpace(targetPath)) return;
+
+        string targetExeName;
+        try { targetExeName = Path.GetFileNameWithoutExtension(targetPath); }
+        catch { return; }
+
+        if (string.IsNullOrEmpty(targetExeName)) return;
+
+        Process[] candidates;
+        try { candidates = Process.GetProcessesByName(targetExeName); }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "[{Agent}] SweepStaleProcesses: could not enumerate processes for '{Exe}'", Name, targetExeName);
+            return;
+        }
+
+        foreach (var proc in candidates)
+        {
+            try
+            {
+                // Match by full exe path so a Sumo Bravo doesn't get killed
+                // while a Tesla Bravo test is running (both are Bravo.exe).
+                string? procPath = null;
+                try { procPath = proc.MainModule?.FileName; } catch { /* access denied — skip */ }
+
+                if (procPath is null || !PathsEqual(procPath, targetPath))
+                    continue;
+
+                Logger.LogWarning(
+                    "[{Agent}] SweepStaleProcesses: killing pre-existing pid {Pid} matching {Path}",
+                    Name, proc.Id, targetPath);
+                proc.Kill(entireProcessTree: true);
+                proc.WaitForExit(5000);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "[{Agent}] SweepStaleProcesses: failed to kill pid {Pid}", Name, proc.Id);
+            }
+            finally
+            {
+                proc.Dispose();
+            }
+        }
+    }
+
+    private static bool PathsEqual(string a, string b)
+    {
+        try
+        {
+            return string.Equals(
+                Path.GetFullPath(a).TrimEnd(Path.DirectorySeparatorChar),
+                Path.GetFullPath(b).TrimEnd(Path.DirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     protected override string PostStepParentKind => "DesktopUi";

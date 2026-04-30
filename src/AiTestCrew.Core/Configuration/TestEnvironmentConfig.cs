@@ -124,12 +124,10 @@ public class TestEnvironmentConfig
     // --- WinForms Desktop UI ---
     // WinFormsAppPath: full path to the .exe to launch for desktop UI testing.
     // WinFormsAppArgs: optional command-line arguments to pass to the app.
-    // WinFormsCloseAppBetweenTests: when true, the app is relaunched for each test case (clean state).
     public string WinFormsAppPath { get; set; } = "";
     public string? WinFormsAppArgs { get; set; }
     public int WinFormsAppLaunchTimeoutSeconds { get; set; } = 30;
     public string? WinFormsScreenshotDir { get; set; }
-    public bool WinFormsCloseAppBetweenTests { get; set; } = true;
 
     // Window-size normalization: forces the app's main window to a known
     // (width, height) at launch and on every detected window transition (e.g.

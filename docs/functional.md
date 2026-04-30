@@ -1605,7 +1605,8 @@ The same thorough extraction runs during replay, so assertions work even when th
 | `WinFormsAppArgs` | `null` | Optional command-line arguments |
 | `WinFormsAppLaunchTimeoutSeconds` | `30` | How long to wait for the main window to appear |
 | `WinFormsScreenshotDir` | `null` | Directory for failure screenshots (falls back to `PlaywrightScreenshotDir`) |
-| `WinFormsCloseAppBetweenTests` | `true` | Relaunch app for clean state between test cases |
+
+The app is always relaunched between test cases — every case starts from a fresh process. If `app.Close()` is blocked by a modal/unsaved-changes prompt, the agent force-kills the process tree so child windows and any sibling processes are reaped. A pre-launch sweep also kills any pre-existing instances whose exe path matches the active env's `WinFormsAppPath`, guarding against crashed prior runs and manually-launched instances.
 
 ### Editing recorded steps
 

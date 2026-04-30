@@ -15,7 +15,10 @@ namespace AiTestCrew.Agents.WinFormsUiAgent;
 ///   WinFormsAppArgs                   — (optional) command-line arguments
 ///   WinFormsAppLaunchTimeoutSeconds   — how long to wait for main window (default 30)
 ///   WinFormsScreenshotDir             — (optional) directory for failure screenshots
-///   WinFormsCloseAppBetweenTests      — relaunch for clean state per test (default true)
+///
+/// Each test case starts from a freshly launched application — the previous
+/// case's process is closed (and its tree force-killed if WM_CLOSE is blocked
+/// by a modal/unsaved-changes prompt) before the next launch.
 /// </summary>
 public class WinFormsUiTestAgent : BaseDesktopUiTestAgent
 {
