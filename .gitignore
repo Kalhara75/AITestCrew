@@ -21,6 +21,11 @@ appsettings.json
 !appsettings.example.json
 .env
 
+# Claude Code per-user/per-machine settings (permission allowlist; may contain
+# API keys baked into Bash/PowerShell command patterns). Project-shared rules
+# belong in .claude/settings.json which IS committed.
+.claude/settings.local.json
+
 # Deployment output
 publish/
 **/wwwroot/
