@@ -46,6 +46,13 @@ public class EnvironmentConfig
     public bool? DataTeardownEnabled { get; set; }
 
     /// <summary>
+    /// Per-env opt-in for executing version-controlled data-pack SQL scripts at
+    /// WebApi startup. Default false — set to true only on environments where
+    /// dev-authored DDL/DML is safe (dev/test customer DBs), never on production.
+    /// </summary>
+    public bool RunDataPacksOnStartup { get; set; } = false;
+
+    /// <summary>
     /// Per-stack BaseUrl overrides. Key is the ApiStacks key
     /// (e.g. "bravecloud", "legacy"); value is the BaseUrl that replaces
     /// the ApiStacks[key].BaseUrl when this environment is active.

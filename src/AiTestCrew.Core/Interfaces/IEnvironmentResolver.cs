@@ -53,6 +53,13 @@ public interface IEnvironmentResolver
     bool ResolveDataTeardownEnabled(string? key);
 
     /// <summary>
+    /// Returns whether the WebApi should run version-controlled data-pack SQL
+    /// scripts against this environment at startup. Per-env explicit opt-in;
+    /// defaults to false. Unknown env keys return false.
+    /// </summary>
+    bool ResolveRunDataPacksOnStartup(string? key);
+
+    /// <summary>
     /// Returns the API BaseUrl for the given stack, applying the environment's
     /// <see cref="EnvironmentConfig.ApiStackBaseUrls"/> override when present.
     /// Falls back to <c>ApiStacks[stackKey].BaseUrl</c>.

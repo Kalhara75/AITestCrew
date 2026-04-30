@@ -29,7 +29,9 @@ publish/
 *.db
 *.db-shm
 *.db-wal
-data/
+# Ignore everything in data/ except version-controlled SQL data packs (see docs/data-packs.md).
+data/*
+!data/datapacks/
 
 # Docker config (contains secrets — same structure as appsettings.json)
 docker-config/

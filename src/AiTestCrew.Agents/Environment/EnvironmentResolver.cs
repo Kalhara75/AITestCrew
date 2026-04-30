@@ -106,6 +106,9 @@ public class EnvironmentResolver : IEnvironmentResolver
         return env.DataTeardownEnabled ?? _config.DataTeardownEnabled;
     }
 
+    public bool ResolveRunDataPacksOnStartup(string? key) =>
+        Resolve(key).RunDataPacksOnStartup;
+
     public string ResolveApiStackBaseUrl(string? key, string stackKey)
     {
         var env = Resolve(key);

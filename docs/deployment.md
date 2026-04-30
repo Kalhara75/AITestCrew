@@ -296,6 +296,8 @@ docker compose logs -f
 # 7. Open http://localhost:5050
 ```
 
+**Startup data-pack scripts** (optional — see `docs/data-packs.md`): the Dockerfile copies `data/datapacks/` into the build context so `<Content Include="..\..\data\datapacks\**\*.sql">` resolves during the in-container `dotnet publish`. Authored `.sql` files automatically ship into the image's `wwwroot/../datapacks/` and the WebApi runs them at startup against any env that has `RunDataPacksOnStartup: true`. **Adding a new `.sql` file requires a `docker compose build` to repackage the image** — runtime changes to `data/datapacks/` on the host do not flow into the running container.
+
 **Data persistence:** Three directories are mounted into the container:
 
 | Host path | Container path | Purpose | Gitignored |
@@ -619,6 +621,7 @@ Open `http://<team-server>:5050` in any browser, log in with your API key. Resul
 | `MaxParallelAgents` | int | `4` | Maximum concurrent test agent executions |
 | `MaxExecutionRunsPerTestSet` | int | `10` | Retention: old runs auto-pruned beyond this count |
 | `DataTeardownEnabled` | bool | `false` | Top-level fallback for SQL data teardown opt-in. Per-env override is `Environments.<key>.DataTeardownEnabled`. Set to `true` only on dev/test envs — never production. |
+| `DataPacksPath` | string | `"datapacks"` | Path to the startup data-packs root, relative to `AppContext.BaseDirectory`. Layout: `{path}/{phase}/{envKey}/{NN.subfolder}/{NN.script}.sql`. Per-env opt-in via `Environments.<key>.RunDataPacksOnStartup`. See `docs/data-packs.md`. |
 | `PlaywrightBrowser` | string | `"chromium"` | Browser for web UI testing |
 | `PlaywrightHeadless` | bool | `true` | Run browser headless (server) or visible (recording) |
 | `PlaywrightScreenshotDir` | string | `null` | Directory for failure screenshots |
@@ -656,6 +659,7 @@ Each customer deployment has its own URLs, credentials, auth-state files, and (f
 | `WinFormsAppPath` / `WinFormsAppArgs` | Per-env desktop app path (different customer builds install to different paths / accept different launch args) |
 | `BravoDbConnectionString` | Per-env Bravo application DB for aseXML endpoint resolution **and** SQL data teardown |
 | `DataTeardownEnabled` | bool, default `false`. Per-env opt-in for SQL teardown statements attached to a test set. Set `true` only on dev/test envs where DELETE is safe — never on production. Falls back to top-level `TestEnvironment.DataTeardownEnabled`. See `docs/functional.md` *Data Teardown (SQL)*. |
+| `RunDataPacksOnStartup` | bool, default `false`. **Per-env opt-in only — there is no top-level fallback.** When `true`, the WebApi runs every `.sql` file under `data/datapacks/{datateardown\|datapreparation}/<envKey>/...` against this env's `BravoDbConnectionString` at every startup. Destructive — set `true` only on dev/test envs. See `docs/data-packs.md`. |
 | `ApiStackBaseUrls` | Map of ApiStacks key → BaseUrl override. The shared `ApiStacks.<stack>.Modules.*` definitions are reused; only the `BaseUrl` differs per customer. |
 
 Any field omitted from an env block falls back to the top-level field of the same name. This lets you migrate gradually: add one env at a time while leaving top-level fields in place as sane defaults.

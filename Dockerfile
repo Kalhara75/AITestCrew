@@ -33,6 +33,10 @@ RUN dotnet restore src/AiTestCrew.WebApi/AiTestCrew.WebApi.csproj
 # Build and publish
 COPY src/ src/
 COPY templates/ templates/
+# Version-controlled SQL data packs — referenced by WebApi.csproj's Content Include
+# at ..\..\data\datapacks\**\*.sql. Without this COPY the publish step ships an
+# empty bin/datapacks/ and the startup runner has nothing to execute.
+COPY data/datapacks/ data/datapacks/
 # Self-contained publish so the WindowsDesktop runtime (needed by the Agents
 # project's WindowsForms reference) is bundled — the aspnet runtime image
 # only has Microsoft.NETCore.App + Microsoft.AspNetCore.App.

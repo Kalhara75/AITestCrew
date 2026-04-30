@@ -26,4 +26,11 @@
              Link="templates\asexml\%(RecursiveDir)%(Filename)%(Extension)"
              CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Version-controlled SQL data packs at repo root — copied into bin/datapacks/...
+         Per-env opt-in via TestEnvironmentConfig.RunDataPacksOnStartup. -->
+    <Content Include="..\..\data\datapacks\**\*.sql"
+             Link="datapacks\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

@@ -1024,6 +1024,39 @@ If more than 75% of test steps in the first API objective return HTTP 404 with z
 
 ---
 
+## Startup Data Packs
+
+The WebApi can run version-controlled `.sql` scripts against per-environment Bravo databases at every startup — useful for installing/refreshing stored procedures, seeding reference data, or running cleanup before the first test of the day.
+
+**Folder layout** (at solution root):
+
+```
+data/datapacks/{datateardown|datapreparation}/<envKey>/<NN.subfolder>/<NN.script>.sql
+```
+
+- `datateardown` runs before `datapreparation`
+- Numeric prefixes (`1.`, `2.`, `10.`) drive execution order
+- Folder names match `Environments.<envKey>` from `appsettings.json`
+
+**Opt-in is per-env only** — there is no global toggle (destructive feature, default OFF):
+
+```jsonc
+"Environments": {
+  "tesla-retail": {
+    "BravoDbConnectionString": "Server=...;",
+    "RunDataPacksOnStartup": true
+  }
+}
+```
+
+**Verify on the dashboard:** the "Startup Data Packs" panel above the modules grid shows per-env status (Ran / Skipped (opt-out) / Skipped (no DB conn) / Connection failed) and per-script ✓/✗/— with the verbatim SQL error on failures.
+
+**Trust boundary:** unlike per-test-set teardown, data-pack scripts are dev-authored and bypass `SqlGuardrails`. They can use `CREATE OR ALTER PROCEDURE`, `EXEC`, unbounded `DELETE`. Scripts must be idempotent (re-runnable on every WebApi start).
+
+See **[docs/data-packs.md](data-packs.md)** for the full guide — folder layout, authoring rules, batch splitting on `GO`, troubleshooting, and limitations.
+
+---
+
 ## Web Dashboard
 
 AITestCrew includes a React-based web dashboard for browsing modules, managing test sets, viewing test cases, inspecting execution history, and triggering runs.

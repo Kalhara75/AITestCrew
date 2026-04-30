@@ -421,6 +421,36 @@ export interface AgentSummary {
   } | null;
 }
 
+export interface DataPackScriptReport {
+  phase: string;
+  subfolder: string;
+  relativePath: string;
+  status: 'Success' | 'Failed' | 'Skipped' | string;
+  batchCount: number;
+  elapsedMs: number;
+  error: string | null;
+}
+
+export interface DataPackEnvReport {
+  envKey: string;
+  status: 'Ran' | 'SkippedNotConfigured' | 'SkippedOptOut' | 'SkippedNoConnection' | 'ConnectionFailed' | string;
+  skipReason: string | null;
+  error: string | null;
+  scriptsTotal: number;
+  scriptsExecuted: number;
+  batchesExecuted: number;
+  failures: number;
+  scripts: DataPackScriptReport[];
+}
+
+export interface DataPackStartupReport {
+  completedAtUtc: string;
+  rootPath: string;
+  rootExists: boolean;
+  elapsed: string;
+  envs: DataPackEnvReport[];
+}
+
 export interface QueueEntry {
   id: string;
   moduleId: string;

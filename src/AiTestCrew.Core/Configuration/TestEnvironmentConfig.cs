@@ -147,6 +147,16 @@ public class TestEnvironmentConfig
     // without any teardown awareness remain safe.
     public bool DataTeardownEnabled { get; set; } = false;
 
+    // --- Data packs (version-controlled SQL scripts run at WebApi startup) ---
+    /// <summary>
+    /// Path to the datapacks root. Relative paths resolve against
+    /// <c>AppContext.BaseDirectory</c> (the build-output bin/ folder).
+    /// Layout: <c>{DataPacksPath}/{phase}/{envKey}/{NN.subfolder}/{NN.script}.sql</c>
+    /// where {phase} is "datateardown" or "datapreparation".
+    /// Per-env opt-in via <see cref="EnvironmentConfig.RunDataPacksOnStartup"/>.
+    /// </summary>
+    public string DataPacksPath { get; set; } = "datapacks";
+
     // --- aseXML (AEMO B2B transactions) ---
     // TemplatesPath: directory containing transaction templates + manifests, grouped by
     //   transaction type. Each template is a .xml with {{tokens}} plus a sibling

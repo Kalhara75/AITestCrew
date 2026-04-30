@@ -76,6 +76,12 @@ Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → C
 | `src/AiTestCrew.Core/Interfaces/IEndpointResolver.cs` | `ResolveAsync(code)` + `ListCodesAsync()`; returns `BravoEndpoint` record |
 | `src/AiTestCrew.Agents/Teardown/BravoTeardownExecutor.cs` | `ITeardownExecutor` impl — runs per-test-set SQL `DELETE` statements once per objective in `Reuse` mode. Per-env opt-in (`DataTeardownEnabled`), guardrail-checked, strict `{{Token}}` substitution from history + env params + delivery FieldValues |
 | `src/AiTestCrew.Agents/Teardown/SqlGuardrails.cs` | Static `Validate(sql)` — strips `--` and `/* */` comments, requires `WHERE`, rejects `TRUNCATE`/`DROP`/`ALTER`/`CREATE`/`EXEC[UTE]`/`SHUTDOWN`/`GRANT`/`REVOKE`/`MERGE` |
+| `src/AiTestCrew.Agents/DataPack/DataPackRunner.cs` | `IDataPackRunner` impl — runs version-controlled `.sql` files at WebApi startup against per-env Bravo DBs. Bypasses `SqlGuardrails` (dev-authored). Per-env opt-in (`RunDataPacksOnStartup`); per-batch autocommit; abort-env-on-failure. `LatestReport` exposed via `/api/data-packs/startup-report` for the dashboard panel |
+| `src/AiTestCrew.Agents/DataPack/DataPackRegistry.cs` | Pure file-walk discovering `bin/datapacks/<phase>/<envKey>/<NN.subfolder>/<NN.script>.sql`; phase order fixed `["datateardown", "datapreparation"]` |
+| `src/AiTestCrew.Agents/DataPack/SqlBatchSplitter.cs` | Splits T-SQL on standalone `GO` lines; comment- and string-aware (state machine carries across line boundaries) |
+| `src/AiTestCrew.WebApi/Endpoints/DataPackEndpoints.cs` | `GET /api/data-packs/startup-report` — JSON for the dashboard panel |
+| `ui/src/components/DataPacksPanel.tsx` | Dashboard panel above the modules grid (auto-refresh 30 s, expandable per-script rows with verbatim SQL errors) |
+| `data/datapacks/{datateardown\|datapreparation}/<envKey>/<NN.subfolder>/<NN.script>.sql` | Authored content (numeric prefixes drive order). Packaged into `bin/datapacks/` by the WebApi `.csproj` Content Include |
 | `src/AiTestCrew.Core/Interfaces/ITeardownExecutor.cs` | Teardown executor contract + `SqlTeardownStepDto` |
 | `src/AiTestCrew.Storage/Persistence/SqlTeardownStep.cs` | Persisted teardown step `{ Name, Sql }` on `PersistedTestSet.TeardownSteps` |
 | `ui/src/components/TeardownStepsPanel.tsx` | Editor for `TeardownSteps` on the test set detail page (mirrors `SetupStepsPanel`); shows env-opt-in warning |
@@ -249,6 +255,7 @@ All agents extend `BaseTestAgent` and implement `ITestAgent`:
 | `/add-validation <agent> "<rule>"` | Add a new response validation rule to an existing agent |
 | `/add-asexml-template <TransactionType> <templateId> "<desc>"` | Scaffold a new aseXML template + manifest pair (content-only — no agent changes) |
 | `/add-asexml-verification` | Scaffold a post-delivery UI verification attached to an existing delivery objective (recorder + auto-parameterisation) |
+| `/add-data-pack-script` | Scaffold a startup-time SQL data-pack script (stored proc install, data prep, or cleanup) in the right folder with idempotency template |
 | `/add-delivery-protocol <scheme> "<desc>"` | Scaffold a new `IXmlDropTarget` implementation (AS2, HTTP POST, SMB, etc.) |
 | `/tune-deferred-verification` | Tune or debug deferred post-delivery verification (retry cadence, deadline, timeouts) + stuck-Awaiting diagnosis |
 | `/implement-feature "<description>"` | Implement any new feature (general-purpose planner + builder) |
@@ -285,6 +292,7 @@ Adding a ___ is → ___
 | A new customer environment (e.g. TASN Networks) | Manual — `appsettings.json` only | Add an entry under `TestEnvironment.Environments.<key>` with the customer's URLs/creds/DB/per-stack BaseUrls. Run `--auth-setup --environment <key>` per target to cache auth state. Zero code changes. |
 | A new per-environment setting (e.g. customer reporting URL) | Manual — three files | Add field to `EnvironmentConfig`; add `ResolveXxx(envKey)` on `IEnvironmentResolver` + `EnvironmentResolver` (with top-level fallback); inject the resolver wherever the setting is consumed. |
 | A new teardown protocol (e.g. API-based purge, blob/file cleanup) | Manual — implement `ITeardownExecutor` | New class in `src/AiTestCrew.Agents/Teardown/`; register in DI alongside `BravoTeardownExecutor` (Runner + WebApi `Program.cs`). The orchestrator already invokes `ITeardownExecutor.ExecuteAsync` — no orchestrator change needed if a single implementation handles all teardown. For protocol routing, introduce a factory keyed off step metadata. |
+| A startup-time SQL data-pack script (proc install / seed / cleanup) | `/add-data-pack-script` | `data/datapacks/<phase>/<envKey>/<NN.subfolder>/<NN.script>.sql` only. Zero C# changes. Per-env opt-in via `Environments.<envKey>.RunDataPacksOnStartup: true`. Must be re-runnable (`CREATE OR ALTER`, `MERGE`, `IF NOT EXISTS`). Verify on the dashboard's "Startup Data Packs" panel. See `docs/data-packs.md`. |
 | Tuning deferred-verification retry / deadline behaviour | `/tune-deferred-verification` | Config-only (`appsettings.json → TestEnvironment.AseXml`). Key knobs: `DeferVerifications`, `VerificationEarlyStartFraction`, `VerificationRetryIntervalSeconds`, `VerificationGraceSeconds` (set to 0 for a hard wait ceiling). |
 | Debugging a stuck "Awaiting Verification" run | `/tune-deferred-verification` | Query `run_pending_verifications` + `run_queue` on the WebApi's DB; check `agents` table for matching capability; janitor sweeps on 30s tick. |
 | A new deferred job kind (beyond verifications — e.g. deferred API polling) | Manual — new `"kind": "..."` discriminator + branch in `JobExecutor.TryParseDeferredRequest` | Reuse `run_queue` with `not_before_at` + `run_pending_verifications` OR model a new state table. Agent enqueues via `IRunQueueRepository.EnqueueAsync` (HTTP in remote mode, direct SQLite server-side). |
@@ -293,6 +301,7 @@ Adding a ___ is → ___
 
 - `docs/functional.md` — user-facing feature reference and CLI runbook
 - `docs/architecture.md` — component structure, data flow, design decisions, extension patterns
+- `docs/data-packs.md` — startup-time SQL data-pack guide (folder layout, opt-in config, authoring rules, dashboard troubleshooting)
 - Phase 3 decision: the aseXML feature is feature-complete through **Generate → Deliver → Wait → Verify**. Future work is extension (new transaction types, new protocols, richer wait strategies, desktop edit dialog, Phase 1.5 UI edit for non-verification aseXML steps) rather than new phases.
 
 Keep docs updated when behaviour or structure changes. The `/add-*` skills codify the "right way" to extend — reach for them first before hand-editing.

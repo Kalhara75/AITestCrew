@@ -1539,6 +1539,94 @@ There is intentionally no tool-calling layer. The server pre-computes the full c
 
 ---
 
+## Startup Data Packs
+
+The WebApi runs version-controlled `.sql` scripts against per-environment Bravo databases at every startup. The user-facing guide is in `docs/data-packs.md`; this section documents the internals and design decisions.
+
+### Pipeline
+
+```
+WebApi startup
+    ↓
+TestEnvironmentConfig.DataPacksPath → resolve against AppContext.BaseDirectory
+    ↓
+DataPackRegistry.Discover(rootAbsolute, logger)
+    pure file walk: /<phase>/<envKey>/<NN.subfolder>/<NN.script>.sql
+    sort by leading numeric prefix (regex `^(?<n>\d+)\.\s*(?<rest>.+)$`)
+    phase order is fixed: ["datateardown", "datapreparation"]
+    ↓ DataPackPlan { Envs: [DataPackEnvPlan { EnvKey, Phases: [DataPackPhasePlan] }] }
+    ↓
+DataPackRunner.RunAllAsync(ct)
+    for each env in plan:
+        skip if not in IEnvironmentResolver.ListKeys()              → SkippedNotConfigured (warn)
+        skip if !envResolver.ResolveRunDataPacksOnStartup(envKey)   → SkippedOptOut (info)
+        skip if envResolver.ResolveBravoDbConnectionString empty    → SkippedNoConnection (info)
+        open one SqlConnection
+        for each phase, each script:
+            File.ReadAllTextAsync → SqlBatchSplitter.Split (on standalone GO lines)
+            for each batch: new SqlCommand(batch, conn).ExecuteNonQueryAsync (CommandTimeout=0)
+            on failure: mark Failed, abort remaining scripts for THIS env (continue other envs)
+    log summary, store DataPackStartupReport on the runner singleton
+```
+
+The runner is a `Singleton` registered in `WebApi/Program.cs`. Its `LatestReport` property holds the most recent `DataPackStartupReport` and is exposed via `GET /api/data-packs/startup-report` for the dashboard panel.
+
+### Trust boundary — why no SqlGuardrails
+
+Per-test-set teardown (`BravoTeardownExecutor`) runs LLM-/user-generated SQL through `SqlGuardrails.Validate`, which requires a `WHERE` clause and bans `EXEC`/`CREATE`/`ALTER`/`DROP`/`TRUNCATE`/`MERGE`/`SHUTDOWN`/`GRANT`/`REVOKE`.
+
+Data-pack scripts are dev-authored and version-controlled, so they intentionally bypass the guardrail. They legitimately need:
+- `CREATE OR ALTER PROCEDURE` to install/refresh procs
+- `EXEC usp_X` to run installed procs from preparation scripts
+- Unbounded `DELETE` for full table cleanup before a test run
+
+The guardrail still applies to objective teardown — different trust boundary, different code path.
+
+### Per-env opt-in only
+
+There is **no top-level `RunDataPacksOnStartup`**. A misconfigured new env with a `BravoDbConnectionString` would otherwise silently auto-run scripts; explicit per-env opt-in eliminates that footgun. `DataPacksPath` is top-level (it's a path setting, not a destructive trigger).
+
+### `GO` batch splitter
+
+`SqlBatchSplitter` splits on lines matching `^\s*GO\s*(--.*)?$` (case-insensitive). A `GO` token inside a `'...'` string literal, `--` line comment, or `/* ... */` block comment does not split — the splitter carries `inBlockComment` and `inString` state across line boundaries (T-SQL doubled-quote `''` escape handled inline).
+
+Out of scope: `sqlcmd` features (`:r`, `:setvar`, `GO 5`), multi-line string literals containing a standalone `GO` line.
+
+### Per-batch autocommit
+
+There is no outer transaction around a script. Mirrors `sqlcmd` behaviour and avoids the SQL Server quirks where DDL statements can't run inside a user transaction (`CREATE/ALTER PROCEDURE`, `DBCC` commands). Authors who need atomicity wrap explicitly with `BEGIN TRAN ... COMMIT` inside a single batch.
+
+### Failure policy
+
+Within an env, scripts are interdependent (later scripts may `EXEC` procs the earlier ones installed) — so a failure aborts the env's remaining scripts. Across envs, scripts are independent — so other envs continue. The runner never throws; the WebApi starts and serves requests even with `Failures > 0`. Operators detect failures via the dashboard panel (red ✗ rows) or the structured log lines.
+
+### Packaging
+
+`<Content Include="..\..\data\datapacks\**\*.sql"
+        Link="datapacks\%(RecursiveDir)%(Filename)%(Extension)"
+        CopyToOutputDirectory="PreserveNewest" />`
+in `AiTestCrew.WebApi.csproj` ships the `.sql` files into `bin/datapacks/`. This works for `dotnet build` (local dev) and `dotnet publish` (self-contained). The Dockerfile additionally `COPY`s `data/datapacks/` into the build context (otherwise the `..\..\data\datapacks` path would be missing during the in-container publish).
+
+The Runner project does NOT ship the data folder — only the WebApi runs the runner; adding it to Runner builds would be wasted I/O.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `src/AiTestCrew.Core/Interfaces/IDataPackRunner.cs` | Contract — `RunAllAsync` + `LatestReport` |
+| `src/AiTestCrew.Core/Models/DataPackStartupReport.cs` | Report DTOs (env + script reports + status enums) |
+| `src/AiTestCrew.Core/Models/DataPackRunSummary.cs` | High-level numeric summary (separate from report) |
+| `src/AiTestCrew.Agents/DataPack/DataPackRegistry.cs` | Pure file-walk + sort; produces `DataPackPlan` |
+| `src/AiTestCrew.Agents/DataPack/DataPackPlan.cs` | Internal plan records (Envs → Phases → Scripts) |
+| `src/AiTestCrew.Agents/DataPack/DataPackRunner.cs` | Connection open/close, GO split, batch execute, report build |
+| `src/AiTestCrew.Agents/DataPack/SqlBatchSplitter.cs` | State-machine splitter; comment + string aware |
+| `src/AiTestCrew.WebApi/Endpoints/DataPackEndpoints.cs` | `GET /api/data-packs/startup-report` |
+| `ui/src/components/DataPacksPanel.tsx` | Dashboard panel; auto-refresh 30 s; expandable per-script rows |
+| `ui/src/api/dataPacks.ts` | API client |
+| `data/datapacks/<phase>/<envKey>/<NN.subfolder>/<NN.script>.sql` | Authored content |
+
+---
+
 ## Deployment
 
 ### Files
@@ -1635,6 +1723,16 @@ This section complements the "Where to extend" table in `CLAUDE.md` with archite
 - Add a `ResolveXxx(envKey)` method to `IEnvironmentResolver` + `EnvironmentResolver` that returns the env value (or falls back to the top-level field if null/empty).
 - Inject `IEnvironmentResolver` into whatever agent/service consumes the setting and call `ResolveXxx(CurrentEnvironmentKey)` at execution time.
 - No persistence schema change — `EnvironmentConfig` is a plain POCO; new nullable fields deserialize as `null` on older configs.
+
+### Authoring or extending startup data packs
+
+- **Adding a script for an existing env**: drop it under `data/datapacks/{datateardown|datapreparation}/<envKey>/<NN.subfolder>/<NN.script>.sql`. Numeric prefixes drive order. Rebuild the WebApi (`build-all.ps1` or `docker compose build` — the MSBuild Content Include packages the `.sql` files into `bin/datapacks/` automatically) and restart. Per-env opt-in flag must be `true` for that env.
+- **Adding a new env**: create `data/datapacks/<phase>/<envKey>/` with at least one numbered subfolder and `.sql` file. Add a matching `Environments.<envKey>` entry with `BravoDbConnectionString` and `RunDataPacksOnStartup: true`.
+- **Re-runnability is the author's job**: every script runs on every WebApi start. Use `CREATE OR ALTER PROCEDURE`, `IF NOT EXISTS ... INSERT`, or `MERGE`. A non-idempotent `CREATE PROCEDURE` will fail on the second start and abort the env's remaining scripts.
+- **Adding a new phase folder** (beyond `datateardown` / `datapreparation`): edit `DataPackRegistry.PhaseOrder` to include the new name in the desired position. Phases run in declared order.
+- **Tuning failure policy** (e.g. continue-on-error within an env, or abort WebApi on any failure): currently per-env-abort, never throw. Tweak `DataPackRunner.RunEnvAsync` (the `aborted = true` branch) for in-env continue, or rethrow the summary at the call site in `WebApi/Program.cs` for hard-fail. Both are conscious defaults; document any change.
+- **Observability**: structured log lines (grep `DataPackRunner|DATAPACKS|datapacks:`) plus the dashboard panel at `/api/data-packs/startup-report`. The runner is a `Singleton` that retains its `LatestReport` for the panel.
+- **Use `/add-data-pack-script`** to scaffold a new script with the right folder structure, idempotency template, and opt-in checklist.
 
 ### Adding orchestration chaining (activating `TestTask.DependsOn`)
 

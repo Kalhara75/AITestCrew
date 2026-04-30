@@ -6,6 +6,7 @@ using AiTestCrew.Agents.AseXmlAgent.Delivery;
 using AiTestCrew.Agents.AseXmlAgent.Templates;
 using AiTestCrew.Agents.Auth;
 using AiTestCrew.Agents.BraveCloudUiAgent;
+using AiTestCrew.Agents.DataPack;
 using AiTestCrew.Agents.LegacyWebUiAgent;
 using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Agents.Teardown;
@@ -201,6 +202,13 @@ builder.Services.AddSingleton<ITeardownExecutor>(sp => new BravoTeardownExecutor
     sp.GetRequiredService<ILogger<BravoTeardownExecutor>>()
 ));
 
+// ── Data-pack runner (version-controlled SQL run at startup, opt-in per env) ──
+builder.Services.AddSingleton<IDataPackRunner>(sp => new DataPackRunner(
+    sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<IEnvironmentResolver>(),
+    sp.GetRequiredService<ILogger<DataPackRunner>>()
+));
+
 // ── Orchestrator ──
 builder.Services.AddSingleton(new AgentConcurrencyLimiter(envConfig.MaxParallelAgents));
 builder.Services.AddSingleton<TestOrchestrator>();
@@ -248,6 +256,13 @@ app.UseStaticFiles();     // serves JS/CSS/assets from wwwroot
 await MigrationHelper.MigrateToModulesAsync(dataDir);
 await MigrationHelper.MigrateToSchemaV2Async(dataDir);
 
+// ── Run data packs (version-controlled SQL teardown/preparation scripts) ──
+// Per-env opt-in via RunDataPacksOnStartup. Destructive: default OFF. Never throws.
+{
+    var dataPackRunner = app.Services.GetRequiredService<IDataPackRunner>();
+    await dataPackRunner.RunAllAsync();
+}
+
 // ── Serve Playwright screenshots as static files ──
 if (!string.IsNullOrEmpty(envConfig.PlaywrightScreenshotDir))
 {
@@ -267,6 +282,7 @@ app.MapGroup("/api/modules").MapModuleEndpoints();
 app.MapGroup("/api/testsets").MapTestSetEndpoints();
 app.MapGroup("/api/runs").MapRunEndpoints();
 app.MapGroup("/api/chat").MapChatEndpoints();
+app.MapGroup("/api/data-packs").MapDataPackEndpoints();
 if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCase))
 {
     app.MapGroup("/api/users").MapUserEndpoints();
