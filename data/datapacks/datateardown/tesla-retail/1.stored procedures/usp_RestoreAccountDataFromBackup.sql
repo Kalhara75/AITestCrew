@@ -326,6 +326,10 @@ BEGIN
         SET @TotalDeleted = @TotalDeleted + @RowsAffected
         IF @Debug = 1 PRINT '  Deleted CollectionPrintStatusHistory: ' + CAST(@RowsAffected AS NVARCHAR(20)) + ' rows'
 
+        DELETE FROM dbo.V2_RBILL_PendingTransaction WHERE AccountId = @AccountId
+		SET @RowsAffected = @@ROWCOUNT        
+		IF @Debug = 1 PRINT '  Deleted PendingTransaction: ' + CAST(@RowsAffected AS NVARCHAR(20)) + ' rows'    
+
         -- Finally Invoice
         DELETE FROM dbo.V2_RBILL_Invoice WHERE AccountId = @AccountId
         SET @RowsAffected = @@ROWCOUNT
