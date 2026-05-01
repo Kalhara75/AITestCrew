@@ -1191,7 +1191,7 @@ Run progress is tracked globally across the UI, not in local component state. Th
 
 Every page has an **Assistant** button in the header that opens a right-edge drawer. The assistant turns natural-language requests into actions the user confirms with a single click — no CLI flag lookup, no digging through URLs for module/test-set IDs.
 
-**How it works:** each message is sent with the page's URL context (`moduleId`, `testSetId` if on a test-set page) and the client-held chat history to `POST /api/chat/message`. The server asks the LLM — with the full live catalog of modules, test sets, environments, API stacks, aseXML endpoints, and online agents in the system prompt — to emit a structured `ChatResponse { reply, actions }`. The UI renders the reply as an assistant bubble and each action below it as a card.
+**How it works:** each message is sent with the page's URL context (`moduleId`, `testSetId` if on a test-set page) and the active conversation id to `POST /api/chat/message`. The server loads the prior transcript from SQLite, asks the LLM — with the full live catalog of modules, test sets, environments, API stacks, aseXML endpoints, and online agents in the system prompt — to emit a structured `ChatResponse { reply, actions, conversationId }`, and persists both the user turn and the assistant reply (including action cards) before returning. The UI renders the reply as an assistant bubble and each action below it as a card.
 
 **Action kinds:**
 
@@ -1220,7 +1220,18 @@ Every page has an **Assistant** button in the header that opens a right-edge dra
 
 **Catalog resolution:** the assistant only uses IDs, keys, and codes it finds literally in the server-provided catalog. Fuzzy phrases like "sumo" resolve to `sumo-retail` by name → substring → case-insensitive matching. If the request cannot be satisfied from the catalog, the assistant replies explaining why and emits no actions. When the user is on a test-set page, the catalog is enriched with that test set's `TestObjectives` so objective-level run scoping ("rebaseline the Deliver MFN objective") can resolve the objective id.
 
-Chat history is held client-side only (in-memory, cleared on page refresh or via the **clear** button in the drawer header). There is no server-side persistence of transcripts.
+**Conversation persistence (SQLite + auth mode):** conversations are stored server-side in the existing SQLite database, ring-fenced per user via the same `X-Api-Key` → `users.id` plumbing the rest of the API uses. Every conversation row carries a `user_id` and every read/write filters on it, so a stolen conversation id alone cannot read another user's thread.
+
+The drawer header is a thread picker: clicking the title opens a popover listing the user's recent conversations (newest first, with relative time + message count). Each row supports double-click rename and a `×` delete; **+ New chat** at the top of the popover starts a fresh thread. The first message you send in a "New chat" thread auto-titles it from the message text; explicit renames are preserved.
+
+Retention is config-driven via `TestEnvironment.Chat`:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `MaxConversationsPerUser` | 20 | Per-user cap. Creating a new conversation when at cap auto-prunes the oldest in the same transaction (rows in `chat_messages` are deleted too). |
+| `MaxMessagesPerConversation` | 200 | Bounds how many recent messages are fed to the LLM as history each turn. The DB still keeps every turn for replay in the UI; this only caps prompt size. |
+
+**File-storage / unauthenticated mode:** when the WebApi is in legacy file-storage mode (no SQLite, no users), the persistence endpoints are no-ops. The drawer detects this, hides the thread picker, and falls back to the legacy in-memory transcript with a `clear` button — same behaviour as before this feature shipped, lost on refresh.
 
 ---
 

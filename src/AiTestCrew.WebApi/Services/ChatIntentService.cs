@@ -5,13 +5,21 @@ using AiTestCrew.Agents.Base;
 using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
+using AiTestCrew.Core.Models.Chat;
 using AiTestCrew.WebApi.Models.Chat;
 
 namespace AiTestCrew.WebApi.Services;
 
 public interface IChatIntentService
 {
-    Task<ChatResponse> ProcessAsync(ChatRequest request, CancellationToken ct = default);
+    /// <summary>
+    /// Process one chat turn. When <paramref name="userId"/> is non-null and a
+    /// conversation repository is registered, the conversation is persisted
+    /// (history loaded from DB, user + assistant turns appended). When null
+    /// (legacy / file-storage mode), the call falls back to the stateless
+    /// behaviour of resending the full transcript on each request.
+    /// </summary>
+    Task<ChatResponse> ProcessAsync(ChatRequest request, string? userId, CancellationToken ct = default);
 }
 
 public class ChatIntentService : IChatIntentService
@@ -24,6 +32,7 @@ public class ChatIntentService : IChatIntentService
     private readonly TestEnvironmentConfig _cfg;
     private readonly ILogger<ChatIntentService> _logger;
     private readonly IAgentRepository? _agentRepo;
+    private readonly IChatConversationRepository? _convRepo;
 
     public ChatIntentService(
         Kernel kernel,
@@ -33,7 +42,8 @@ public class ChatIntentService : IChatIntentService
         IEndpointResolver endpointResolver,
         TestEnvironmentConfig cfg,
         ILogger<ChatIntentService> logger,
-        IAgentRepository? agentRepo = null)
+        IAgentRepository? agentRepo = null,
+        IChatConversationRepository? convRepo = null)
     {
         _kernel = kernel;
         _moduleRepo = moduleRepo;
@@ -43,12 +53,77 @@ public class ChatIntentService : IChatIntentService
         _cfg = cfg;
         _logger = logger;
         _agentRepo = agentRepo;
+        _convRepo = convRepo;
     }
 
-    public async Task<ChatResponse> ProcessAsync(ChatRequest request, CancellationToken ct = default)
+    public async Task<ChatResponse> ProcessAsync(ChatRequest request, string? userId, CancellationToken ct = default)
     {
-        if (request.Messages is null || request.Messages.Count == 0)
+        // Determine the new user message: prefer the explicit Message field;
+        // fall back to the last entry in Messages for backwards compatibility.
+        var userMessage = request.Message;
+        if (string.IsNullOrWhiteSpace(userMessage) && request.Messages is { Count: > 0 })
+        {
+            var last = request.Messages[^1];
+            if (string.Equals(last.Role, "user", StringComparison.OrdinalIgnoreCase))
+                userMessage = last.Content;
+        }
+        if (string.IsNullOrWhiteSpace(userMessage))
             return new ChatResponse { Reply = "Send a message to get started." };
+
+        var persistMode = _convRepo is not null && !string.IsNullOrWhiteSpace(userId);
+
+        // ── Resolve / create the conversation, then load prior messages from the DB ──
+        ChatConversation? conv = null;
+        var priorTurns = new List<ChatMessage>();
+        if (persistMode)
+        {
+            if (!string.IsNullOrWhiteSpace(request.ConversationId))
+            {
+                conv = await _convRepo!.GetAsync(request.ConversationId, userId!, ct);
+                if (conv is null)
+                {
+                    _logger.LogInformation("Chat conversation {Id} not found for user; creating a new one.", request.ConversationId);
+                }
+            }
+            if (conv is null)
+            {
+                conv = await _convRepo!.CreateAsync(userId!, AutoTitle(userMessage), _cfg.Chat.MaxConversationsPerUser, ct);
+            }
+            else if (conv.MessageCount == 0 && IsPlaceholderTitle(conv.Title))
+            {
+                // Conversation was created via "+ New chat" with the default
+                // placeholder title — auto-title now that we have a real first
+                // message to derive a label from.
+                var derived = AutoTitle(userMessage);
+                await _convRepo!.RenameAsync(conv.Id, userId!, derived, ct);
+                conv.Title = derived;
+            }
+
+            var existing = await _convRepo!.GetMessagesAsync(conv.Id, userId!, ct);
+            // Bound prompt size — drop oldest first.
+            var keep = Math.Max(0, _cfg.Chat.MaxMessagesPerConversation);
+            var startIdx = keep > 0 && existing.Count > keep ? existing.Count - keep : 0;
+            for (var i = startIdx; i < existing.Count; i++)
+                priorTurns.Add(new ChatMessage(existing[i].Role, existing[i].Content));
+        }
+        else if (request.Messages is not null)
+        {
+            // Stateless fallback: trust the client transcript as before, minus the last user msg
+            // (which we add below as the current turn).
+            for (var i = 0; i < request.Messages.Count - 1; i++)
+                priorTurns.Add(request.Messages[i]);
+        }
+
+        // ── Persist the user turn first so it's visible even if the LLM call fails ──
+        if (persistMode && conv is not null)
+        {
+            await _convRepo!.AppendMessageAsync(conv.Id, userId!, new ChatMessageRecord
+            {
+                Role = "user",
+                Content = userMessage,
+                CreatedAt = DateTime.UtcNow
+            }, ct);
+        }
 
         var catalog = await BuildCatalogAsync(request.Context, ct);
         var systemPrompt = BuildSystemPrompt(catalog, request.Context);
@@ -56,25 +131,55 @@ public class ChatIntentService : IChatIntentService
         var chatService = _kernel.GetRequiredService<IChatCompletionService>();
         var history = new ChatHistory();
         history.AddSystemMessage(systemPrompt);
-        foreach (var msg in request.Messages)
+        foreach (var msg in priorTurns)
         {
             if (string.Equals(msg.Role, "user", StringComparison.OrdinalIgnoreCase))
                 history.AddUserMessage(msg.Content);
             else if (string.Equals(msg.Role, "assistant", StringComparison.OrdinalIgnoreCase))
                 history.AddAssistantMessage(msg.Content);
         }
+        history.AddUserMessage(userMessage);
 
         var raw = (await chatService.GetChatMessageContentAsync(history, cancellationToken: ct)).Content ?? "";
         _logger.LogDebug("Chat LLM raw response: {Raw}", raw[..Math.Min(500, raw.Length)]);
 
-        var parsed = LlmJsonHelper.DeserializeLlmResponse<ChatResponse>(raw);
-        if (parsed is null)
+        var parsed = LlmJsonHelper.DeserializeLlmResponse<ChatResponse>(raw)
+                     ?? new ChatResponse { Reply = raw };
+
+        if (persistMode && conv is not null)
         {
-            _logger.LogWarning("Failed to parse chat LLM response as JSON; falling back to raw text.");
-            return new ChatResponse { Reply = raw };
+            parsed.ConversationId = conv.Id;
+            string? actionsJson = null;
+            if (parsed.Actions is { Count: > 0 })
+            {
+                try { actionsJson = JsonSerializer.Serialize(parsed.Actions, LlmJsonHelper.JsonOpts); }
+                catch (Exception ex) { _logger.LogDebug(ex, "Failed to serialise chat actions for persistence."); }
+            }
+            await _convRepo!.AppendMessageAsync(conv.Id, userId!, new ChatMessageRecord
+            {
+                Role = "assistant",
+                Content = parsed.Reply ?? "",
+                ActionsJson = actionsJson,
+                CreatedAt = DateTime.UtcNow
+            }, ct);
         }
+
         return parsed;
     }
+
+    private static string AutoTitle(string firstUserMessage)
+    {
+        var cleaned = firstUserMessage.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        if (cleaned.Length <= 60) return string.IsNullOrEmpty(cleaned) ? "New chat" : cleaned;
+        return cleaned[..60].TrimEnd() + "…";
+    }
+
+    /// <summary>True for the default title set by "+ New chat" — anything the
+    /// user explicitly renamed to is left alone.</summary>
+    private static bool IsPlaceholderTitle(string? title) =>
+        string.IsNullOrWhiteSpace(title)
+        || string.Equals(title, "New chat", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(title, "Untitled", StringComparison.OrdinalIgnoreCase);
 
     private async Task<object> BuildCatalogAsync(ChatRequestContext? context, CancellationToken ct)
     {

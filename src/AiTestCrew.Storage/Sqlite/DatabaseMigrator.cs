@@ -147,12 +147,36 @@ public static class DatabaseMigrator
             CREATE INDEX IF NOT EXISTS idx_pending_verif_due
                 ON run_pending_verifications (status, first_due_at);
 
+            CREATE TABLE IF NOT EXISTS chat_conversations (
+                id            TEXT PRIMARY KEY,
+                user_id       TEXT NOT NULL,
+                title         TEXT NOT NULL,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL,
+                message_count INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_chat_conversations_user
+                ON chat_conversations (user_id, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id              TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                role            TEXT NOT NULL,
+                content         TEXT NOT NULL,
+                actions_json    TEXT,
+                created_at      TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_conv
+                ON chat_messages (conversation_id, created_at);
+
             CREATE TABLE IF NOT EXISTS schema_version (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
 
-            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '6');
+            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '7');
             """;
         cmd.ExecuteNonQuery();
 
@@ -240,9 +264,14 @@ public static class DatabaseMigrator
             createPending.ExecuteNonQuery();
         }
 
+        // ── v6 → v7: per-user Assistant conversations + messages ──
+        // Tables are created above by the initial CREATE TABLE IF NOT EXISTS block,
+        // so v6 DBs upgrade cleanly without column ALTERs. Indexes are also covered
+        // by the CREATE INDEX IF NOT EXISTS statements in the same block.
+
         // Ensure schema_version reflects the latest applied migration even on upgraded DBs
         using var bump = conn.CreateCommand();
-        bump.CommandText = "UPDATE schema_version SET value = '6' WHERE key = 'version' AND CAST(value AS INTEGER) < 6";
+        bump.CommandText = "UPDATE schema_version SET value = '7' WHERE key = 'version' AND CAST(value AS INTEGER) < 7";
         bump.ExecuteNonQuery();
     }
 

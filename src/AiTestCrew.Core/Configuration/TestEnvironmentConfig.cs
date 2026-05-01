@@ -171,6 +171,30 @@ public class TestEnvironmentConfig
     //   .manifest.json describing which fields are auto-generated, user-supplied, or constant.
     // OutputPath: directory where rendered XML payloads are written, one sub-folder per run.
     public AseXmlConfig AseXml { get; set; } = new();
+
+    // --- Chat (Assistant drawer persistence) ---
+    public ChatConfig Chat { get; set; } = new();
+}
+
+/// <summary>
+/// Tunables for the persisted Assistant conversation feature
+/// (see <see cref="AiTestCrew.Core.Interfaces.IChatConversationRepository"/>).
+/// </summary>
+public class ChatConfig
+{
+    /// <summary>
+    /// How many conversations to retain per user. Older threads beyond this
+    /// cap are auto-pruned on the next conversation-create. Set to 0 to disable
+    /// the cap (unbounded — not recommended).
+    /// </summary>
+    public int MaxConversationsPerUser { get; set; } = 20;
+
+    /// <summary>
+    /// How many of the most recent messages from a conversation to feed back
+    /// to the LLM as history on each turn. The DB still keeps every message
+    /// for replay in the UI; this only bounds prompt size.
+    /// </summary>
+    public int MaxMessagesPerConversation { get; set; } = 200;
 }
 
 /// <summary>

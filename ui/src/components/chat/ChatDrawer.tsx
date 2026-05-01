@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useChat } from '../../contexts/ChatContext';
 import { useActiveRun } from '../../contexts/ActiveRunContext';
 import type { ChatMessageEntry } from '../../contexts/ChatContext';
-import type { ChatAction, ChatRequestContext } from '../../api/chat';
+import type { ChatAction, ChatRequestContext, ConversationSummary } from '../../api/chat';
 import { useQuery } from '@tanstack/react-query';
 import { triggerRun } from '../../api/runs';
 import { createModule, createTestSet, addPostStep } from '../../api/modules';
@@ -26,11 +26,18 @@ function useCurrentContext(): ChatRequestContext | undefined {
 }
 
 export function ChatDrawer() {
-  const { isOpen, close, messages, isSending, error, send, clear } = useChat();
+  const {
+    isOpen, close, messages, isSending, error, send, clear,
+    persistenceEnabled,
+    conversations, activeConversationId,
+    selectConversation, newConversation, deleteConversation, renameConversation,
+    isLoadingMessages,
+  } = useChat();
   const [input, setInput] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const context = useCurrentContext();
+  const activeConversation = conversations.find(c => c.id === activeConversationId);
 
   useEffect(() => {
     if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
@@ -69,25 +76,27 @@ export function ChatDrawer() {
       flexDirection: 'column',
       zIndex: 50,
     }}>
-      <header style={{
-        display: 'flex', alignItems: 'center', gap: 10,
-        padding: '12px 16px', borderBottom: '1px solid #e2e8f0',
-      }}>
-        <strong style={{ fontSize: 14, color: '#0f172a', letterSpacing: 0.3 }}>Assistant</strong>
-        <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>read-only preview</span>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          {messages.length > 0 && (
-            <button onClick={clear} style={iconBtnStyle} title="Clear conversation">clear</button>
-          )}
-          <button onClick={close} style={iconBtnStyle} title="Close">close</button>
-        </div>
-      </header>
+      <ChatHeader
+        persistenceEnabled={persistenceEnabled}
+        activeConversation={activeConversation}
+        conversations={conversations}
+        hasMessages={messages.length > 0}
+        onSelect={selectConversation}
+        onNew={newConversation}
+        onDelete={deleteConversation}
+        onRename={renameConversation}
+        onClear={clear}
+        onClose={close}
+      />
 
       <div ref={listRef} style={{
         flex: 1, overflowY: 'auto', padding: '16px',
         display: 'flex', flexDirection: 'column', gap: 12,
       }}>
-        {messages.length === 0 && <EmptyState />}
+        {isLoadingMessages && messages.length === 0 && (
+          <div style={{ fontSize: 12, color: '#94a3b8' }}>Loading conversation…</div>
+        )}
+        {!isLoadingMessages && messages.length === 0 && <EmptyState />}
         {messages.map(m => <MessageBubble key={m.id} message={m} />)}
         {isSending && <TypingIndicator />}
         {error && (
@@ -151,6 +160,207 @@ function EmptyState() {
       </ul>
     </div>
   );
+}
+
+function ChatHeader({
+  persistenceEnabled, activeConversation, conversations, hasMessages,
+  onSelect, onNew, onDelete, onRename, onClear, onClose,
+}: {
+  persistenceEnabled: boolean;
+  activeConversation: ConversationSummary | undefined;
+  conversations: ConversationSummary[];
+  hasMessages: boolean;
+  onSelect: (id: string | null) => void;
+  onNew: () => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
+  onRename: (id: string, title: string) => Promise<void>;
+  onClear: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const popoverRef = useRef<HTMLDivElement>(null);
+
+  // Close the picker when clicking outside
+  useEffect(() => {
+    if (!pickerOpen) return;
+    function onDocClick(e: MouseEvent) {
+      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
+        setPickerOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [pickerOpen]);
+
+  const title = activeConversation?.title || 'Assistant';
+
+  return (
+    <header style={{
+      display: 'flex', alignItems: 'center', gap: 10,
+      padding: '12px 16px', borderBottom: '1px solid #e2e8f0',
+      position: 'relative',
+    }}>
+      {persistenceEnabled ? (
+        <button
+          onClick={() => setPickerOpen(v => !v)}
+          title="Switch conversation"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            background: 'transparent', border: 'none',
+            padding: 0, cursor: 'pointer',
+            fontSize: 14, fontWeight: 700, color: '#0f172a', letterSpacing: 0.3,
+            maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}
+        >
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</span>
+          <span style={{ fontSize: 10, color: '#94a3b8' }}>▼</span>
+        </button>
+      ) : (
+        <strong style={{ fontSize: 14, color: '#0f172a', letterSpacing: 0.3 }}>Assistant</strong>
+      )}
+      <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>read-only preview</span>
+      <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+        {persistenceEnabled ? (
+          <button onClick={() => { void onNew(); setPickerOpen(false); }}
+                  style={iconBtnStyle} title="Start a new conversation">+ new</button>
+        ) : (
+          hasMessages && (
+            <button onClick={() => { void onClear(); }}
+                    style={iconBtnStyle} title="Clear conversation">clear</button>
+          )
+        )}
+        <button onClick={onClose} style={iconBtnStyle} title="Close">close</button>
+      </div>
+
+      {pickerOpen && persistenceEnabled && (
+        <div ref={popoverRef} style={{
+          position: 'absolute', top: '100%', left: 12, right: 12,
+          marginTop: 4, zIndex: 60,
+          background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8,
+          boxShadow: '0 6px 20px rgba(15, 23, 42, 0.10)',
+          maxHeight: 320, overflowY: 'auto',
+        }}>
+          <button
+            onClick={() => { void onNew(); setPickerOpen(false); }}
+            style={{
+              width: '100%', textAlign: 'left',
+              padding: '10px 12px', fontSize: 13,
+              background: 'transparent', border: 'none', borderBottom: '1px solid #f1f5f9',
+              color: '#1d4ed8', fontWeight: 600, cursor: 'pointer',
+            }}>
+            + New chat
+          </button>
+          {conversations.length === 0 ? (
+            <div style={{ padding: '12px', fontSize: 12, color: '#94a3b8' }}>
+              No saved conversations yet.
+            </div>
+          ) : (
+            conversations.map(c => (
+              <ConversationRow
+                key={c.id}
+                conversation={c}
+                isActive={c.id === activeConversation?.id}
+                onSelect={() => { onSelect(c.id); setPickerOpen(false); }}
+                onDelete={() => { void onDelete(c.id); }}
+                onRename={(title) => { void onRename(c.id, title); }}
+              />
+            ))
+          )}
+        </div>
+      )}
+    </header>
+  );
+}
+
+function ConversationRow({
+  conversation, isActive, onSelect, onDelete, onRename,
+}: {
+  conversation: ConversationSummary;
+  isActive: boolean;
+  onSelect: () => void;
+  onDelete: () => void;
+  onRename: (title: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(conversation.title);
+
+  function commit() {
+    const next = draft.trim();
+    setEditing(false);
+    if (next && next !== conversation.title) onRename(next);
+    else setDraft(conversation.title);
+  }
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8,
+      padding: '8px 12px',
+      background: isActive ? '#f1f5f9' : 'transparent',
+      borderBottom: '1px solid #f8fafc',
+    }}>
+      {editing ? (
+        <input
+          autoFocus
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={e => {
+            if (e.key === 'Enter') { e.preventDefault(); commit(); }
+            else if (e.key === 'Escape') { setDraft(conversation.title); setEditing(false); }
+          }}
+          style={{
+            flex: 1, fontSize: 13, padding: '3px 6px',
+            border: '1px solid #cbd5e1', borderRadius: 4,
+            outline: 'none',
+          }}
+        />
+      ) : (
+        <button
+          onClick={onSelect}
+          onDoubleClick={() => setEditing(true)}
+          title={conversation.title + ' — double-click to rename'}
+          style={{
+            flex: 1, textAlign: 'left',
+            background: 'transparent', border: 'none',
+            padding: 0, cursor: 'pointer',
+            fontSize: 13, color: '#0f172a',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}
+        >
+          {conversation.title}
+          <span style={{ display: 'block', fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>
+            {formatRelativeTime(conversation.updatedAt)} · {conversation.messageCount} msg
+          </span>
+        </button>
+      )}
+      <button
+        onClick={(e) => { e.stopPropagation(); onDelete(); }}
+        title="Delete conversation"
+        style={{
+          background: 'transparent', border: 'none',
+          color: '#94a3b8', fontSize: 14, cursor: 'pointer',
+          padding: '2px 6px', borderRadius: 4,
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+function formatRelativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return '';
+  const diffMs = Date.now() - then;
+  const sec = Math.round(diffMs / 1000);
+  if (sec < 60) return 'just now';
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.round(hr / 24);
+  if (day < 7) return `${day}d ago`;
+  return new Date(iso).toLocaleDateString();
 }
 
 function TypingIndicator() {

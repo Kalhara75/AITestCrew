@@ -169,6 +169,7 @@ Storage/
     SqliteTestSetRepository.cs    — ITestSetRepository implementation backed by SQLite
     SqliteExecutionHistoryRepository.cs — IExecutionHistoryRepository implementation backed by SQLite
     SqliteUserRepository.cs       — IUserRepository implementation backed by SQLite (atc_ prefixed API keys)
+    SqliteChatConversationRepository.cs — IChatConversationRepository — per-user chat conversations + messages, with WHERE user_id on every read/write and per-user retention cap
     JsonOpts.cs                   — Shared JSON serialization options for SQLite data columns
 ```
 
@@ -495,10 +496,10 @@ WebApi/
     AuthEndpoints.cs               — GET /api/auth/status, user CRUD (GET/POST/DELETE /api/users/*)
     AgentEndpoints.cs              — Agent register/heartbeat/deregister/list (Phase 4, SQLite only)
     QueueEndpoints.cs              — /api/queue/* — agent claims jobs, reports progress/result; dashboard list + cancel (Phase 4, SQLite only)
-    ChatEndpoints.cs               — POST /api/chat/message — LLM-backed natural-language → structured ChatResponse (reply + actions)
+    ChatEndpoints.cs               — POST /api/chat/message + per-user conversation CRUD (GET/POST/DELETE/PATCH /api/chat/conversations[/{id}])
     RecordingEndpoints.cs          — POST /api/recordings — enqueues a recording/auth-setup job for a local agent (JobKind = Record | RecordSetup | RecordVerification | AuthSetup)
   Models/
-    Chat/ChatModels.cs             — ChatMessage / ChatRequest / ChatResponse / ChatAction DTOs for the /api/chat/message contract
+    Chat/ChatModels.cs             — ChatMessage / ChatRequest / ChatResponse / ChatAction DTOs + ConversationSummary / ConversationDetail / PersistedChatMessage
   Services/
     IRunTracker.cs                 — Interface for individual run tracking (HasActiveRunForTestSet)
     IModuleRunTracker.cs           — Interface for module-level composite run tracking (HasActiveModuleRunForModule)
@@ -506,7 +507,7 @@ WebApi/
     ModuleRunTracker.cs            — In-memory IModuleRunTracker implementation (ConcurrentDictionary)
     AgentHeartbeatMonitor.cs       — BackgroundService that marks agents Offline when heartbeat goes stale
     RunDispatchHelper.cs           — Decides whether a run must be enqueued for a local agent (UI targets) or run in-process
-    ChatIntentService.cs           — Builds live catalog (modules, test sets, envs, stacks, endpoints, agents, current-test-set objectives) + system prompt, calls IChatCompletionService, deserializes ChatResponse via LlmJsonHelper
+    ChatIntentService.cs           — Loads/persists conversation history from IChatConversationRepository, builds catalog (modules, test sets, envs, stacks, endpoints, agents, current-test-set objectives), calls IChatCompletionService, deserialises ChatResponse via LlmJsonHelper. Auto-titles new threads from the first user message.
   appsettings.example.json         — Template config
 ```
 
@@ -550,7 +551,12 @@ WebApi/
 | `GET` | `/api/config/api-stacks` | List configured API stacks and modules (for UI dropdowns) |
 | `GET` | `/api/config/environments` | List configured customer environments (key, display name, default flag, data-teardown opt-in) |
 | `GET` | `/api/config/endpoints` | List Bravo `EndPointCode`s via `IEndpointResolver.ListCodesAsync()`. Returns `{ endpoints, error? }` — the `error` field is populated (and `endpoints` is empty) when the Bravo DB is unreachable, so the chat catalog degrades gracefully instead of 500ing. |
-| `POST` | `/api/chat/message` | LLM-backed chat turn. Body: `{ messages[], context? }`. Returns `{ reply, actions[] }` where each action is `navigate` / `showData` / `confirmRun` / `confirmCreate` / `confirmRecord`. |
+| `POST` | `/api/chat/message` | LLM-backed chat turn. Body: `{ message, conversationId?, context? }`. Returns `{ reply, actions[], conversationId }`. The server loads prior turns from SQLite by `conversationId` (creating a new thread when omitted) and persists both user and assistant turns. Each action is `navigate` / `showData` / `confirmRun` / `confirmCreate` / `confirmRecord` / `confirmCreatePostStep`. |
+| `GET` | `/api/chat/conversations` | List the caller's conversations (newest first). Returns `[{ id, title, createdAt, updatedAt, messageCount }]`. SQLite + auth mode only; falls back to `[]` otherwise. |
+| `POST` | `/api/chat/conversations` | Create an empty conversation. Body: `{ title? }`. Returns `201` + `ConversationSummary`. Honours the per-user retention cap. |
+| `GET` | `/api/chat/conversations/{id}` | Full transcript for one conversation: `{ id, title, …, messages: [{ id, role, content, actions, createdAt }] }`. 404 if the id does not belong to the caller. |
+| `DELETE` | `/api/chat/conversations/{id}` | Delete a conversation and its messages. 404 if not owned. |
+| `PATCH` | `/api/chat/conversations/{id}` | Rename. Body: `{ title }`. |
 | `POST` | `/api/recordings` | Enqueue a recording/auth-setup job for a local agent (SQLite-only). Kinds: `Record`, `RecordSetup`, `RecordVerification`, `AuthSetup`. Returns `202 { jobId, status: Queued, jobKind, targetType }`. |
 | `GET` | `/api/health` | Health check |
 | `GET` | `/screenshots/{filename}` | Serve Playwright failure screenshots (static files from `PlaywrightScreenshotDir`) |
@@ -793,7 +799,7 @@ Two storage backends are available, selected by the `StorageProvider` config key
 | Backend | Config value | Repositories | Notes |
 |---|---|---|---|
 | File-based (default) | `"File"` | `ModuleRepository`, `TestSetRepository`, `ExecutionHistoryRepository` | JSON files on disk; original backend |
-| SQLite | `"Sqlite"` | `SqliteModuleRepository`, `SqliteTestSetRepository`, `SqliteExecutionHistoryRepository`, `SqliteUserRepository` | Single DB file; WAL mode for concurrent reads; also enables user auth |
+| SQLite | `"Sqlite"` | `SqliteModuleRepository`, `SqliteTestSetRepository`, `SqliteExecutionHistoryRepository`, `SqliteUserRepository`, `SqliteChatConversationRepository` | Single DB file; WAL mode for concurrent reads; also enables user auth and per-user persisted Assistant conversations |
 
 All three repository interfaces (`IModuleRepository`, `ITestSetRepository`, `IExecutionHistoryRepository`) live in the `AiTestCrew.Agents.Persistence` namespace inside the Storage project. Agent and orchestrator code programs against the interfaces — the active backend is selected at DI registration time.
 
@@ -1496,11 +1502,11 @@ The Assistant is a right-edge drawer in the React UI that translates natural-lan
 
 ### Round trip
 
-1. User types a message in the drawer. The client maintains the conversation history in a `ChatContext` (in-memory only, cleared on refresh).
-2. `ChatDrawer` POSTs `{ messages[], context: { moduleId?, testSetId? } }` to `/api/chat/message`. The URL-derived `context` lets phrases like "run this" resolve without explicit IDs.
-3. `ChatIntentService` builds a **catalog snapshot** from the existing repositories / resolvers: modules + their test sets (with stack/env hints), configured environments, API stacks and modules, Bravo endpoint codes (via `IEndpointResolver.ListCodesAsync` — best-effort), registered agents + capabilities, and — if the request is scoped to a test-set page — that test set's `TestObjectives`. The snapshot is injected into the system prompt alongside the action schema.
+1. User types a message in the drawer. The client tracks `activeConversationId` in `ChatContext`; the message list itself is fetched from the server via React Query (key: `['chat', 'conversation', userId, conversationId]`), with an optimistic user-bubble layered on top until the server round-trip completes.
+2. `ChatDrawer` POSTs `{ message, conversationId?, context: { moduleId?, testSetId? } }` to `/api/chat/message`. The URL-derived `context` lets phrases like "run this" resolve without explicit IDs. When `conversationId` is omitted the server creates a fresh thread and returns its id; the prior transcript is loaded from SQLite, so the client doesn't resend it.
+3. `ChatIntentService` looks up (or creates) the conversation, loads the prior messages bounded by `Chat.MaxMessagesPerConversation`, persists the user turn, then builds a **catalog snapshot** from the existing repositories / resolvers: modules + their test sets (with stack/env hints), configured environments, API stacks and modules, Bravo endpoint codes (via `IEndpointResolver.ListCodesAsync` — best-effort), registered agents + capabilities, and — if the request is scoped to a test-set page — that test set's `TestObjectives`. The snapshot is injected into the system prompt alongside the action schema.
 4. The LLM is asked to return a single `ChatResponse { reply, actions[] }` JSON. The prompt enumerates every action shape (see below) and forbids inventing IDs/keys that aren't in the catalog. `LlmJsonHelper.DeserializeLlmResponse<ChatResponse>` (shared with `BaseTestAgent`) strips markdown fences and tolerates JSON-with-preamble.
-5. The UI renders the reply as an assistant bubble and each action below it as a card.
+5. The service persists the assistant reply (verbatim text + serialised action cards) and returns `{ reply, actions, conversationId }`. The UI invalidates its conversation queries; the message list re-renders with the persisted turns plus any action cards.
 
 ### Action kinds
 
@@ -1521,21 +1527,64 @@ There is intentionally no tool-calling layer. The server pre-computes the full c
 ### Scope boundaries
 
 - **Normal-mode is API-only in chat** — the assistant will emit `confirmRun` with `mode=Normal` when the user asks to generate/create an API test (e.g. "generate a test for SDR legacy API `api/v1/...` GET"). The LLM resolves `apiStackKey` + `apiModule` from phrases like "legacy" / "BraveCloud" / "SDR" against the catalog's `apiStacks` and refuses to invent keys. UI / aseXML Normal-mode generation stays out of scope — the prompt explicitly forbids it and routes UI intents to `confirmRecord` instead.
-- **Chat history is client-only** — there is no server-side transcript store. Refreshing the page or clicking the drawer's "clear" button resets the conversation.
 - **Recording is dispatch-only** — the chat doesn't execute recording sessions itself; it enqueues them via `/api/recordings` for a user-selected agent. Running a Runner in `--agent` mode is still required.
-- **No tool calling / streaming** — the endpoint returns a single JSON response. Streaming and server-side persistence are deferred.
+- **No tool calling / streaming** — the endpoint returns a single JSON response per turn. Streaming is still deferred; persistence has shipped (see below).
+
+### Conversation persistence
+
+Conversations are persisted in SQLite when the WebApi runs in SQLite + auth mode. The schema lives in `src/AiTestCrew.Storage/Sqlite/DatabaseMigrator.cs` (v6 → v7 migration, additive — no `ALTER`s):
+
+```sql
+chat_conversations (
+    id            TEXT PRIMARY KEY,
+    user_id       TEXT NOT NULL,        -- FK users.id (logical; no enforced FK)
+    title         TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    message_count INTEGER NOT NULL DEFAULT 0
+)
+INDEX (user_id, updated_at DESC)
+
+chat_messages (
+    id              TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,      -- FK chat_conversations.id (logical)
+    role            TEXT NOT NULL,      -- 'user' | 'assistant'
+    content         TEXT NOT NULL,
+    actions_json    TEXT,               -- serialised List<ChatAction> for assistant turns
+    created_at      TEXT NOT NULL
+)
+INDEX (conversation_id, created_at)
+```
+
+**Per-user ring-fencing** is double-enforced:
+
+1. `ApiKeyAuthMiddleware` validates `X-Api-Key` and stores the resolved `User` in `HttpContext.Items["User"]`. Chat endpoints extract it and pass `user.Id` to the repository.
+2. `SqliteChatConversationRepository` includes `WHERE user_id = $userId` on every read and write — a stolen conversation id alone cannot read another user's thread. Append/delete additionally re-check ownership inside the same transaction so a race with a concurrent rename can't leak data.
+
+**Retention** — `Chat.MaxConversationsPerUser` (default 20) caps each user's thread count. Creating a new conversation when at cap deletes the oldest (and its messages) in the same transaction. `Chat.MaxMessagesPerConversation` (default 200) bounds prompt history; the DB still keeps every turn for replay.
+
+**Auto-titling** — the first user message in a conversation derives the title (first 60 chars, single-line). Threads created via "+ New chat" start as the placeholder `"New chat"`; `ChatIntentService` rewrites the placeholder on the first message with content. Explicit user renames are preserved (`IsPlaceholderTitle` only matches the defaults).
+
+**Action-card replay** — assistant action cards (`navigate`, `showData`, `confirmRun`, etc.) are serialised into `chat_messages.actions_json` so they re-render after a refresh. Confirm-cards are rendered in their idle state on replay; clicking Execute re-issues the underlying mutation as it would for a fresh card.
+
+**Fallback for file-storage / no-auth mode** — when no `IChatConversationRepository` is registered, `ChatIntentService` falls through to its legacy stateless behaviour (client-resent transcript, no DB writes). The frontend detects this via the `authRequired` flag and hides the thread picker, falling back to an in-memory transcript with a `clear` button.
 
 ### File map
 
 | File | Purpose |
 |---|---|
-| `src/AiTestCrew.WebApi/Endpoints/ChatEndpoints.cs` | `POST /api/chat/message` wrapper |
-| `src/AiTestCrew.WebApi/Services/ChatIntentService.cs` | Catalog build + system prompt + LLM call + response parse |
-| `src/AiTestCrew.WebApi/Models/Chat/ChatModels.cs` | Request/response/action DTOs |
+| `src/AiTestCrew.WebApi/Endpoints/ChatEndpoints.cs` | `POST /api/chat/message` + conversation CRUD (`GET/POST/DELETE/PATCH /conversations`) — every handler scoped via `HttpContext.Items["User"]` |
+| `src/AiTestCrew.WebApi/Services/ChatIntentService.cs` | Catalog build + system prompt + LLM call + response parse + transcript load/persist + auto-title |
+| `src/AiTestCrew.WebApi/Models/Chat/ChatModels.cs` | Request/response/action DTOs + `ConversationSummary` / `ConversationDetail` / `PersistedChatMessage` |
 | `src/AiTestCrew.WebApi/Endpoints/RecordingEndpoints.cs` | `POST /api/recordings` — thin wrapper that validates + enqueues |
-| `ui/src/contexts/ChatContext.tsx` | Client-held message history + send function |
-| `ui/src/components/chat/ChatDrawer.tsx` | Drawer, message list, action-card renderers |
-| `ui/src/api/chat.ts` + `ui/src/api/recordings.ts` | API clients |
+| `src/AiTestCrew.Core/Models/Chat/ChatConversation.cs` + `ChatMessageRecord.cs` | Domain models |
+| `src/AiTestCrew.Core/Interfaces/IChatConversationRepository.cs` | Repository contract — every method takes `userId` for ring-fencing |
+| `src/AiTestCrew.Storage/Sqlite/SqliteChatConversationRepository.cs` | SQLite implementation; `WHERE user_id = …` on every operation |
+| `src/AiTestCrew.Storage/Sqlite/DatabaseMigrator.cs` | Schema v6 → v7 migration adds `chat_conversations` + `chat_messages` |
+| `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` | `ChatConfig` (MaxConversationsPerUser, MaxMessagesPerConversation) |
+| `ui/src/contexts/ChatContext.tsx` | API-backed conversation list + active id via React Query; in-memory fallback for file-storage mode |
+| `ui/src/components/chat/ChatDrawer.tsx` | Drawer, header thread picker, action-card renderers |
+| `ui/src/api/chat.ts` + `ui/src/api/recordings.ts` | API clients (chat now exposes `listConversations` / `createConversation` / `getConversation` / `deleteConversation` / `renameConversation`) |
 
 ---
 
