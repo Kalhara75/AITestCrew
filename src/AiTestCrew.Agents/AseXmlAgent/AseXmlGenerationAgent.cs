@@ -68,6 +68,20 @@ public class AseXmlGenerationAgent : BaseTestAgent
                     $"Loaded {testCases.Count} saved aseXML test case(s) (reuse mode — skipping LLM generation)"));
             }
 
+            // ── VerifyOnly: skip render, run only post-steps ──
+            var verifyOnly = task.Parameters.TryGetValue("VerifyOnly", out var voFlag) && voFlag is true;
+            if (verifyOnly)
+            {
+                if (testCases is null)
+                {
+                    steps.Add(TestStep.Err("verify-only",
+                        "VerifyOnly requires preloaded test cases — run via --reuse first."));
+                    return BuildResult(task, steps, TestStatus.Error,
+                        "Missing preloaded test cases for VerifyOnly.", sw, new List<AseXmlTestDefinition>());
+                }
+                return await RunVerifyOnlyAsync(task, testCases, tc => tc.PostSteps, sw, ct);
+            }
+
             if (testCases is null)
             {
                 if (_templates.All().Count == 0)

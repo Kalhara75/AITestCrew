@@ -314,6 +314,12 @@ export interface AiPatchApplyRequest {
   patches: ObjectivePatchEntry[];
 }
 
+export interface VerifyStepFilter {
+  parentKind: string;
+  parentStepIndex: number;
+  postStepIndex: number;
+}
+
 export interface TriggerRunRequest {
   objective?: string;
   objectiveName?: string;
@@ -325,6 +331,7 @@ export interface TriggerRunRequest {
   apiModule?: string;
   verificationWaitOverride?: number;
   environmentKey?: string;
+  verifyStepFilter?: VerifyStepFilter;
 }
 
 export interface EnvironmentInfo {

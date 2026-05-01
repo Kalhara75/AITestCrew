@@ -2,6 +2,8 @@ import { Fragment, useState } from 'react';
 import type { PostStep, WebUiStep, DesktopUiStep } from '../types';
 import { deletePostStep, updatePostStep } from '../api/modules';
 import type { PostStepParentKind } from '../api/modules';
+import { triggerRun } from '../api/runs';
+import { useActiveRun } from '../contexts/ActiveRunContext';
 import { EditWebUiTestCaseDialog } from './EditWebUiTestCaseDialog';
 import { EditDesktopUiTestCaseDialog } from './EditDesktopUiTestCaseDialog';
 
@@ -39,10 +41,36 @@ export function PostStepsPanel({
   const [confirmDeleteIdx, setConfirmDeleteIdx] = useState<number | null>(null);
   const [deletingIdx, setDeletingIdx] = useState<number | null>(null);
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
+  const [runErrorIdx, setRunErrorIdx] = useState<{ idx: number; message: string } | null>(null);
+  const { individualRun, setIndividualRun } = useActiveRun();
+  const anyRunning = !!individualRun;
 
   if (!postSteps || postSteps.length === 0) return null;
 
   const canEdit = !!moduleId && !!testSetId;
+  const canRun = !!testSetId;
+
+  const handleRunStep = async (i: number) => {
+    if (!testSetId) return;
+    setRunErrorIdx(null);
+    try {
+      const res = await triggerRun({
+        mode: 'VerifyOnly',
+        testSetId,
+        moduleId,
+        objectiveId,
+        verificationWaitOverride: 0,
+        verifyStepFilter: {
+          parentKind,
+          parentStepIndex: parentIndex,
+          postStepIndex: i,
+        },
+      });
+      setIndividualRun({ runId: res.runId, testSetId, moduleId, objectiveId });
+    } catch (err) {
+      setRunErrorIdx({ idx: i, message: err instanceof Error ? err.message : 'Failed to trigger' });
+    }
+  };
 
   const toggleExpand = (i: number) => {
     setExpanded(prev => {
@@ -87,7 +115,7 @@ export function PostStepsPanel({
             <th style={thS}>Description</th>
             <th style={thS}>Wait</th>
             <th style={thS}>Payload</th>
-            {canEdit && <th style={{ ...thS, width: 60 }}></th>}
+            {(canEdit || canRun) && <th style={{ ...thS, width: 100 }}></th>}
           </tr>
         </thead>
         <tbody>
@@ -114,7 +142,7 @@ export function PostStepsPanel({
                   <td style={{ ...tdS, fontFamily: 'ui-monospace,Consolas,monospace', fontSize: 12, color: '#64748b' }}>
                     <PayloadSummary p={p} />
                   </td>
-                  {canEdit && (
+                  {(canEdit || canRun) && (
                     <td style={{ ...tdS, whiteSpace: 'nowrap' }} onClick={e => e.stopPropagation()}>
                       {confirmDeleteIdx === i ? (
                         <span style={{ display: 'inline-flex', gap: 4 }}>
@@ -125,7 +153,27 @@ export function PostStepsPanel({
                         </span>
                       ) : (
                         <>
-                          {(p.webUi || p.desktopUi) && (
+                          {canRun && (
+                            <button
+                              onClick={() => handleRunStep(i)}
+                              disabled={anyRunning}
+                              style={{
+                                background: 'none',
+                                color: anyRunning ? '#94a3b8' : '#0d9488',
+                                border: `1px solid ${anyRunning ? '#e2e8f0' : '#ccfbf1'}`,
+                                padding: '0px 6px',
+                                borderRadius: 3,
+                                fontSize: 10,
+                                fontWeight: 600,
+                                cursor: anyRunning ? 'not-allowed' : 'pointer',
+                                marginRight: 6,
+                              }}
+                              title="Run only this post-step (skips earlier post-steps)"
+                            >
+                              Run
+                            </button>
+                          )}
+                          {(p.webUi || p.desktopUi) && canEdit && (
                             <span
                               onClick={() => setEditingIdx(i)}
                               style={{ fontSize: 13, color: '#1d4ed8', cursor: 'pointer', opacity: 0.7, marginRight: 8 }}
@@ -134,13 +182,18 @@ export function PostStepsPanel({
                               &#9998;
                             </span>
                           )}
-                          <span
-                            onClick={() => setConfirmDeleteIdx(i)}
-                            style={{ fontSize: 13, color: '#dc2626', cursor: 'pointer', opacity: 0.6 }}
-                            title="Delete post-step"
-                          >
-                            &#128465;
-                          </span>
+                          {canEdit && (
+                            <span
+                              onClick={() => setConfirmDeleteIdx(i)}
+                              style={{ fontSize: 13, color: '#dc2626', cursor: 'pointer', opacity: 0.6 }}
+                              title="Delete post-step"
+                            >
+                              &#128465;
+                            </span>
+                          )}
+                          {runErrorIdx?.idx === i && (
+                            <span style={{ color: '#dc2626', fontSize: 10, marginLeft: 6 }} title={runErrorIdx.message}>!</span>
+                          )}
                         </>
                       )}
                     </td>
@@ -148,7 +201,7 @@ export function PostStepsPanel({
                 </tr>
                 {isExpanded && (
                   <tr>
-                    <td colSpan={canEdit ? 7 : 6} style={{ padding: '0 10px 12px 40px', background: '#eef2ff' }}>
+                    <td colSpan={(canEdit || canRun) ? 7 : 6} style={{ padding: '0 10px 12px 40px', background: '#eef2ff' }}>
                       {p.webUi && <WebUiStepsTable steps={p.webUi.steps} startUrl={p.webUi.startUrl} />}
                       {p.desktopUi && <DesktopUiStepsTable steps={p.desktopUi.steps} />}
                       {p.dbCheck && <DbCheckBlock dc={p.dbCheck} />}

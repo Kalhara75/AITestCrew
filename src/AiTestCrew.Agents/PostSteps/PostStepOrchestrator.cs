@@ -64,6 +64,12 @@ public class PostStepOrchestrator
     /// <paramref name="callingAgent"/> is the parent agent instance (passed so we
     /// can filter it out when looking for a sibling to dispatch to). Pass
     /// <c>null</c> if no self-filter is required.
+    ///
+    /// When <paramref name="filter"/> is supplied alongside <paramref name="parentKind"/>,
+    /// only the single post-step matching the filter coordinates is executed
+    /// (driven by the per-step "Run" affordance / <c>--verify-step</c> CLI).
+    /// Filter indices are 0-based; <paramref name="parentStepIndex"/> arrives 1-based
+    /// from existing callers, so we compare against <c>parentStepIndex - 1</c>.
     /// </summary>
     public async Task RunInlineAsync(
         IReadOnlyList<VerificationStep> postSteps,
@@ -72,7 +78,10 @@ public class PostStepOrchestrator
         List<TestStep> stepSink,
         string? environmentKey,
         ITestAgent? callingAgent,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? parentKind = null,
+        VerifyStepFilter? filter = null,
+        int? waitOverride = null)
     {
         if (postSteps.Count == 0) return;
 
@@ -81,6 +90,11 @@ public class PostStepOrchestrator
         for (var pIdx = 0; pIdx < postSteps.Count; pIdx++)
         {
             ct.ThrowIfCancellationRequested();
+            if (filter is not null && parentKind is not null
+                && (!string.Equals(parentKind, filter.ParentKind, StringComparison.OrdinalIgnoreCase)
+                    || (parentStepIndex - 1) != filter.ParentStepIndex
+                    || pIdx != filter.PostStepIndex))
+                continue;
             var post = postSteps[pIdx];
             await RunOneInlineAsync(
                 post,
@@ -90,7 +104,8 @@ public class PostStepOrchestrator
                 stepSink,
                 environmentKey,
                 siblings,
-                ct);
+                ct,
+                waitOverride);
         }
     }
 
@@ -102,16 +117,18 @@ public class PostStepOrchestrator
         List<TestStep> stepSink,
         string? environmentKey,
         IReadOnlyList<ITestAgent> siblings,
-        CancellationToken ct)
+        CancellationToken ct,
+        int? waitOverride = null)
     {
         var waitAction = $"post-wait[{parentStepIndex}.{postStepIndex}]";
-        if (postStep.WaitBeforeSeconds > 0)
+        var effectiveWait = waitOverride ?? postStep.WaitBeforeSeconds;
+        if (effectiveWait > 0)
         {
             stepSink.Add(TestStep.Pass(waitAction,
-                $"Waiting {postStep.WaitBeforeSeconds}s before '{postStep.Description}'"));
+                $"Waiting {effectiveWait}s before '{postStep.Description}'"));
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(postStep.WaitBeforeSeconds), ct);
+                await Task.Delay(TimeSpan.FromSeconds(effectiveWait), ct);
             }
             catch (OperationCanceledException)
             {

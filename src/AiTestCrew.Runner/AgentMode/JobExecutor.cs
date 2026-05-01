@@ -88,7 +88,8 @@ internal sealed class JobExecutor
             apiStackKey: request.ApiStackKey,
             apiModule: request.ApiModule,
             verificationWaitOverride: request.VerificationWaitOverride,
-            environmentKey: request.EnvironmentKey);
+            environmentKey: request.EnvironmentKey,
+            verifyStepFilter: request.VerifyStepFilter);
 
         // AwaitingVerification is a SUCCESS for the top-level agent job: the
         // delivery itself worked; only the verification is deferred. Reporting
@@ -167,6 +168,7 @@ internal sealed class JobExecutor
         public string? ApiModule { get; set; }
         public int? VerificationWaitOverride { get; set; }
         public string? EnvironmentKey { get; set; }
+        public VerifyStepFilter? VerifyStepFilter { get; set; }
     }
 }
 

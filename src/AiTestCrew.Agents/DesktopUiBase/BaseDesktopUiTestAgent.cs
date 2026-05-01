@@ -118,6 +118,20 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
                 Logger.LogInformation("[{Agent}] Reuse mode: {Count} saved test cases", Name, testCases.Count);
             }
 
+            // ── VerifyOnly: skip the parent desktop flow, run only post-steps ──
+            var verifyOnly = task.Parameters.TryGetValue("VerifyOnly", out var voFlag) && voFlag is true;
+            if (verifyOnly)
+            {
+                if (testCases is null)
+                {
+                    steps.Add(TestStep.Err("verify-only",
+                        "VerifyOnly requires preloaded test cases — run via --reuse first."));
+                    return BuildResult(task, steps,
+                        "Missing preloaded test cases for VerifyOnly.", sw.Elapsed, []);
+                }
+                return await RunVerifyOnlyAsync(task, testCases, tc => tc.PostSteps, sw, ct);
+            }
+
             // ── Validate config ──
             if (string.IsNullOrWhiteSpace(TargetAppPath))
             {

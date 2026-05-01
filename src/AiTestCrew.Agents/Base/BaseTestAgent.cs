@@ -244,4 +244,113 @@ public abstract class BaseTestAgent : ITestAgent
     {
         return task.Parameters.TryGetValue(key, out var v) && v is T typed ? typed : null;
     }
+
+    // ─────────────────────────────────────────────────────
+    // VerifyOnly path — generic helper used by non-delivery agents
+    // (delivery agent has its own bespoke VerifyOnlyAsync because it needs to
+    // reconstruct MessageID/Filename from execution history).
+    // ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Skips the parent step entirely and dispatches only the post-steps for
+    /// each preloaded test case. Honours <c>task.Parameters["VerifyStepFilter"]</c>
+    /// when present so a single post-step can be re-run in isolation.
+    ///
+    /// Caller is responsible for env-param-substituting <paramref name="testCases"/>
+    /// before passing them in (matches the existing per-agent reuse-mode pattern).
+    /// </summary>
+    protected async Task<TestResult> RunVerifyOnlyAsync<TCase>(
+        TestTask task,
+        IReadOnlyList<TCase> testCases,
+        Func<TCase, IReadOnlyList<VerificationStep>> getPostSteps,
+        System.Diagnostics.Stopwatch sw,
+        CancellationToken ct) where TCase : class
+    {
+        var steps = new List<TestStep>();
+        var envKey = task.Parameters.TryGetValue("EnvironmentKey", out var ek) ? ek as string : null;
+        var envParams = AiTestCrew.Agents.Environment.StepParameterSubstituter
+            .ReadEnvironmentParameters(task.Parameters);
+        var filter = task.Parameters.TryGetValue("VerifyStepFilter", out var fObj)
+            ? fObj as VerifyStepFilter : null;
+        // Wait overrides: an explicit VerificationWaitOverride (CLI --wait, UI Verify
+        // button) wins; a single-step filter ALWAYS forces 0 because the user is
+        // re-running an individual step for validation/correction — the original
+        // wait was for the parent's side-effects to settle, which already happened
+        // on the prior full run.
+        int? waitOverride = task.Parameters.TryGetValue("VerificationWaitOverride", out var wo)
+            && wo is int w ? w : (int?)null;
+        if (filter is not null) waitOverride = 0;
+
+        if (PostStepOrchestrator is null)
+        {
+            steps.Add(TestStep.Err("verify-only",
+                $"PostStepOrchestrator is not wired into {Name}; cannot run VerifyOnly here."));
+            return new TestResult
+            {
+                ObjectiveId = task.Id,
+                ObjectiveName = task.Description,
+                AgentName = Name,
+                Status = TestStatus.Error,
+                Summary = "VerifyOnly unsupported on this agent.",
+                Steps = steps,
+                Duration = sw.Elapsed,
+            };
+        }
+
+        steps.Add(TestStep.Pass("verify-only-load",
+            $"Loaded {testCases.Count} saved test case(s); skipping parent step, running post-steps only."));
+
+        var anyDispatched = false;
+        for (var tcIdx = 0; tcIdx < testCases.Count; tcIdx++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var tc = testCases[tcIdx];
+            var posts = getPostSteps(tc);
+            if (posts.Count == 0)
+            {
+                steps.Add(TestStep.Pass($"verify-only[{tcIdx + 1}]",
+                    "No post-steps defined on this test case."));
+                continue;
+            }
+
+            var context = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (k, v) in envParams)
+                if (!string.IsNullOrEmpty(v)) context[k] = v;
+            var agentCtx = BuildPostStepContext(tc!, Array.Empty<TestStep>());
+            foreach (var (k, v) in agentCtx)
+                if (!string.IsNullOrEmpty(v)) context[k] = v;
+
+            var preCount = steps.Count;
+            await PostStepOrchestrator.RunInlineAsync(
+                posts, context, tcIdx + 1, steps, envKey, this, ct,
+                parentKind: PostStepParentKind, filter: filter, waitOverride: waitOverride);
+            if (steps.Count > preCount) anyDispatched = true;
+        }
+
+        if (filter is not null && !anyDispatched)
+        {
+            steps.Add(TestStep.Err("verify-only-filter",
+                $"VerifyStepFilter ({filter.ParentKind}.{filter.ParentStepIndex}.{filter.PostStepIndex}) " +
+                "did not match any post-step on this objective."));
+        }
+
+        var hasFails = steps.Any(s => s.Status == TestStatus.Failed);
+        var hasErrors = steps.Any(s => s.Status == TestStatus.Error);
+        var status = hasErrors ? TestStatus.Error
+                   : hasFails ? TestStatus.Failed
+                   : TestStatus.Passed;
+
+        return new TestResult
+        {
+            ObjectiveId = task.Id,
+            ObjectiveName = task.Description,
+            AgentName = Name,
+            Status = status,
+            Summary = filter is not null
+                ? $"VerifyOnly: ran 1 post-step (filtered)."
+                : $"VerifyOnly: ran post-steps for {testCases.Count} test case(s).",
+            Steps = steps,
+            Duration = sw.Elapsed,
+        };
+    }
 }

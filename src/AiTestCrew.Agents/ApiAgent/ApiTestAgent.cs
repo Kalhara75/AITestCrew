@@ -84,6 +84,31 @@ public class ApiTestAgent : BaseTestAgent
                     Name, testCases.Count);
             }
 
+            // ── VerifyOnly: skip the parent API call, run only post-steps ──
+            var verifyOnly = task.Parameters.TryGetValue("VerifyOnly", out var voFlag) && voFlag is true;
+            if (verifyOnly)
+            {
+                if (testCases is null)
+                {
+                    steps.Add(TestStep.Err("verify-only",
+                        "VerifyOnly requires preloaded test cases — run via --reuse first."));
+                    return new TestResult
+                    {
+                        ObjectiveId = task.Id,
+                        ObjectiveName = task.Description,
+                        AgentName = Name,
+                        Status = TestStatus.Error,
+                        Summary = "Missing preloaded test cases for VerifyOnly.",
+                        Steps = steps,
+                        Duration = sw.Elapsed,
+                    };
+                }
+                var substituted = envParams.Count > 0
+                    ? testCases.Select(tc => StepParameterSubstituter.Apply(tc, envParams)).ToList()
+                    : testCases;
+                return await RunVerifyOnlyAsync(task, substituted, tc => tc.PostSteps, sw, ct);
+            }
+
             if (testCases is null)
             {
                 // ── 1. Load OpenAPI spec if available ──

@@ -454,7 +454,13 @@ function ObjectiveListTable({
                     apiStackKey={apiStackKey}
                     apiModule={apiModule}
                     environmentKey={environmentKey}
-                    hasDeliveryVerifications={obj.aseXmlDeliverySteps?.some(s => ((s.postSteps?.length ?? s.postDeliveryVerifications?.length) ?? 0) > 0)}
+                    hasPostSteps={
+                      (obj.apiSteps?.some(s => (s.postSteps?.length ?? 0) > 0) ?? false)
+                      || (obj.webUiSteps?.some(s => (s.postSteps?.length ?? 0) > 0) ?? false)
+                      || (obj.desktopUiSteps?.some(s => (s.postSteps?.length ?? 0) > 0) ?? false)
+                      || (obj.aseXmlSteps?.some(s => (s.postSteps?.length ?? 0) > 0) ?? false)
+                      || (obj.aseXmlDeliverySteps?.some(s => ((s.postSteps?.length ?? s.postDeliveryVerifications?.length) ?? 0) > 0) ?? false)
+                    }
                   />
                 </td>
                 {onMove && (

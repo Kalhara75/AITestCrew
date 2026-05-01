@@ -1,5 +1,7 @@
 import { Fragment, useState } from 'react';
 import { deleteVerification, updateVerification } from '../api/modules';
+import { triggerRun } from '../api/runs';
+import { useActiveRun } from '../contexts/ActiveRunContext';
 import { EditWebUiTestCaseDialog } from './EditWebUiTestCaseDialog';
 import { EditDesktopUiTestCaseDialog } from './EditDesktopUiTestCaseDialog';
 import type { TestObjective, AseXmlDeliveryTestDefinition, VerificationStep, WebUiStep, DesktopUiStep } from '../types';
@@ -142,8 +144,34 @@ function VerificationsPanel({
   const [confirmDeleteIdx, setConfirmDeleteIdx] = useState<number | null>(null);
   const [deletingIdx, setDeletingIdx] = useState<number | null>(null);
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
+  const [runErrorIdx, setRunErrorIdx] = useState<{ idx: number; message: string } | null>(null);
+  const { individualRun, setIndividualRun } = useActiveRun();
+  const anyRunning = !!individualRun;
 
   const canEdit = !!moduleId && !!testSetId;
+  const canRun = !!testSetId;
+
+  const handleRunStep = async (i: number) => {
+    if (!testSetId) return;
+    setRunErrorIdx(null);
+    try {
+      const res = await triggerRun({
+        mode: 'VerifyOnly',
+        testSetId,
+        moduleId,
+        objectiveId,
+        verificationWaitOverride: 0,
+        verifyStepFilter: {
+          parentKind: 'AseXmlDeliver',
+          parentStepIndex: deliveryIndex,
+          postStepIndex: i,
+        },
+      });
+      setIndividualRun({ runId: res.runId, testSetId, moduleId, objectiveId });
+    } catch (err) {
+      setRunErrorIdx({ idx: i, message: err instanceof Error ? err.message : 'Failed to trigger' });
+    }
+  };
 
   const toggleExpand = (i: number) => {
     setExpanded(prev => {
@@ -186,7 +214,7 @@ function VerificationsPanel({
             <th style={verifThStyle}>Description</th>
             <th style={verifThStyle}>Wait</th>
             <th style={verifThStyle}>Steps</th>
-            {canEdit && <th style={{ ...verifThStyle, width: 60 }}></th>}
+            {(canEdit || canRun) && <th style={{ ...verifThStyle, width: 100 }}></th>}
           </tr>
         </thead>
         <tbody>
@@ -222,7 +250,7 @@ function VerificationsPanel({
                     ))}
                     {steps.length > 3 && <span> +{steps.length - 3}</span>}
                   </td>
-                  {canEdit && (
+                  {(canEdit || canRun) && (
                     <td
                       style={{ ...verifTdStyle, whiteSpace: 'nowrap' }}
                       onClick={e => e.stopPropagation()}
@@ -245,7 +273,27 @@ function VerificationsPanel({
                         </span>
                       ) : (
                         <>
-                          {(v.webUi || v.desktopUi) && (
+                          {canRun && (
+                            <button
+                              onClick={() => handleRunStep(i)}
+                              disabled={anyRunning}
+                              style={{
+                                background: 'none',
+                                color: anyRunning ? '#94a3b8' : '#0d9488',
+                                border: `1px solid ${anyRunning ? '#e2e8f0' : '#ccfbf1'}`,
+                                padding: '0px 6px',
+                                borderRadius: 3,
+                                fontSize: 10,
+                                fontWeight: 600,
+                                cursor: anyRunning ? 'not-allowed' : 'pointer',
+                                marginRight: 6,
+                              }}
+                              title="Run only this verification (skips earlier post-steps)"
+                            >
+                              Run
+                            </button>
+                          )}
+                          {(v.webUi || v.desktopUi) && canEdit && (
                             <span
                               onClick={() => setEditingIdx(i)}
                               style={{ fontSize: 13, color: '#1d4ed8', cursor: 'pointer', opacity: 0.7, marginRight: 8 }}
@@ -254,13 +302,18 @@ function VerificationsPanel({
                               &#9998;
                             </span>
                           )}
-                          <span
-                            onClick={() => setConfirmDeleteIdx(i)}
-                            style={{ fontSize: 13, color: '#dc2626', cursor: 'pointer', opacity: 0.6 }}
-                            title="Delete verification"
-                          >
-                            &#128465;
-                          </span>
+                          {canEdit && (
+                            <span
+                              onClick={() => setConfirmDeleteIdx(i)}
+                              style={{ fontSize: 13, color: '#dc2626', cursor: 'pointer', opacity: 0.6 }}
+                              title="Delete verification"
+                            >
+                              &#128465;
+                            </span>
+                          )}
+                          {runErrorIdx?.idx === i && (
+                            <span style={{ color: '#dc2626', fontSize: 10, marginLeft: 6 }} title={runErrorIdx.message}>!</span>
+                          )}
                         </>
                       )}
                     </td>
@@ -268,7 +321,7 @@ function VerificationsPanel({
                 </tr>
                 {isExpanded && (
                   <tr>
-                    <td colSpan={canEdit ? 7 : 6} style={{ padding: '0 10px 12px 40px', background: '#eef2ff' }}>
+                    <td colSpan={(canEdit || canRun) ? 7 : 6} style={{ padding: '0 10px 12px 40px', background: '#eef2ff' }}>
                       {v.webUi && <WebUiStepsTable steps={v.webUi.steps} startUrl={v.webUi.startUrl} />}
                       {v.desktopUi && <DesktopUiStepsTable steps={v.desktopUi.steps} />}
                       {!v.webUi && !v.desktopUi && (

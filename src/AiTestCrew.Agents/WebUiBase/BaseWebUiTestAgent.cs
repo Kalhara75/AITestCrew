@@ -125,6 +125,28 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                 Logger.LogInformation("[{Agent}] Reuse mode: {Count} saved test cases", Name, testCases.Count);
             }
 
+            // ── VerifyOnly: skip the parent UI flow, run only post-steps ──
+            var verifyOnly = task.Parameters.TryGetValue("VerifyOnly", out var voFlag) && voFlag is true;
+            if (verifyOnly)
+            {
+                if (testCases is null)
+                {
+                    steps.Add(TestStep.Err("verify-only",
+                        "VerifyOnly requires preloaded test cases — run via --reuse first."));
+                    return new TestResult
+                    {
+                        ObjectiveId = task.Id,
+                        ObjectiveName = task.Description,
+                        AgentName = Name,
+                        Status = TestStatus.Error,
+                        Summary = "Missing preloaded test cases for VerifyOnly.",
+                        Steps = steps,
+                        Duration = sw.Elapsed,
+                    };
+                }
+                return await RunVerifyOnlyAsync(task, testCases, tc => tc.PostSteps, sw, ct);
+            }
+
             // ── Check for test-set-level setup steps (e.g. login) ──
             List<WebUiStep>? setupSteps = null;
             string? setupStartUrl = null;

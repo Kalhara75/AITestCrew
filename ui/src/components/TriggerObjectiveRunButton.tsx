@@ -13,10 +13,10 @@ interface Props {
   apiModule?: string | null;
   environmentKey?: string | null;
   disabled?: boolean;
-  hasDeliveryVerifications?: boolean;
+  hasPostSteps?: boolean;
 }
 
-export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObjective, source, moduleId, apiStackKey, apiModule, environmentKey, disabled, hasDeliveryVerifications }: Props) {
+export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObjective, source, moduleId, apiStackKey, apiModule, environmentKey, disabled, hasPostSteps }: Props) {
   const { individualRun, individualRunStatus, setIndividualRun } = useActiveRun();
   const [error, setError] = useState<string | null>(null);
   const [showRebaselineConfirm, setShowRebaselineConfirm] = useState(false);
@@ -129,7 +129,7 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObject
       >
         Run
       </button>
-      {hasDeliveryVerifications && (
+      {hasPostSteps && (
         <button
           onClick={handleVerifyOnly}
           disabled={disabled || anyRunning}
@@ -144,7 +144,7 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObject
             cursor: disabled || anyRunning ? 'not-allowed' : 'pointer',
             lineHeight: '18px',
           }}
-          title="Re-run post-delivery UI verifications only (skip delivery)"
+          title="Re-run post-verification steps only (skip the parent test step)"
         >
           Verify
         </button>

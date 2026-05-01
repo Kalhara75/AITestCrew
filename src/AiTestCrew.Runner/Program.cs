@@ -746,6 +746,11 @@ if (cli.Mode == RunMode.VerifyOnly)
         return;
     }
 }
+else if (cli.VerifyStepFilter is not null)
+{
+    AnsiConsole.MarkupLine("[red]--verify-step is only valid alongside --verify-only[/]");
+    return;
+}
 
 AnsiConsole.MarkupLine($"[grey]Mode:[/] {modeLabel}");
 if (cli.ModuleId is not null)
@@ -784,7 +789,8 @@ await AnsiConsole.Status()
             verificationWaitOverride: cli.Mode == RunMode.VerifyOnly ? cli.VerificationWait : null,
             environmentKey: cli.EnvironmentKey,
             teardownDryRun: cli.TeardownDryRun,
-            skipTeardown: cli.SkipTeardown);
+            skipTeardown: cli.SkipTeardown,
+            verifyStepFilter: cli.VerifyStepFilter);
     });
 
 // ── Block-and-poll for deferred verifications ──
@@ -954,6 +960,7 @@ static CliArgs ParseArgs(string[] args)
     string? parentKind = null;
     int parentStepIndex = 0;
     bool parentStepIndexProvided = false;
+    VerifyStepFilter? verifyStepFilter = null;
     bool agentMode = false;
     string? agentName = null, agentCapabilities = null;
     bool teardownDryRun = false, skipTeardown = false;
@@ -1093,6 +1100,25 @@ static CliArgs ParseArgs(string[] args)
                 break;
             case "--wait":
                 throw new ArgumentException("--wait requires an integer number of seconds.");
+            case "--verify-step" when i + 1 < args.Length:
+            {
+                var raw = args[++i];
+                var parts = raw.Split('.');
+                if (parts.Length != 3
+                    || !int.TryParse(parts[1], out var pIdx1Based)
+                    || !int.TryParse(parts[2], out var qIdx1Based)
+                    || pIdx1Based < 1 || qIdx1Based < 1)
+                    throw new ArgumentException(
+                        "--verify-step requires a value like 'Api.1.2' " +
+                        "(parentKind.parentIndex.postStepIndex, indices 1-based).");
+                // Convert to 0-based for internal use.
+                verifyStepFilter = new VerifyStepFilter(parts[0], pIdx1Based - 1, qIdx1Based - 1);
+                break;
+            }
+            case "--verify-step":
+                throw new ArgumentException(
+                    "--verify-step requires a value like 'Api.1.2' " +
+                    "(parentKind.parentIndex.postStepIndex, indices 1-based).");
             case "--delivery-step-index" when i + 1 < args.Length:
                 if (!int.TryParse(args[++i], out var dsi))
                     throw new ArgumentException("--delivery-step-index requires an integer.");
@@ -1166,7 +1192,8 @@ static CliArgs ParseArgs(string[] args)
         AgentCapabilities = agentCapabilities,
         TeardownDryRun = teardownDryRun,
         SkipTeardown = skipTeardown,
-        NoDeferVerifications = noDeferVerifications
+        NoDeferVerifications = noDeferVerifications,
+        VerifyStepFilter = verifyStepFilter
     };
 }
 
@@ -1236,4 +1263,9 @@ class CliArgs
     /// <summary>--no-defer-verifications: force synchronous post-delivery verifications
     /// for this run (overrides AseXml.DeferVerifications=true). Useful for local debugging.</summary>
     public bool NoDeferVerifications { get; init; }
+
+    /// <summary>--verify-step &lt;parentKind&gt;.&lt;parentIdx&gt;.&lt;postIdx&gt; — restricts a
+    /// VerifyOnly run to a single post-step. Indices are 1-based on the CLI but stored
+    /// 0-based here. Requires <see cref="Mode"/> == <see cref="RunMode.VerifyOnly"/>.</summary>
+    public VerifyStepFilter? VerifyStepFilter { get; init; }
 }

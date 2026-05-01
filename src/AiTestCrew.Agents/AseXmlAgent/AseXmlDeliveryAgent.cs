@@ -216,6 +216,12 @@ public class AseXmlDeliveryAgent : BaseTestAgent
         var moduleId = task.Parameters.TryGetValue("ModuleId", out var mId) ? mId as string : null;
         var envKey = task.Parameters.TryGetValue("EnvironmentKey", out var ek) ? ek as string : null;
         int? waitOverride = task.Parameters.TryGetValue("VerificationWaitOverride", out var wo) && wo is int w ? w : (int?)null;
+        var filter = task.Parameters.TryGetValue("VerifyStepFilter", out var fObj)
+            ? fObj as VerifyStepFilter : null;
+        // Single-step rerun is for validation/correction — skip waits so the user
+        // gets feedback immediately. The original wait was meant for the upstream
+        // side-effect to settle, which already happened on the prior full run.
+        if (filter is not null) waitOverride = 0;
 
         if (string.IsNullOrEmpty(testSetId))
         {
@@ -265,6 +271,14 @@ public class AseXmlDeliveryAgent : BaseTestAgent
             for (var vIdx = 0; vIdx < tc.PostSteps.Count; vIdx++)
             {
                 ct.ThrowIfCancellationRequested();
+
+                // Honour single-step filter (per-step "Run" affordance).
+                if (filter is not null
+                    && (!string.Equals(filter.ParentKind, "AseXmlDeliver", StringComparison.OrdinalIgnoreCase)
+                        || filter.ParentStepIndex != caseIndex
+                        || filter.PostStepIndex != vIdx))
+                    continue;
+
                 var verification = tc.PostSteps[vIdx];
                 totalVerifications++;
 
@@ -290,6 +304,13 @@ public class AseXmlDeliveryAgent : BaseTestAgent
                     verification.WaitBeforeSeconds = originalWait;
                 }
             }
+        }
+
+        if (filter is not null && totalVerifications == 0)
+        {
+            steps.Add(TestStep.Err("verify-only-filter",
+                $"VerifyStepFilter ({filter.ParentKind}.{filter.ParentStepIndex}.{filter.PostStepIndex}) " +
+                "did not match any post-step on this delivery objective."));
         }
 
         var hasFails = steps.Any(s => s.Status == TestStatus.Failed);

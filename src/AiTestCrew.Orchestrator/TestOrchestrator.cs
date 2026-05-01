@@ -93,7 +93,8 @@ public class TestOrchestrator
         string? environmentKey = null,
         bool teardownDryRun = false,
         bool skipTeardown = false,
-        DeferredVerificationRequest? deferredVerification = null)
+        DeferredVerificationRequest? deferredVerification = null,
+        VerifyStepFilter? verifyStepFilter = null)
     {
         var sw = Stopwatch.StartNew();
         var startedAt = DateTime.UtcNow;
@@ -300,7 +301,7 @@ public class TestOrchestrator
                 };
             }).ToList();
 
-            // ── VerifyOnly: inject extra parameters so the delivery agent skips phases 1-4 ──
+            // ── VerifyOnly: inject extra parameters so agents skip the parent step ──
             if (mode == RunMode.VerifyOnly)
             {
                 foreach (var t in tasks)
@@ -311,6 +312,8 @@ public class TestOrchestrator
                         t.Parameters["ModuleId"] = moduleId;
                     if (verificationWaitOverride.HasValue)
                         t.Parameters["VerificationWaitOverride"] = verificationWaitOverride.Value;
+                    if (verifyStepFilter is not null)
+                        t.Parameters["VerifyStepFilter"] = verifyStepFilter;
 
                     // Deferred-verification claim: carry the self-contained snapshot so
                     // the delivery agent replays the verification against the correct
