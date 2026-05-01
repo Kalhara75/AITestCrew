@@ -170,13 +170,16 @@ public static class ModuleEndpoints
 
         // GET /api/modules/{moduleId}/testsets/{tsId} — test set detail
         group.MapGet("/{moduleId}/testsets/{tsId}", async (string moduleId, string tsId,
-            ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
+            ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo,
+            IRunQueueRepository? queueRepo, IPendingVerificationRepository? pendingRepo) =>
         {
             var testSet = await tsRepo.LoadAsync(moduleId, tsId);
             if (testSet is null)
                 return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
 
-            return Results.Ok(TestSetResponse(testSet, historyRepo));
+            // Live overlay (queue + pending) so the dashboard's per-objective
+            // pill reflects the CURRENT run, not the previous finalised one.
+            return Results.Ok(await TestSetResponseAsync(testSet, historyRepo, queueRepo, pendingRepo));
         });
 
         // DELETE /api/modules/{moduleId}/testsets/{tsId} — delete test set and all runs
@@ -909,9 +912,55 @@ public static class ModuleEndpoints
     }
 
     private static object TestSetResponse(PersistedTestSet testSet, IExecutionHistoryRepository historyRepo)
+        => TestSetResponseAsync(testSet, historyRepo, queueRepo: null, pendingRepo: null)
+            .GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Builds the test-set response. When <paramref name="queueRepo"/> and
+    /// <paramref name="pendingRepo"/> are provided, the per-objective status
+    /// overlays the CURRENT run state (queue Queued/Claimed/Running, or
+    /// AwaitingVerification when a pending verification exists) on top of the
+    /// last finalised history row. Without these the response is purely
+    /// history-based — useful for write paths that don't need live state.
+    /// </summary>
+    private static async Task<object> TestSetResponseAsync(
+        PersistedTestSet testSet,
+        IExecutionHistoryRepository historyRepo,
+        IRunQueueRepository? queueRepo,
+        IPendingVerificationRepository? pendingRepo)
     {
         var objStatuses = historyRepo.GetLatestObjectiveStatuses(testSet.Id);
         var currentIds = testSet.TestObjectives.Select(o => o.Id).ToHashSet();
+
+        // Active-state overlay: history is written at finalise time, so during a
+        // live run the row pill would otherwise show the PREVIOUS run's "Passed"
+        // until the new run's history is persisted. Walk queue + pending to
+        // compute per-objective live status keyed off objectiveId.
+        var liveOverrides = await BuildLiveStatusOverridesAsync(testSet.Id, queueRepo, pendingRepo);
+
+        var objectiveStatuses = currentIds.ToDictionary(
+            id => id,
+            id =>
+            {
+                if (liveOverrides.TryGetValue(id, out var live))
+                    return (object?)new
+                    {
+                        Status = live.Status,
+                        CompletedAt = (DateTime?)null,
+                        RunId = live.RunId,
+                    };
+                if (objStatuses.TryGetValue(id, out var hist))
+                    return (object?)new
+                    {
+                        Status = hist.Result.Status,
+                        CompletedAt = (DateTime?)hist.Result.CompletedAt,
+                        RunId = (string?)hist.RunId,
+                    };
+                return null;
+            })
+            .Where(kvp => kvp.Value is not null)
+            .ToDictionary(kvp => kvp.Key, kvp => kvp.Value!);
+
         return new
         {
             testSet.Id, testSet.Name, testSet.ModuleId,
@@ -922,18 +971,66 @@ public static class ModuleEndpoints
             testSet.SetupStartUrl, testSet.SetupSteps,
             testSet.TeardownSteps,
             LastRunStatus = AggregateStatus(objStatuses, currentIds),
-            ObjectiveStatuses = objStatuses
-                .Where(kvp => currentIds.Contains(kvp.Key))
-                .ToDictionary(
-                kvp => kvp.Key,
-                kvp => new
-                {
-                    kvp.Value.Result.Status,
-                    kvp.Value.Result.CompletedAt,
-                    kvp.Value.RunId
-                }),
+            ObjectiveStatuses = objectiveStatuses,
             testSet.TestObjectives
         };
+    }
+
+    /// <summary>
+    /// Walks the run queue and pending-verification tables and returns the
+    /// most-relevant live status per objective for <paramref name="testSetId"/>.
+    ///
+    /// Priority (highest wins):
+    ///   AwaitingVerification (pending row exists)  >  Running / Claimed / Queued (queue entry).
+    ///
+    /// The pending-row lookup relies on the parent run's objective id being
+    /// stamped into the queue entry; for objectives whose deferred entry has
+    /// only the parent run id, we walk the active queue entries to map runId →
+    /// objectiveId before applying the AwaitingVerification overlay.
+    /// </summary>
+    private static async Task<Dictionary<string, (string Status, string? RunId)>>
+        BuildLiveStatusOverridesAsync(
+            string testSetId,
+            IRunQueueRepository? queueRepo,
+            IPendingVerificationRepository? pendingRepo)
+    {
+        var overrides = new Dictionary<string, (string Status, string? RunId)>(StringComparer.OrdinalIgnoreCase);
+        if (queueRepo is null) return overrides;
+
+        // Recent queue entries, newest first per repo contract. 100 is wide
+        // enough that even with many concurrent test sets we won't miss the
+        // active entries for one of them.
+        var recent = await queueRepo.ListRecentAsync(100);
+        var runIdToObjectiveId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var entry in recent)
+        {
+            if (!string.Equals(entry.TestSetId, testSetId, StringComparison.OrdinalIgnoreCase)) continue;
+            if (string.IsNullOrEmpty(entry.ObjectiveId)) continue;
+            // Remember the parent run → objective mapping so deferred entries
+            // (which carry only ParentRunId) can resolve their objective.
+            if (!runIdToObjectiveId.ContainsKey(entry.Id))
+                runIdToObjectiveId[entry.Id] = entry.ObjectiveId;
+            if (entry.Status is not ("Queued" or "Claimed" or "Running")) continue;
+            // Newest-first: keep the first (most recent) override per objective.
+            if (!overrides.ContainsKey(entry.ObjectiveId))
+                overrides[entry.ObjectiveId] = (entry.Status, entry.Id);
+        }
+
+        if (pendingRepo is null) return overrides;
+
+        var pending = await pendingRepo.ListPendingAsync();
+        foreach (var p in pending)
+        {
+            if (!string.Equals(p.TestSetId, testSetId, StringComparison.OrdinalIgnoreCase)) continue;
+            var objId = !string.IsNullOrEmpty(p.DeliveryObjectiveId)
+                ? p.DeliveryObjectiveId
+                : runIdToObjectiveId.GetValueOrDefault(p.ParentRunId);
+            if (string.IsNullOrEmpty(objId)) continue;
+            overrides[objId] = ("AwaitingVerification", p.ParentRunId);
+        }
+
+        return overrides;
     }
 
     private static string? AggregateStatus(

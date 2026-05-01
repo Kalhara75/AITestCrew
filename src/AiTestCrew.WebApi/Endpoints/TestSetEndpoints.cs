@@ -1,4 +1,6 @@
 using AiTestCrew.Agents.Persistence;
+using AiTestCrew.Core.Interfaces;
+using AiTestCrew.Core.Models;
 
 namespace AiTestCrew.WebApi.Endpoints;
 
@@ -28,13 +30,43 @@ public static class TestSetEndpoints
             return Results.Ok(result);
         });
 
-        group.MapGet("/{id}", async (string id, ITestSetRepository repo, IExecutionHistoryRepository historyRepo) =>
+        group.MapGet("/{id}", async (string id, ITestSetRepository repo, IExecutionHistoryRepository historyRepo,
+            IRunQueueRepository? queueRepo, IPendingVerificationRepository? pendingRepo) =>
         {
             var testSet = await repo.LoadAsync(id);
             if (testSet is null) return Results.NotFound(new { error = $"Test set '{id}' not found" });
 
             var objStatuses = historyRepo.GetLatestObjectiveStatuses(id);
             var currentIds = testSet.TestObjectives.Select(o => o.Id).ToHashSet();
+
+            // Live overlay: queue + pending state takes precedence over history
+            // so the row pill reflects the current run instead of the previous
+            // finalised one (history writes lag deferred-verification finalise).
+            var liveOverrides = await BuildLiveStatusOverridesAsync(id, queueRepo, pendingRepo);
+
+            var objectiveStatuses = currentIds.ToDictionary(
+                objId => objId,
+                objId =>
+                {
+                    if (liveOverrides.TryGetValue(objId, out var live))
+                        return (object?)new
+                        {
+                            Status = live.Status,
+                            CompletedAt = (DateTime?)null,
+                            RunId = live.RunId,
+                        };
+                    if (objStatuses.TryGetValue(objId, out var hist))
+                        return (object?)new
+                        {
+                            Status = hist.Result.Status,
+                            CompletedAt = (DateTime?)hist.Result.CompletedAt,
+                            RunId = (string?)hist.RunId,
+                        };
+                    return null;
+                })
+                .Where(kvp => kvp.Value is not null)
+                .ToDictionary(kvp => kvp.Key, kvp => kvp.Value!);
+
             return Results.Ok(new
             {
                 testSet.Id,
@@ -44,16 +76,7 @@ public static class TestSetEndpoints
                 testSet.LastRunAt,
                 RunCount = historyRepo.CountRuns(id),
                 LastRunStatus = AggregateStatus(objStatuses, currentIds),
-                ObjectiveStatuses = objStatuses
-                    .Where(kvp => currentIds.Contains(kvp.Key))
-                    .ToDictionary(
-                        kvp => kvp.Key,
-                        kvp => new
-                        {
-                            kvp.Value.Result.Status,
-                            kvp.Value.Result.CompletedAt,
-                            kvp.Value.RunId
-                        }),
+                ObjectiveStatuses = objectiveStatuses,
                 testSet.TestObjectives
             });
         });
@@ -101,5 +124,51 @@ public static class TestSetEndpoints
         if (list.Any(o => o.Result.Status == "Failed")) return "Failed";
         if (list.Any(o => o.Result.Status == "Skipped")) return "Skipped";
         return "Passed";
+    }
+
+    /// <summary>
+    /// Walks the run queue and pending-verification tables for a test set and
+    /// returns the most-relevant LIVE status per objective. AwaitingVerification
+    /// (a pending row exists) wins over Running / Claimed / Queued (queue entry).
+    /// Used by the test-set GET handler so the dashboard's row pill reflects
+    /// the current run instead of the last finalised one.
+    /// </summary>
+    internal static async Task<Dictionary<string, (string Status, string? RunId)>>
+        BuildLiveStatusOverridesAsync(
+            string testSetId,
+            IRunQueueRepository? queueRepo,
+            IPendingVerificationRepository? pendingRepo)
+    {
+        var overrides = new Dictionary<string, (string Status, string? RunId)>(StringComparer.OrdinalIgnoreCase);
+        if (queueRepo is null) return overrides;
+
+        var recent = await queueRepo.ListRecentAsync(100);
+        var runIdToObjectiveId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var entry in recent)
+        {
+            if (!string.Equals(entry.TestSetId, testSetId, StringComparison.OrdinalIgnoreCase)) continue;
+            if (string.IsNullOrEmpty(entry.ObjectiveId)) continue;
+            if (!runIdToObjectiveId.ContainsKey(entry.Id))
+                runIdToObjectiveId[entry.Id] = entry.ObjectiveId;
+            if (entry.Status is not ("Queued" or "Claimed" or "Running")) continue;
+            if (!overrides.ContainsKey(entry.ObjectiveId))
+                overrides[entry.ObjectiveId] = (entry.Status, entry.Id);
+        }
+
+        if (pendingRepo is null) return overrides;
+
+        var pending = await pendingRepo.ListPendingAsync();
+        foreach (var p in pending)
+        {
+            if (!string.Equals(p.TestSetId, testSetId, StringComparison.OrdinalIgnoreCase)) continue;
+            var objId = !string.IsNullOrEmpty(p.DeliveryObjectiveId)
+                ? p.DeliveryObjectiveId
+                : runIdToObjectiveId.GetValueOrDefault(p.ParentRunId);
+            if (string.IsNullOrEmpty(objId)) continue;
+            overrides[objId] = ("AwaitingVerification", p.ParentRunId);
+        }
+
+        return overrides;
     }
 }
