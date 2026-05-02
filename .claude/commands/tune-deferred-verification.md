@@ -28,6 +28,8 @@ Read `docs/architecture.md` → **Deferred Post-Delivery Verification** section 
 
 CLI single-invocation override: `--no-defer-verifications` forces the synchronous path for one run.
 
+**Quick sanity check**: the post-steps panel in the UI shows a per-row **Inline** / **Deferred** pill in a `Mode` column (sourced from `GET /api/config/asexml-verification`). When a user is unsure whether their objective will defer after a config change, point them at this pill instead of working out the threshold by hand. Restart the WebApi for config changes to surface there.
+
 ## Walk-through: hard wait ceiling
 
 User wants exactly `WaitBeforeSeconds` as the max duration for the full verification window.

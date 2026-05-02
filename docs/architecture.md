@@ -1492,6 +1492,7 @@ CLI override: `--no-defer-verifications` forces the synchronous inline path for 
 - `TriggerRunButton` + `TriggerObjectiveRunButton` replace their spinners with a quiet ⏳ cyan chip during the `AwaitingVerification` phase — a spinner would falsely imply active execution.
 - `TestSetDetailPage` polls `['testSet', ...]` + `['runs', ...]` at 3 s while `ActiveRunContext.isTestSetRunning` is true, as a belt-and-braces complement to the invalidate-on-status-change path in `ActiveRunContext`.
 - `ExecutionDetailPage` uses a dynamic `refetchInterval` that stops at terminal statuses (`Passed`, `Failed`, `Error`, `Skipped`, `Cancelled`).
+- **Authoring-time Mode pill** — `PostStepsPanel` (and the legacy `VerificationsPanel` in `AseXmlDeliveryTestCaseTable`) renders a per-row **Inline** / **Deferred** pill in a dedicated `Mode` column. Computed across the whole post-step list via `computeIsDeferred(postSteps, cfg)` so all rows in an objective flip together — mirrors the per-objective `PostStepOrchestrator.ShouldDefer` rule. Config is fetched from `GET /api/config/asexml-verification` (a sibling of `/api/config/{environments,endpoints,api-stacks}` in `Program.cs`) using React Query with `staleTime: Infinity` so the request is deduped across rows.
 - `QueueBanner` reads `notBeforeAt` on queue entries — entries with a future `notBeforeAt` show as "Deferred verification — next attempt in ~N min" rather than "waiting for agent".
 
 ---

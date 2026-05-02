@@ -1,10 +1,12 @@
 import { Fragment, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { deleteVerification, updateVerification } from '../api/modules';
+import { fetchAseXmlVerificationConfig } from '../api/config';
 import { triggerRun } from '../api/runs';
 import { useActiveRun } from '../contexts/ActiveRunContext';
 import { EditWebUiTestCaseDialog } from './EditWebUiTestCaseDialog';
 import { EditDesktopUiTestCaseDialog } from './EditDesktopUiTestCaseDialog';
-import type { TestObjective, AseXmlDeliveryTestDefinition, VerificationStep, WebUiStep, DesktopUiStep } from '../types';
+import type { TestObjective, AseXmlDeliveryTestDefinition, AseXmlVerificationConfigResponse, VerificationStep, WebUiStep, DesktopUiStep } from '../types';
 
 interface Props {
   objectives: TestObjective[];
@@ -151,6 +153,13 @@ function VerificationsPanel({
   const canEdit = !!moduleId && !!testSetId;
   const canRun = !!testSetId;
 
+  const { data: verifConfig } = useQuery({
+    queryKey: ['config', 'asexml-verification'],
+    queryFn: fetchAseXmlVerificationConfig,
+    staleTime: Infinity,
+  });
+  const isDeferred = computeIsDeferred(verifications, verifConfig);
+
   const handleRunStep = async (i: number) => {
     if (!testSetId) return;
     setRunErrorIdx(null);
@@ -213,6 +222,7 @@ function VerificationsPanel({
             <th style={verifThStyle}>Target</th>
             <th style={verifThStyle}>Description</th>
             <th style={verifThStyle}>Wait</th>
+            <th style={verifThStyle}>Mode</th>
             <th style={verifThStyle}>Steps</th>
             {(canEdit || canRun) && <th style={{ ...verifThStyle, width: 100 }}></th>}
           </tr>
@@ -240,6 +250,20 @@ function VerificationsPanel({
                   </td>
                   <td style={verifTdStyle}>{v.description}</td>
                   <td style={verifTdStyle}>{v.waitBeforeSeconds}s</td>
+                  <td style={verifTdStyle}>
+                    <span
+                      style={executionModeBadgeStyle(isDeferred)}
+                      title={
+                        verifConfig === undefined
+                          ? 'Loading execution mode\u2026'
+                          : isDeferred
+                          ? `Deferred \u2014 at least one verification in this objective waits > ${verifConfig.verificationDeferThresholdSeconds}s, so all verifications are queued and run by an agent later.`
+                          : 'Inline \u2014 all waits are at or below the defer threshold; verifications run synchronously after delivery.'
+                      }
+                    >
+                      {isDeferred ? 'Deferred' : 'Inline'}
+                    </span>
+                  </td>
                   <td style={{ ...verifTdStyle, fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 12, color: '#64748b' }}>
                     {steps.length} &nbsp;
                     {steps.slice(0, 3).map((s, idx) => (
@@ -321,7 +345,7 @@ function VerificationsPanel({
                 </tr>
                 {isExpanded && (
                   <tr>
-                    <td colSpan={(canEdit || canRun) ? 7 : 6} style={{ padding: '0 10px 12px 40px', background: '#eef2ff' }}>
+                    <td colSpan={(canEdit || canRun) ? 8 : 7} style={{ padding: '0 10px 12px 40px', background: '#eef2ff' }}>
                       {v.webUi && <WebUiStepsTable steps={v.webUi.steps} startUrl={v.webUi.startUrl} />}
                       {v.desktopUi && <DesktopUiStepsTable steps={v.desktopUi.steps} />}
                       {!v.webUi && !v.desktopUi && (
@@ -504,6 +528,24 @@ function targetBadgeStyle(target: string): React.CSSProperties {
     : target.includes('Blazor')
     ? { bg: '#eff6ff', fg: '#1d4ed8', border: '#bfdbfe' }
     : { bg: '#fef3c7', fg: '#92400e', border: '#fde68a' };
+  return {
+    fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
+    background: palette.bg, color: palette.fg, border: `1px solid ${palette.border}`,
+  };
+}
+
+function computeIsDeferred(
+  verifications: VerificationStep[],
+  cfg: AseXmlVerificationConfigResponse | undefined,
+): boolean {
+  if (!cfg || !cfg.deferVerifications || verifications.length === 0) return false;
+  return verifications.some(v => v.waitBeforeSeconds > cfg.verificationDeferThresholdSeconds);
+}
+
+function executionModeBadgeStyle(deferred: boolean): React.CSSProperties {
+  const palette = deferred
+    ? { bg: '#ecfeff', fg: '#0e7490', border: '#a5f3fc' }
+    : { bg: '#f1f5f9', fg: '#475569', border: '#cbd5e1' };
   return {
     fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
     background: palette.bg, color: palette.fg, border: `1px solid ${palette.border}`,

@@ -356,6 +356,11 @@ export interface ApiStackInfo {
   modules: Record<string, ApiModuleInfo>;
 }
 
+export interface AseXmlVerificationConfigResponse {
+  deferVerifications: boolean;
+  verificationDeferThresholdSeconds: number;
+}
+
 export interface ApiStacksResponse {
   stacks: Record<string, ApiStackInfo>;
   defaultStack: string | null;

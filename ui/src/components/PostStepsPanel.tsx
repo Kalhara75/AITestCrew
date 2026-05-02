@@ -1,7 +1,9 @@
 import { Fragment, useState } from 'react';
-import type { PostStep, WebUiStep, DesktopUiStep } from '../types';
+import { useQuery } from '@tanstack/react-query';
+import type { AseXmlVerificationConfigResponse, PostStep, WebUiStep, DesktopUiStep } from '../types';
 import { deletePostStep, updatePostStep } from '../api/modules';
 import type { PostStepParentKind } from '../api/modules';
+import { fetchAseXmlVerificationConfig } from '../api/config';
 import { triggerRun } from '../api/runs';
 import { useActiveRun } from '../contexts/ActiveRunContext';
 import { EditWebUiTestCaseDialog } from './EditWebUiTestCaseDialog';
@@ -45,10 +47,17 @@ export function PostStepsPanel({
   const { individualRun, setIndividualRun } = useActiveRun();
   const anyRunning = !!individualRun;
 
+  const { data: verifConfig } = useQuery({
+    queryKey: ['config', 'asexml-verification'],
+    queryFn: fetchAseXmlVerificationConfig,
+    staleTime: Infinity,
+  });
+
   if (!postSteps || postSteps.length === 0) return null;
 
   const canEdit = !!moduleId && !!testSetId;
   const canRun = !!testSetId;
+  const isDeferred = computeIsDeferred(postSteps, verifConfig);
 
   const handleRunStep = async (i: number) => {
     if (!testSetId) return;
@@ -114,6 +123,7 @@ export function PostStepsPanel({
             <th style={thS}>Target</th>
             <th style={thS}>Description</th>
             <th style={thS}>Wait</th>
+            <th style={thS}>Mode</th>
             <th style={thS}>Payload</th>
             {(canEdit || canRun) && <th style={{ ...thS, width: 100 }}></th>}
           </tr>
@@ -139,6 +149,20 @@ export function PostStepsPanel({
                   <td style={tdS}><span style={targetBadge(p.target)}>{p.target}</span></td>
                   <td style={tdS}>{p.description}</td>
                   <td style={tdS}>{p.waitBeforeSeconds}s</td>
+                  <td style={tdS}>
+                    <span
+                      style={executionModeBadgeStyle(isDeferred)}
+                      title={
+                        verifConfig === undefined
+                          ? 'Loading execution mode\u2026'
+                          : isDeferred
+                          ? `Deferred \u2014 at least one post-step in this objective waits > ${verifConfig.verificationDeferThresholdSeconds}s, so all post-steps are queued and run by an agent later.`
+                          : 'Inline \u2014 all waits are at or below the defer threshold; post-steps run synchronously after the parent step.'
+                      }
+                    >
+                      {isDeferred ? 'Deferred' : 'Inline'}
+                    </span>
+                  </td>
                   <td style={{ ...tdS, fontFamily: 'ui-monospace,Consolas,monospace', fontSize: 12, color: '#64748b' }}>
                     <PayloadSummary p={p} />
                   </td>
@@ -201,7 +225,7 @@ export function PostStepsPanel({
                 </tr>
                 {isExpanded && (
                   <tr>
-                    <td colSpan={(canEdit || canRun) ? 7 : 6} style={{ padding: '0 10px 12px 40px', background: '#eef2ff' }}>
+                    <td colSpan={(canEdit || canRun) ? 8 : 7} style={{ padding: '0 10px 12px 40px', background: '#eef2ff' }}>
                       {p.webUi && <WebUiStepsTable steps={p.webUi.steps} startUrl={p.webUi.startUrl} />}
                       {p.desktopUi && <DesktopUiStepsTable steps={p.desktopUi.steps} />}
                       {p.dbCheck && <DbCheckBlock dc={p.dbCheck} />}
@@ -422,6 +446,24 @@ function highlightTokens(text: string): React.ReactNode {
 // plain text (no React formatting).
 function highlightTokensStr(text: string): string {
   return text ?? '';
+}
+
+function computeIsDeferred(
+  postSteps: PostStep[],
+  cfg: AseXmlVerificationConfigResponse | undefined,
+): boolean {
+  if (!cfg || !cfg.deferVerifications || postSteps.length === 0) return false;
+  return postSteps.some(p => p.waitBeforeSeconds > cfg.verificationDeferThresholdSeconds);
+}
+
+function executionModeBadgeStyle(deferred: boolean): React.CSSProperties {
+  const palette = deferred
+    ? { bg: '#ecfeff', fg: '#0e7490', border: '#a5f3fc' }
+    : { bg: '#f1f5f9', fg: '#475569', border: '#cbd5e1' };
+  return {
+    fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
+    background: palette.bg, color: palette.fg, border: `1px solid ${palette.border}`,
+  };
 }
 
 function targetBadge(target: string): React.CSSProperties {

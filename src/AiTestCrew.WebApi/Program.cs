@@ -384,6 +384,14 @@ app.MapGet("/api/config/api-stacks", (TestEnvironmentConfig cfg) =>
     });
 });
 
+// ── aseXML verification policy — exposes defer thresholds to the UI ──
+app.MapGet("/api/config/asexml-verification", (TestEnvironmentConfig cfg) =>
+    Results.Ok(new
+    {
+        deferVerifications = cfg.AseXml.DeferVerifications,
+        verificationDeferThresholdSeconds = cfg.AseXml.VerificationDeferThresholdSeconds,
+    }));
+
 // ── SPA fallback — serve index.html for client-side routes ──
 app.MapFallbackToFile("index.html");
 
