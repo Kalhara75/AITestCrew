@@ -134,8 +134,13 @@ public class AseXmlGenerationAgent : BaseTestAgent
 
             var hasFails = steps.Any(s => s.Status == TestStatus.Failed);
             var hasErrors = steps.Any(s => s.Status == TestStatus.Error);
+            var hasAwaiting = steps.Any(s => s.Status == TestStatus.AwaitingVerification);
+            // AwaitingVerification when post-steps were deferred — the parent run
+            // must NOT be reported Passed, otherwise history finalises before the
+            // deferred verifications complete and the dashboard shows a stale pill.
             var status = hasErrors ? TestStatus.Error
                        : hasFails ? TestStatus.Failed
+                       : hasAwaiting ? TestStatus.AwaitingVerification
                        : TestStatus.Passed;
 
             var summary = status == TestStatus.Passed

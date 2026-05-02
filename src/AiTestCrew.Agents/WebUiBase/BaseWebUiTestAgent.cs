@@ -293,9 +293,14 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
     {
         var failCount  = steps.Count(s => s.Status == TestStatus.Failed);
         var errorCount = steps.Count(s => s.Status == TestStatus.Error);
+        var awaitingCount = steps.Count(s => s.Status == TestStatus.AwaitingVerification);
 
+        // AwaitingVerification when post-steps were deferred — the parent run
+        // must NOT be reported Passed, otherwise history finalises before the
+        // deferred verifications complete and the dashboard shows a stale pill.
         var status = errorCount > 0 ? TestStatus.Error
                    : failCount  > 0 ? TestStatus.Failed
+                   : awaitingCount > 0 ? TestStatus.AwaitingVerification
                    : TestStatus.Passed;
 
         return new TestResult
