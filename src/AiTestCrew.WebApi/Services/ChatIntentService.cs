@@ -335,7 +335,8 @@ public class ChatIntentService : IChatIntentService
                 parentKind = "Api",
                 parentStepIndex = i,
                 description = $"{s.Method} {s.Endpoint}".Trim(),
-                postStepCount = s.PostSteps.Count
+                postStepCount = s.PostSteps.Count,
+                postStepWaits = s.PostSteps.Select(ps => ps.WaitBeforeSeconds).ToArray()
             });
         }
         for (var i = 0; i < o.WebUiSteps.Count; i++)
@@ -348,7 +349,8 @@ public class ChatIntentService : IChatIntentService
                 description = string.IsNullOrWhiteSpace(s.Description)
                     ? (string.IsNullOrWhiteSpace(s.StartUrl) ? $"web ui case {i}" : s.StartUrl)
                     : s.Description,
-                postStepCount = s.PostSteps.Count
+                postStepCount = s.PostSteps.Count,
+                postStepWaits = s.PostSteps.Select(ps => ps.WaitBeforeSeconds).ToArray()
             });
         }
         for (var i = 0; i < o.DesktopUiSteps.Count; i++)
@@ -359,7 +361,8 @@ public class ChatIntentService : IChatIntentService
                 parentKind = "DesktopUi",
                 parentStepIndex = i,
                 description = string.IsNullOrWhiteSpace(s.Description) ? $"desktop ui case {i}" : s.Description,
-                postStepCount = s.PostSteps.Count
+                postStepCount = s.PostSteps.Count,
+                postStepWaits = s.PostSteps.Select(ps => ps.WaitBeforeSeconds).ToArray()
             });
         }
         for (var i = 0; i < o.AseXmlSteps.Count; i++)
@@ -372,7 +375,8 @@ public class ChatIntentService : IChatIntentService
                 description = string.IsNullOrWhiteSpace(s.Description)
                     ? $"aseXml generate {s.TemplateId}".Trim()
                     : s.Description,
-                postStepCount = s.PostSteps.Count
+                postStepCount = s.PostSteps.Count,
+                postStepWaits = s.PostSteps.Select(ps => ps.WaitBeforeSeconds).ToArray()
             });
         }
         for (var i = 0; i < o.AseXmlDeliverySteps.Count; i++)
@@ -385,7 +389,8 @@ public class ChatIntentService : IChatIntentService
                 description = string.IsNullOrWhiteSpace(s.Description)
                     ? $"aseXml deliver {s.TemplateId} → {s.EndpointCode}".Trim()
                     : s.Description,
-                postStepCount = s.PostSteps.Count
+                postStepCount = s.PostSteps.Count,
+                postStepWaits = s.PostSteps.Select(ps => ps.WaitBeforeSeconds).ToArray()
             });
         }
         return rows.ToArray();
@@ -505,19 +510,27 @@ public class ChatIntentService : IChatIntentService
             - Only propose recording when catalog.agents contains at least one Online agent with the matching capability; otherwise reply that no agent is available and emit no actions.
 
             Deferred vs inline post-steps — CRITICAL, applies to both confirmRecord (RecordVerification) and confirmCreatePostStep:
-            - Every post-step carries a waitBeforeSeconds. That value AND catalog.postStepConfig together decide whether the step runs inline (same process, blocking) or deferred (queued for a remote agent to claim after the wait):
-                INLINE when  catalog.postStepConfig.deferEnabled = false  OR  waitBeforeSeconds <= catalog.postStepConfig.deferThresholdSeconds
-                DEFERRED when catalog.postStepConfig.deferEnabled = true  AND  waitBeforeSeconds > catalog.postStepConfig.deferThresholdSeconds
-              Use these exact values — don't hardcode 30. If deferEnabled is false, deferral is impossible regardless of wait (and you should tell the user so).
-            - Map the user's phrasing to waitBeforeSeconds:
+            - Mode is decided PER PARENT STEP, ALL-OR-NOTHING. Every post-step on the same (objective, parentKind, parentStepIndex) shares one mode at runtime. If ANY wait on that parent step exceeds the threshold, EVERY post-step on it defers together — including ones with tiny waits.
+            - Inputs you must consider:
+                • newWait = the waitBeforeSeconds you are about to emit for this card
+                • siblingWaits = catalog.currentTestSet.objectives[*].parentSteps[*].postStepWaits for the SAME parentKind+parentStepIndex you are targeting (an array of existing post-step waits; empty if there are none yet)
+                • cfg = catalog.postStepConfig (deferEnabled, deferThresholdSeconds)
+            - Decision (use these exact values — don't hardcode 30):
+                INLINE   when  cfg.deferEnabled = false
+                            OR  every wait in [newWait, ...siblingWaits] is <= cfg.deferThresholdSeconds
+                DEFERRED when  cfg.deferEnabled = true
+                            AND any wait in [newWait, ...siblingWaits] is > cfg.deferThresholdSeconds
+              If deferEnabled is false, deferral is impossible regardless of wait (and you should tell the user so).
+            - Map the user's phrasing to waitBeforeSeconds (this picks newWait — sibling waits still apply on top):
                 "run inline" / "immediately" / "right after" / "in the same process" → 0
                 "wait N seconds" / "after N seconds" → N (respect their number literally)
                 "settle" / "small delay" / "let it finish" (no number) → pick a short value BELOW deferThresholdSeconds (e.g. 5)
                 "defer" / "queue" / "long-running" / "run later" / "wait for Bravo to process" / "on another machine" → pick a value ABOVE deferThresholdSeconds (default 60 if they didn't give a number; 300 for "a few minutes"; 600 for "ten minutes")
                 "wait N minutes" / "N min" → N × 60, which will naturally cross the threshold when N ≥ 1
-            - Include a sentence in the `reply` that explicitly states which mode will be used and why. Examples:
-                "Will run INLINE (wait 5s, under the {deferThresholdSeconds}s defer threshold)."
-                "Will DEFER to the queue (wait 300s, over the {deferThresholdSeconds}s threshold) — a Blazor agent will claim it once the wait elapses."
+            - Include a sentence in the `reply` that explicitly states which mode will be used and why. When the user asked for inline but a sibling forces deferral, SAY SO — don't claim inline. Examples:
+                "Will run INLINE (wait 5s — under the {deferThresholdSeconds}s threshold, and no sibling post-step on this parent exceeds it)."
+                "Will DEFER (wait 5s alone is inline, but a sibling post-step on this parent waits {maxSibling}s — when any post-step exceeds {deferThresholdSeconds}s, all post-steps on the parent defer together)."
+                "Will DEFER (wait 300s, over the {deferThresholdSeconds}s threshold) — a {target} agent will claim it once the wait elapses."
                 "Deferral is disabled on this server — this will run inline regardless of the 600s wait. Ask an operator to set TestEnvironment.AseXml.DeferVerifications=true to enable deferred execution."
             - When the user asks for deferred execution but no Online agent in catalog.agents advertises the post-step's target capability, warn them the deferred step will sit in the queue until such an agent connects. Still emit the card — the queue entry is valid — but make the reply honest about the gap.
 
