@@ -35,10 +35,11 @@ internal sealed class AgentClient
         return payload.AgentId;
     }
 
-    public async Task<HeartbeatResponse> HeartbeatAsync(string agentId, string status)
+    public async Task<HeartbeatResponse> HeartbeatAsync(
+        string agentId, string status, IReadOnlyList<AuthStateFileReport>? authStateFiles = null)
     {
         var res = await _http.PostAsJsonAsync($"api/agents/{agentId}/heartbeat",
-            new { status }, JsonOpts);
+            new { status, authStateFiles }, JsonOpts);
         res.EnsureSuccessStatusCode();
         return await res.Content.ReadFromJsonAsync<HeartbeatResponse>(JsonOpts)
             ?? new HeartbeatResponse();
@@ -68,10 +69,10 @@ internal sealed class AgentClient
         res.EnsureSuccessStatusCode();
     }
 
-    public async Task ReportResultAsync(string jobId, bool success, string? error)
+    public async Task ReportResultAsync(string jobId, bool success, string? error, string? authRefreshId = null)
     {
         var res = await _http.PostAsJsonAsync($"api/queue/{jobId}/result",
-            new { success, error }, JsonOpts);
+            new { success, error, authRefreshId }, JsonOpts);
         res.EnsureSuccessStatusCode();
     }
 
@@ -85,6 +86,13 @@ internal sealed class HeartbeatResponse
     public string? ActiveJobStatus { get; set; }
     public bool ShouldExit { get; set; }
 }
+
+/// <summary>
+/// One entry in the heartbeat's auth-state-files array. Mirrors the WebApi's
+/// <c>AuthStateFileReport</c> record and is the payload the dashboard's
+/// pre-flight auth-health panel consumes after server-side aggregation.
+/// </summary>
+internal sealed record AuthStateFileReport(string EnvKey, string Surface, bool FileExists, DateTime? FileMtimeUtc);
 
 internal sealed class NextJobResponse
 {

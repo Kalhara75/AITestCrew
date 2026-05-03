@@ -1,3 +1,4 @@
+using AiTestCrew.Agents.Auth;
 using AiTestCrew.Core.Configuration;
 using Microsoft.Extensions.Logging;
 using Spectre.Console;
@@ -17,9 +18,11 @@ internal sealed class AgentRunner
     private readonly string _name;
     private readonly string[] _capabilities;
     private readonly string _agentIdFilePath;
+    private readonly AuthStateScanner? _authStateScanner;
 
     public AgentRunner(AgentClient client, JobExecutor executor, TestEnvironmentConfig config,
-        ILogger logger, string name, string[] capabilities)
+        ILogger logger, string name, string[] capabilities,
+        AuthStateScanner? authStateScanner = null)
     {
         _client = client;
         _executor = executor;
@@ -27,6 +30,7 @@ internal sealed class AgentRunner
         _logger = logger;
         _name = name;
         _capabilities = capabilities;
+        _authStateScanner = authStateScanner;
         _agentIdFilePath = Path.Combine(AppContext.BaseDirectory, ".agent-id");
     }
 
@@ -90,11 +94,14 @@ internal sealed class AgentRunner
                 try
                 {
                     await _client.ReportProgressAsync(job.JobId);
-                    var outcome = await _executor.ExecuteAsync(job, ct);
-                    await _client.ReportResultAsync(job.JobId, outcome.Success, outcome.Error);
-                    AnsiConsole.MarkupLine(outcome.Success
-                        ? $"[green]✓ Job {Markup.Escape(job.JobId)} completed[/] — {Markup.Escape(outcome.Summary)}"
-                        : $"[red]✗ Job {Markup.Escape(job.JobId)} failed[/] — {Markup.Escape(outcome.Summary)}");
+                    var outcome = await _executor.ExecuteAsync(job, agentId, ct);
+                    await _client.ReportResultAsync(job.JobId, outcome.Success, outcome.Error, outcome.AuthRefreshId);
+                    if (outcome.AuthRefreshId is not null)
+                        AnsiConsole.MarkupLine($"[yellow]⏸ Job {Markup.Escape(job.JobId)} paused[/] — {Markup.Escape(outcome.Summary)}");
+                    else
+                        AnsiConsole.MarkupLine(outcome.Success
+                            ? $"[green]✓ Job {Markup.Escape(job.JobId)} completed[/] — {Markup.Escape(outcome.Summary)}"
+                            : $"[red]✗ Job {Markup.Escape(job.JobId)} failed[/] — {Markup.Escape(outcome.Summary)}");
                 }
                 catch (Exception ex)
                 {
@@ -131,7 +138,26 @@ internal sealed class AgentRunner
         {
             try
             {
-                var res = await _client.HeartbeatAsync(agentId, _currentStatus);
+                // Scan cached storage-state files so the dashboard's pre-flight
+                // auth-health panel reflects this agent's current view. Read-only
+                // file stat — never opens or locks the files.
+                IReadOnlyList<AuthStateFileReport>? authStateFiles = null;
+                if (_authStateScanner is not null)
+                {
+                    try
+                    {
+                        authStateFiles = _authStateScanner.Scan()
+                            .Select(s => new AuthStateFileReport(
+                                s.EnvironmentKey, s.Surface.ToString(), s.FileExists, s.FileMtimeUtc))
+                            .ToList();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning("Auth-state scan failed: {Message}", ex.Message);
+                    }
+                }
+
+                var res = await _client.HeartbeatAsync(agentId, _currentStatus, authStateFiles);
                 if (res.ShouldExit)
                 {
                     AnsiConsole.MarkupLine("\n[red]Force-quit received from dashboard — terminating now.[/]");

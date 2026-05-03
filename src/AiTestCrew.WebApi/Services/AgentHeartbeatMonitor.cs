@@ -23,6 +23,13 @@ public sealed class AgentHeartbeatMonitor : BackgroundService
     private readonly TimeSpan _timeout;
     private readonly TimeSpan _tickInterval = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// Last time <see cref="SweepAuthRefreshesAsync"/> ran — used to bound the
+    /// completed-refresh lookback window. Initialised to startup time so we
+    /// don't sweep historical Completed rows on the first tick.
+    /// </summary>
+    private DateTime _lastAuthRefreshSweepAt = DateTime.UtcNow;
+
     public AgentHeartbeatMonitor(IServiceProvider sp, ILogger<AgentHeartbeatMonitor> logger, TimeSpan timeout)
     {
         _sp = sp;
@@ -38,6 +45,7 @@ public sealed class AgentHeartbeatMonitor : BackgroundService
             await SweepAgentsAsync();
             await SweepStaleQueueClaimsAsync();
             await SweepExpiredPendingVerificationsAsync();
+            await SweepAuthRefreshesAsync();
 
             try
             {
@@ -182,6 +190,68 @@ public sealed class AgentHeartbeatMonitor : BackgroundService
         catch (Exception ex)
         {
             _logger.LogError(ex, "AgentHeartbeatMonitor: pending-verification sweep failed");
+        }
+    }
+
+    /// <summary>
+    /// Releases queue entries blocked on a now-Completed auth refresh, cancels
+    /// entries blocked on a Failed refresh, and times out any
+    /// <c>InProgress</c> refresh past <c>Auth.AuthRefreshMaxLatencySeconds</c>.
+    /// Idempotent — re-running on the same Completed row does nothing because
+    /// the queue entries no longer carry the <c>auth_refresh_id</c>.
+    /// </summary>
+    private async Task SweepAuthRefreshesAsync()
+    {
+        try
+        {
+            var refreshRepo = _sp.GetService<IAuthRefreshRepository>();
+            var queueRepo = _sp.GetService<IRunQueueRepository>() as AiTestCrew.Agents.Persistence.Sqlite.SqliteRunQueueRepository;
+            var config = _sp.GetRequiredService<TestEnvironmentConfig>();
+            if (refreshRepo is null || queueRepo is null) return;
+
+            // 1. Time out InProgress refreshes that haven't reported in time.
+            var maxLatency = TimeSpan.FromSeconds(Math.Max(60, config.Auth.AuthRefreshMaxLatencySeconds));
+            var staleCutoff = DateTime.UtcNow - maxLatency;
+            var staleInFlight = await refreshRepo.ListStaleInProgressAsync(staleCutoff);
+            foreach (var stale in staleInFlight)
+            {
+                await refreshRepo.MarkFailedAsync(stale.Id,
+                    $"Auth-refresh timed out — no agent completed within {maxLatency.TotalSeconds:F0}s");
+                _logger.LogWarning(
+                    "Timed out auth-refresh {Id} (env={Env} surface={Surface}) — agent silent past {Cutoff:O}",
+                    stale.Id, stale.EnvironmentKey, stale.Surface, staleCutoff);
+            }
+
+            // 2. For every refresh that terminated since last tick, release or
+            //    cancel its dependent queue entries.
+            var lookbackSince = _lastAuthRefreshSweepAt - TimeSpan.FromSeconds(15); // small overlap for safety
+            var terminated = await refreshRepo.ListRecentlyCompletedAsync(lookbackSince);
+            foreach (var t in terminated)
+            {
+                if (t.Status == "Completed")
+                {
+                    var released = await queueRepo.ReleaseForAuthRefreshAsync(t.Id);
+                    if (released > 0)
+                        _logger.LogInformation(
+                            "Auth-refresh {Id} completed — released {Count} queue entry/entries to retry",
+                            t.Id, released);
+                }
+                else if (t.Status == "Failed")
+                {
+                    var error = string.IsNullOrEmpty(t.ErrorMessage) ? "Auth-refresh failed" : t.ErrorMessage;
+                    var cancelled = await queueRepo.CancelForAuthRefreshAsync(t.Id, error);
+                    if (cancelled > 0)
+                        _logger.LogWarning(
+                            "Auth-refresh {Id} failed — cancelled {Count} dependent queue entry/entries: {Error}",
+                            t.Id, cancelled, error);
+                }
+            }
+
+            _lastAuthRefreshSweepAt = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "AgentHeartbeatMonitor: auth-refresh sweep failed");
         }
     }
 

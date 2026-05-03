@@ -122,6 +122,9 @@ public class EnvironmentResolver : IEnvironmentResolver
         return "";
     }
 
+    public bool ResolveAuthHealthEnabled(string? key) =>
+        Resolve(key).AuthHealthEnabled;
+
     private static string Pick(string? envValue, string? fallback)
     {
         if (!string.IsNullOrWhiteSpace(envValue)) return envValue!;

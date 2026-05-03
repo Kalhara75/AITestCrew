@@ -544,6 +544,7 @@ if (!string.IsNullOrWhiteSpace(envConfig.ServerUrl))
     builder.Services.AddSingleton<IModuleRepository>(new AiTestCrew.Runner.RemoteRepositories.ApiClientModuleRepository(remoteHttp));
     builder.Services.AddSingleton<IRunQueueRepository>(new AiTestCrew.Runner.RemoteRepositories.ApiClientRunQueueRepository(remoteHttp));
     builder.Services.AddSingleton<IPendingVerificationRepository>(new AiTestCrew.Runner.RemoteRepositories.ApiClientPendingVerificationRepository(remoteHttp));
+    builder.Services.AddSingleton<IAuthRefreshRepository>(new AiTestCrew.Runner.RemoteRepositories.ApiClientAuthRefreshRepository(remoteHttp));
     AnsiConsole.MarkupLine($"[grey]Remote mode → {envConfig.ServerUrl}[/]");
 }
 else if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCase))
@@ -555,6 +556,7 @@ else if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgno
     builder.Services.AddSingleton<IModuleRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteModuleRepository(connFactory));
     builder.Services.AddSingleton<IRunQueueRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteRunQueueRepository(connFactory));
     builder.Services.AddSingleton<IPendingVerificationRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqlitePendingVerificationRepository(connFactory));
+    builder.Services.AddSingleton<IAuthRefreshRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteAuthRefreshRepository(connFactory));
 }
 else
 {
@@ -678,9 +680,14 @@ if (cli.AgentMode)
     var jobExecutor = new AiTestCrew.Runner.AgentMode.JobExecutor(
         host.Services.GetRequiredService<TestOrchestrator>(),
         host.Services.GetRequiredService<AiTestCrew.Agents.Recording.IRecordingService>(),
-        host.Services.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>());
+        host.Services.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>(),
+        host.Services.GetService<IAuthRefreshRepository>(),
+        host.Services.GetService<IRunQueueRepository>(),
+        host.Services.GetService<ILogger<AiTestCrew.Runner.AgentMode.JobExecutor>>());
+    var authStateScanner = new AiTestCrew.Agents.Auth.AuthStateScanner(
+        host.Services.GetRequiredService<IEnvironmentResolver>());
     var agentRunner = new AiTestCrew.Runner.AgentMode.AgentRunner(
-        agentClient, jobExecutor, envConfig, agentLogger, agentName, caps);
+        agentClient, jobExecutor, envConfig, agentLogger, agentName, caps, authStateScanner);
 
     using var shutdownCts = new CancellationTokenSource();
     Console.CancelKeyPress += (_, e) =>
@@ -779,18 +786,43 @@ await AnsiConsole.Status()
         else
             ctx.Status("Decomposing objective...");
 
-        suiteResult = await orchestrator.RunAsync(objective, cli.Mode, cli.ReuseId,
-            externalRunId: cliRunId,
-            moduleId: cli.ModuleId, targetTestSetId: effectiveTestSetId,
-            objectiveName: cli.ObjectiveName,
-            objectiveId: cli.ObjectiveId,  // reuse-mode / verify-only filter to a single test case
-            apiStackKey: cli.ApiStackKey, apiModule: cli.ApiModule,
-            endpointCode: cli.EndpointCode,
-            verificationWaitOverride: cli.Mode == RunMode.VerifyOnly ? cli.VerificationWait : null,
-            environmentKey: cli.EnvironmentKey,
-            teardownDryRun: cli.TeardownDryRun,
-            skipTeardown: cli.SkipTeardown,
-            verifyStepFilter: cli.VerifyStepFilter);
+        try
+        {
+            suiteResult = await orchestrator.RunAsync(objective, cli.Mode, cli.ReuseId,
+                externalRunId: cliRunId,
+                moduleId: cli.ModuleId, targetTestSetId: effectiveTestSetId,
+                objectiveName: cli.ObjectiveName,
+                objectiveId: cli.ObjectiveId,  // reuse-mode / verify-only filter to a single test case
+                apiStackKey: cli.ApiStackKey, apiModule: cli.ApiModule,
+                endpointCode: cli.EndpointCode,
+                verificationWaitOverride: cli.Mode == RunMode.VerifyOnly ? cli.VerificationWait : null,
+                environmentKey: cli.EnvironmentKey,
+                teardownDryRun: cli.TeardownDryRun,
+                skipTeardown: cli.SkipTeardown,
+                verifyStepFilter: cli.VerifyStepFilter);
+        }
+        catch (AiTestCrew.Core.Exceptions.AuthRequiredException authEx)
+        {
+            // Local CLI mode has no remote dispatch — surface a clear remediation hint
+            // and exit non-zero. The agent-mode path catches this higher up in JobExecutor
+            // and parks the run via the auth-refresh dispatcher.
+            AnsiConsole.MarkupLine(
+                $"\n[bold red]Authentication required[/] for env [yellow]{Markup.Escape(authEx.EnvironmentKey)}[/] " +
+                $"surface [yellow]{authEx.Surface}[/].");
+            AnsiConsole.MarkupLine($"[grey]{Markup.Escape(authEx.Message)}[/]");
+            var hint = authEx.Surface switch
+            {
+                AiTestCrew.Core.Models.AuthSurface.Api =>
+                    "Check API credentials in TestEnvironment.AuthUsername/AuthPassword (or AuthToken).",
+                AiTestCrew.Core.Models.AuthSurface.WebBlazor =>
+                    $"Re-run: [cyan]dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_Blazor --environment {Markup.Escape(authEx.EnvironmentKey)}[/]",
+                AiTestCrew.Core.Models.AuthSurface.WebMvc =>
+                    $"Re-run: [cyan]dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_MVC --environment {Markup.Escape(authEx.EnvironmentKey)}[/]",
+                _ => "Refresh authentication for this surface and try again.",
+            };
+            AnsiConsole.MarkupLine($"[yellow]→[/] {hint}");
+            Environment.ExitCode = 2;
+        }
     });
 
 // ── Block-and-poll for deferred verifications ──

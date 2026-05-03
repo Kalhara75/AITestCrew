@@ -24,10 +24,12 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
             INSERT INTO run_queue (id, module_id, test_set_id, objective_id, target_type, mode, job_kind,
                                    requested_by, status, claimed_by, claimed_at, completed_at, error,
                                    request_json, created_at,
-                                   not_before_at, deadline_at, attempt_count, parent_queue_entry_id, parent_run_id)
+                                   not_before_at, deadline_at, attempt_count, parent_queue_entry_id, parent_run_id,
+                                   auth_refresh_id)
             VALUES ($id, $moduleId, $tsId, $objId, $target, $mode, $jobKind, $requestedBy, $status,
                     NULL, NULL, NULL, NULL, $requestJson, $createdAt,
-                    $notBeforeAt, $deadlineAt, $attemptCount, $parentQueueEntryId, $parentRunId)
+                    $notBeforeAt, $deadlineAt, $attemptCount, $parentQueueEntryId, $parentRunId,
+                    $authRefreshId)
             """;
         cmd.Parameters.AddWithValue("$id", entry.Id);
         cmd.Parameters.AddWithValue("$moduleId", entry.ModuleId);
@@ -47,8 +49,62 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
         cmd.Parameters.AddWithValue("$attemptCount", entry.AttemptCount);
         cmd.Parameters.AddWithValue("$parentQueueEntryId", (object?)entry.ParentQueueEntryId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$parentRunId", (object?)entry.ParentRunId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$authRefreshId", (object?)entry.AuthRefreshId ?? DBNull.Value);
         await cmd.ExecuteNonQueryAsync();
         return entry;
+    }
+
+    /// <summary>
+    /// Releases queue entries blocked on a now-completed auth refresh: clears
+    /// <c>auth_refresh_id</c> and resets <c>not_before_at = now</c> so an agent
+    /// picks them back up on the next claim. Returns the number of entries
+    /// released.
+    /// </summary>
+    public async Task<int> ReleaseForAuthRefreshAsync(string authRefreshId)
+    {
+        using var conn = _factory.CreateConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE run_queue
+            SET auth_refresh_id = NULL, not_before_at = $now
+            WHERE auth_refresh_id = $arid AND status = 'Queued'
+            """;
+        cmd.Parameters.AddWithValue("$arid", authRefreshId);
+        cmd.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("O"));
+        return await cmd.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Cancels queue entries blocked on a now-failed auth refresh: marks them
+    /// <c>Cancelled</c> with the failure error so the dependent runs finalise
+    /// as Failed. Returns the number of entries cancelled.
+    /// </summary>
+    public async Task<int> CancelForAuthRefreshAsync(string authRefreshId, string error)
+    {
+        using var conn = _factory.CreateConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE run_queue
+            SET status = 'Cancelled', completed_at = $now, error = $err
+            WHERE auth_refresh_id = $arid AND status = 'Queued'
+            """;
+        cmd.Parameters.AddWithValue("$arid", authRefreshId);
+        cmd.Parameters.AddWithValue("$err", error);
+        cmd.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("O"));
+        return await cmd.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>List queue entries currently blocked on the given auth refresh.</summary>
+    public async Task<List<RunQueueEntry>> ListForAuthRefreshAsync(string authRefreshId)
+    {
+        using var conn = _factory.CreateConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = SelectSql + " WHERE auth_refresh_id = $arid ORDER BY created_at ASC";
+        cmd.Parameters.AddWithValue("$arid", authRefreshId);
+        using var reader = await cmd.ExecuteReaderAsync();
+        var result = new List<RunQueueEntry>();
+        while (await reader.ReadAsync()) result.Add(Read(reader));
+        return result;
     }
 
     public async Task<RunQueueEntry?> ClaimNextAsync(string agentId, IEnumerable<string> capabilities)
@@ -220,7 +276,8 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
         SELECT id, module_id, test_set_id, objective_id, target_type, mode, job_kind,
                requested_by, status, claimed_by, claimed_at, completed_at, error,
                request_json, created_at,
-               not_before_at, deadline_at, attempt_count, parent_queue_entry_id, parent_run_id
+               not_before_at, deadline_at, attempt_count, parent_queue_entry_id, parent_run_id,
+               auth_refresh_id
         FROM run_queue
         """;
 
@@ -246,5 +303,6 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
         AttemptCount = r.IsDBNull(17) ? 0 : r.GetInt32(17),
         ParentQueueEntryId = r.IsDBNull(18) ? null : r.GetString(18),
         ParentRunId = r.IsDBNull(19) ? null : r.GetString(19),
+        AuthRefreshId = r.IsDBNull(20) ? null : r.GetString(20),
     };
 }

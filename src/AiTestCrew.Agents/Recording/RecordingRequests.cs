@@ -40,7 +40,13 @@ public record RecordVerificationRequest(
 /// <summary>Launch an interactive browser login and save the resulting storage state.</summary>
 public record AuthSetupRequest(
     string Target,                   // UI_Web_MVC | UI_Web_Blazor
-    string? EnvironmentKey);
+    string? EnvironmentKey,
+    /// <summary>
+    /// When set, the agent reports the AuthSetup outcome back to the WebApi so the
+    /// matching <c>run_auth_refreshes</c> row transitions to Completed / Failed and
+    /// the dashboard banner clears. Null on local CLI invocations (no refresh row to update).
+    /// </summary>
+    string? AuthRefreshId = null);
 
 /// <summary>Outcome of a recording session.</summary>
 public record RecordingResult(

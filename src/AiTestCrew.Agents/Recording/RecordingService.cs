@@ -461,31 +461,54 @@ public class RecordingService : IRecordingService
 
             var initialUrl = page.Url;
             var loginPath = _cfg.LegacyWebUiLoginPath.TrimStart('/');
+
+            // Blazor needs POSITIVE proof of auth: we must have observed the URL
+            // visit login.microsoftonline.com at some point. Otherwise the very
+            // first poll after page.GotoAsync trivially returns "logged in"
+            // (URL == baseUrl, doesn't contain MS login) and we save an empty
+            // context with zero cookies. The flag is set inside the wait loop.
+            var sawSsoRedirect = false;
+
             Func<string, bool> isLoggedIn = isLegacy
                 ? (string.IsNullOrEmpty(loginPath)
                     ? url => !string.Equals(url, initialUrl, StringComparison.OrdinalIgnoreCase)
                              && !url.Equals("about:blank", StringComparison.OrdinalIgnoreCase)
                     : url => !url.Contains(loginPath, StringComparison.OrdinalIgnoreCase))
-                : url => url.StartsWith(baseUrl, StringComparison.OrdinalIgnoreCase)
+                : url => sawSsoRedirect
+                         && url.StartsWith(baseUrl, StringComparison.OrdinalIgnoreCase)
                          && !url.Contains("login.microsoftonline.com", StringComparison.OrdinalIgnoreCase);
 
             var deadline = DateTime.UtcNow.AddMinutes(3);
             while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
             {
-                if (isLoggedIn(page.Url)) break;
+                var currentUrl = page.Url;
+                if (!isLegacy && currentUrl.Contains("login.microsoftonline.com", StringComparison.OrdinalIgnoreCase))
+                    sawSsoRedirect = true;
+                if (isLoggedIn(currentUrl)) break;
                 await Task.Delay(500, ct);
             }
 
             if (!isLoggedIn(page.Url))
-                return Fail("Timed out waiting for login to complete.");
+                return Fail(isLegacy
+                    ? "Timed out waiting for login to complete."
+                    : "Timed out waiting for Azure SSO redirect — never saw login.microsoftonline.com. Check the configured BraveCloudUiUrl actually requires authentication.");
 
             await Task.Delay(1000, ct);
+
+            // Last-line-of-defence sanity check: never save an empty context.
+            // If we reach this point but no cookies were captured, the auth flow
+            // didn't actually persist anything and the next test would fail with
+            // a login redirect anyway.
+            var capturedCookies = await browserCtx.CookiesAsync();
+            if (capturedCookies.Count == 0)
+                return Fail("Login appeared to complete but no cookies were captured. Did you finish logging in?");
+
             var dir = Path.GetDirectoryName(statePath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
             await browserCtx.StorageStateAsync(new BrowserContextStorageStateOptions { Path = statePath });
 
             return new RecordingResult(true,
-                $"Auth state saved → {statePath} (valid for {maxAgeHours} hours)");
+                $"Auth state saved → {statePath} ({capturedCookies.Count} cookies, valid for {maxAgeHours} hours)");
         }
         catch (PlaywrightException ex) when (ex.Message.Contains("closed", StringComparison.OrdinalIgnoreCase))
         {

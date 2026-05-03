@@ -776,6 +776,12 @@ All settings are in `src/AiTestCrew.Runner/appsettings.json` under the `TestEnvi
 | `AuthHeaderName` | Header name for auth | `"Authorization"` |
 | `AuthUsername` | Username for auto-login (used when `AuthToken` is empty) | `null` |
 | `AuthPassword` | Password for auto-login (used when `AuthToken` is empty) | `null` |
+| `Auth.AutoRecoverApi` | Silent retry-once on 401/403 with cache invalidation (see [Seamless authentication recovery](#seamless-authentication-recovery)) | `true` |
+| `Auth.AutoRecoverUi` | Silent storage-state refresh when a UI page is bumped to login | `true` |
+| `Auth.LoginRedirectUrlPatterns` | Substrings that flag a UI session as bumped to login | `["login.microsoftonline.com", "/Account/Login"]` |
+| `Auth.AuthRefreshMaxLatencySeconds` | Janitor times out `InProgress` refreshes past this | `300` |
+| `Auth.PauseOnAuthFailure` | Pause runs in `AwaitingAuth` instead of failing them. Set `false` for headless CI | `true` |
+| `Auth.ExpiryWarningHours` | Pre-flight panel warns about a file when its age is within this window of the TTL | `1` |
 | `DefaultTimeoutSeconds` | Per-objective execution timeout | `300` |
 | `VerboseLogging` | Show agent-level log lines in console | `true` |
 | `MaxExecutionRunsPerTestSet` | Max execution runs to keep per test set (`0` = unlimited) | `10` |
@@ -1099,6 +1105,14 @@ The home page shows all modules as cards. Each card displays:
 - Creation date
 
 Click **+ Create Module** to add a new module.
+
+Above the module grid, status banners appear when there's something the user should act on:
+
+- **AuthRefreshBanner** (amber, 🔒) — surfaces auth failures from in-flight runs. One-click refresh resumes every paused run sharing the same scope. See [Seamless authentication recovery](#seamless-authentication-recovery).
+- **AuthHealthPanel** (amber/red, ⚠️) — pre-flight stale-storage-state warning, env-grouped, with a Refresh button per UI surface. Visible only when at least one env has a surface that's stale, expiring, or never recorded.
+- **QueueBanner** — active queued / claimed / running jobs across all agents.
+- **AgentsPanel** — registered Runner agents with status, capabilities, owner, current job, and Force-quit button.
+- **DataPacksPanel** — last startup data-pack run report (per env, per script, with stack traces on failure).
 
 ### Module Detail
 
@@ -1512,6 +1526,46 @@ Add these settings to `appsettings.json` under `TestEnvironment`:
 3. **Manual auth setup** — run `--auth-setup` to open a visible browser, complete the full SSO + 2FA flow manually, and save the auth state. Recordings and test runs then reuse this saved state.
 
 To obtain the TOTP secret: sign in to https://mysignins.microsoft.com/security-info, add a new Authenticator app, and click "Can't scan image?" to reveal the base32 key. If the account already has an authenticator configured, an Azure AD admin can reset MFA to re-enrol and capture the secret.
+
+### Seamless authentication recovery
+
+When auth times out *during* a run AITestCrew tries hard to keep the run alive without you having to start over. There are three layers, each invisible to you unless the layer above can't recover.
+
+**1 — Silent retry (no user action).** When the API agent gets a 401/403 it invalidates its cached JWT, re-acquires from `AuthUsername` / `AuthPassword`, and retries the same request once. When a Web UI agent's page is bumped to a login URL mid-test (`login.microsoftonline.com`, `/Account/Login`, or anything you list in `Auth.LoginRedirectUrlPatterns`) it deletes the stale storage state and re-runs the saved login flow so future tests start authenticated. The current step's test case is still abandoned but the run continues to the next case with fresh auth.
+
+**2 — Pause-and-resume (one click).** If the silent retry can't recover (e.g. password changed, MFA reset, no `BraveCloudUiTotpSecret` configured), the run flips to `AwaitingAuth` (amber pill) instead of failing. The dashboard's amber **AuthRefreshBanner** appears at the top of every page:
+
+> 🔒 **Authentication needed** · Brave Cloud (Blazor) @ sumo-retail · 1 run paused · *[Refresh auth] [Dismiss]*
+
+Click **Refresh auth**, complete the login in the browser window the agent pops up, and every paused run sharing the same `(env, surface)` scope resumes from where it failed. There's no need to re-trigger them — the queue's janitor sweeps every 30 s and releases them when the refresh completes. Trigger 3 parallel Blazor runs against the same env with stale auth and you'll see "3 runs paused" on a single banner row; one click recovers all 3.
+
+If the recovery itself fails (wrong TOTP, login form changed) the AuthSetup job marks the refresh `Failed` and the dependent runs propagate that error — clear failure, no silent zombies.
+
+**3 — Pre-flight panel (catch it before triggering).** The reactive flow above only fires after a run has failed. The **AuthHealthPanel** shows up *before* you trigger anything when the cached auth state for any environment has gone stale:
+
+> ⚠️ **Auth state needs refreshing**  
+> **Sumo Retail** `sumo-retail`  
+> &nbsp;&nbsp;[Expired] **Brave Cloud (Blazor)** — Last refreshed 9.0h ago on My-PC · TTL 8h · *[Refresh]*  
+> &nbsp;&nbsp;[Never recorded] **Bravo Web (MVC)** — No cached storage state · *[Refresh]*
+
+One tile per environment, with a separate **Refresh** button per UI surface (Blazor / MVC). The status pill picks worst-of:
+- `Never recorded` (red) — no cached storage state at all
+- `Expired` (red) — file is older than the surface's TTL
+- `Expiring soon` (amber) — within the warning window of the TTL
+
+The panel disappears entirely when every env is fresh, so the dashboard stays clean. Tiles already covered by an in-flight refresh are filtered out so you don't see them twice.
+
+**Per-env opt-out.** Add `"AuthHealthEnabled": false` to an environment's block in `appsettings.json` to hide it from the pre-flight panel — useful for envs you only hit via API or that you don't actively run UI tests against. The agent scanner stops emitting rows for that env on its next heartbeat.
+
+**CLI mode.** Local Runner runs (no agent, no WebApi) print a Spectre remediation hint and exit with code 2 when auth fails:
+
+```
+Authentication required for env sumo-retail surface WebBlazor.
+Session expired — page redirected to login at https://login.microsoftonline.com/...
+→ Re-run: dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_Blazor --environment sumo-retail
+```
+
+**Headless CI escape hatch.** Set `Auth.PauseOnAuthFailure: false` in `appsettings.json` to disable the pause-and-resume behaviour; auth failures then fail the test as a normal `Failed` step. This is the right choice for unattended CI runs where there's no human to click the banner.
 
 ### Browser installation
 

@@ -6,6 +6,7 @@ public interface IRunTracker
     RunStatus? Get(string runId);
     void Complete(string runId, string testSetId);
     void MarkAwaitingVerification(string runId, string testSetId);
+    void MarkAwaitingAuth(string runId, string? testSetId = null);
     void Fail(string runId, string error);
     bool HasActiveRun();
     bool HasActiveRunForTestSet(string testSetId);

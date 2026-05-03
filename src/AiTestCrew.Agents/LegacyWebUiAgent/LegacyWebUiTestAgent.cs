@@ -68,6 +68,7 @@ public class LegacyWebUiTestAgent : BaseWebUiTestAgent
 
     protected override string TargetBaseUrl => _envResolver.ResolveLegacyWebUiUrl(CurrentEnvironmentKey);
     protected override string TargetBaseUrlConfigKey => "LegacyWebUiUrl";
+    protected override AuthSurface Surface => AuthSurface.WebMvc;
 
     public LegacyWebUiTestAgent(
         Kernel kernel,
@@ -214,5 +215,33 @@ public class LegacyWebUiTestAgent : BaseWebUiTestAgent
 
         var age = DateTime.UtcNow - File.GetLastWriteTimeUtc(path);
         return age.TotalHours < _config.LegacyWebUiStorageStateMaxAgeHours;
+    }
+
+    /// <summary>
+    /// Silent recovery on login-redirect detection: delete the cached storage state
+    /// and re-run the forms login from configured credentials.
+    /// </summary>
+    protected override async Task<bool> TryRecoverFromLoginRedirectAsync(IBrowser browser, CancellationToken ct)
+    {
+        var path = ResolveStorageStatePath();
+        if (!string.IsNullOrEmpty(path) && File.Exists(path))
+        {
+            try { File.Delete(path); }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "[{Agent}] Failed to delete stale storage state at {Path}", Name, path);
+            }
+        }
+
+        await s_loginGate.WaitAsync(ct);
+        try
+        {
+            await PerformFormsLoginAsync(browser);
+        }
+        finally
+        {
+            s_loginGate.Release();
+        }
+        return true;
     }
 }

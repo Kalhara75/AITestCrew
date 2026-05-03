@@ -8,6 +8,7 @@ using AiTestCrew.Agents.Environment;
 using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Configuration;
+using AiTestCrew.Core.Exceptions;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
 
@@ -179,6 +180,13 @@ public class PostStepOrchestrator
         try
         {
             childResult = await sibling.ExecuteAsync(syntheticTask, ct);
+        }
+        catch (AuthRequiredException)
+        {
+            // Bubble out so the queue dispatcher can park the run as AwaitingAuth.
+            // Without this guard the broad catch below converts auth failures into
+            // plain Error steps and the seamless-auth banner never appears.
+            throw;
         }
         catch (Exception ex)
         {

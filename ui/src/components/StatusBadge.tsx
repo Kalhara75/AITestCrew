@@ -10,11 +10,15 @@ const colors: Record<string, { bg: string; fg: string; border: string }> = {
   Claimed: { bg: '#ede9fe', fg: '#5b21b6', border: '#ddd6fe' },
   Cancelled: { bg: '#f1f5f9', fg: '#475569', border: '#e2e8f0' },
   AwaitingVerification: { bg: '#cffafe', fg: '#0e7490', border: '#a5f3fc' },
+  AwaitingAuth: { bg: '#fef3c7', fg: '#92400e', border: '#fde68a' },
+  AuthRequired: { bg: '#fef3c7', fg: '#92400e', border: '#fde68a' },
 };
 
 /** Pretty-print shorter labels for long status names (e.g. AwaitingVerification → Awaiting). */
 const displayName: Record<string, string> = {
   AwaitingVerification: 'Awaiting',
+  AwaitingAuth: 'Auth needed',
+  AuthRequired: 'Auth needed',
 };
 
 export function StatusBadge({ status, size = 'sm' }: { status: string | null; size?: 'sm' | 'md' }) {

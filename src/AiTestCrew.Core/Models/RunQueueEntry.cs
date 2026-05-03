@@ -78,4 +78,12 @@ public class RunQueueEntry
     /// ordinary dashboard-triggered queue entries.
     /// </summary>
     public string? ParentRunId { get; set; }
+
+    /// <summary>
+    /// When this entry is paused on an outstanding auth-refresh, the
+    /// <see cref="AuthRefreshRequest.Id"/> blocking it. The janitor clears this
+    /// and resets <see cref="NotBeforeAt"/> when the refresh completes so an
+    /// agent picks the entry back up. Null on ordinary entries.
+    /// </summary>
+    public string? AuthRefreshId { get; set; }
 }

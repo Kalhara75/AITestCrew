@@ -181,6 +181,8 @@ if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCas
     builder.Services.AddSingleton<IAgentRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteAgentRepository(connFactory));
     builder.Services.AddSingleton<IRunQueueRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteRunQueueRepository(connFactory));
     builder.Services.AddSingleton<IPendingVerificationRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqlitePendingVerificationRepository(connFactory));
+    builder.Services.AddSingleton<IAuthRefreshRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteAuthRefreshRepository(connFactory));
+    builder.Services.AddSingleton<IAgentAuthStateRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteAgentAuthStateRepository(connFactory));
     builder.Services.AddSingleton<IChatConversationRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteChatConversationRepository(connFactory));
 
     // Background monitor to mark agents Offline if no heartbeat
@@ -243,6 +245,12 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
     options.SerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
+    // Accept enums as strings on input (e.g. POST /auth-refreshes with {"surface":"WebBlazor"})
+    // and emit them as strings on output. Without this, endpoints that take an enum-typed
+    // body silently reject string values — most code already manually .ToString()s on output
+    // but on input there's no equivalent escape hatch.
+    options.SerializerOptions.Converters.Add(
+        new System.Text.Json.Serialization.JsonStringEnumConverter());
 });
 
 var app = builder.Build();
@@ -291,6 +299,8 @@ if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCas
     app.MapGroup("/api/agents").MapAgentEndpoints();
     app.MapGroup("/api/queue").MapQueueEndpoints();
     app.MapGroup("/api/pending-verifications").MapPendingVerificationEndpoints();
+    app.MapGroup("/api/auth-refreshes").MapAuthRefreshEndpoints();
+    app.MapGroup("/api/auth-health").MapAuthHealthEndpoints();
     app.MapGroup("/api/recordings").MapRecordingEndpoints();
 }
 

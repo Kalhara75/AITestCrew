@@ -97,6 +97,14 @@ public static class QueueEndpoints
 
             await queueRepo.MarkCompletedAsync(jobId, request.Success, request.Error);
 
+            // ── Auth pause: agent re-enqueued the work with auth_refresh_id set.
+            //    The current entry is "done" but the run is parked pending refresh.
+            if (!string.IsNullOrEmpty(request.AuthRefreshId))
+            {
+                runTracker.MarkAwaitingAuth(jobId, job.TestSetId);
+                return Results.Ok(new { status = "AwaitingAuth", authRefreshId = request.AuthRefreshId });
+            }
+
             // When the agent successfully finishes a run but that run enqueued a
             // deferred verification, we must NOT move the RunTracker to 'Completed'
             // — the dashboard needs to see 'AwaitingVerification' until the deferred
@@ -150,11 +158,12 @@ public static class QueueEndpoints
         e.Id, e.ModuleId, e.TestSetId, e.ObjectiveId, e.TargetType, e.Mode, e.JobKind,
         e.Status, e.ClaimedBy, e.RequestedBy, e.ClaimedAt, e.CompletedAt,
         e.CreatedAt, e.Error, e.RequestJson,
-        e.NotBeforeAt, e.DeadlineAt, e.AttemptCount, e.ParentQueueEntryId, e.ParentRunId
+        e.NotBeforeAt, e.DeadlineAt, e.AttemptCount, e.ParentQueueEntryId, e.ParentRunId,
+        e.AuthRefreshId
     };
 }
 
-public record JobResultRequest(bool Success, string? Error);
+public record JobResultRequest(bool Success, string? Error, string? AuthRefreshId = null);
 
 public record EnqueueRequest(
     string? Id,

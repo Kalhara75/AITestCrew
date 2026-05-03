@@ -13,4 +13,6 @@ public class StaticTokenProvider : ITokenProvider
 
     public Task<string?> GetTokenAsync(CancellationToken ct = default)
         => Task.FromResult(_token);
+
+    public Task InvalidateAsync(CancellationToken ct = default) => Task.CompletedTask;
 }

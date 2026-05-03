@@ -174,6 +174,65 @@ public class TestEnvironmentConfig
 
     // --- Chat (Assistant drawer persistence) ---
     public ChatConfig Chat { get; set; } = new();
+
+    /// <summary>
+    /// Seamless authentication recovery. Tunes silent auto-recovery on auth failure,
+    /// the URL patterns that flag a login redirect mid-test, and timeouts for the
+    /// pause-and-resume dispatcher.
+    /// </summary>
+    public AuthRecoveryConfig Auth { get; set; } = new();
+}
+
+/// <summary>
+/// Tunables for seamless authentication recovery (see Auth Recovery model).
+/// </summary>
+public class AuthRecoveryConfig
+{
+    /// <summary>
+    /// When true, a 401/403 response invalidates the cached JWT and retries the
+    /// request once before failing. Almost always sufficient for service-account
+    /// JWTs that have rotated mid-flight.
+    /// </summary>
+    public bool AutoRecoverApi { get; set; } = true;
+
+    /// <summary>
+    /// When true, a mid-test login redirect deletes the cached storage state and
+    /// re-runs the existing TOTP-automated login. Requires
+    /// <c>BraveCloudUiTotpSecret</c> / valid creds for fully silent recovery.
+    /// </summary>
+    public bool AutoRecoverUi { get; set; } = true;
+
+    /// <summary>
+    /// Substrings that, when present in the page URL after a UI step, indicate
+    /// the session has been bumped to a login screen. Matched case-insensitively.
+    /// Defaults cover Azure AD SSO and the Legacy MVC forms login.
+    /// </summary>
+    public string[] LoginRedirectUrlPatterns { get; set; } =
+    [
+        "login.microsoftonline.com",
+        "/Account/Login"
+    ];
+
+    /// <summary>
+    /// Maximum time an in-progress auth-refresh request may run before the
+    /// janitor marks it Failed and propagates the failure to dependent runs.
+    /// </summary>
+    public int AuthRefreshMaxLatencySeconds { get; set; } = 300;
+
+    /// <summary>
+    /// When true (default), runs that hit <c>AuthRequiredException</c> are parked
+    /// in <c>AwaitingAuth</c> pending an auth-refresh. Set false to skip the
+    /// dispatcher and finalise as Failed (escape hatch for headless CI).
+    /// </summary>
+    public bool PauseOnAuthFailure { get; set; } = true;
+
+    /// <summary>
+    /// Pre-flight warning window. The dashboard's auth-health panel surfaces a
+    /// cached storage-state file as <c>ExpiringSoon</c> when its age is within
+    /// this many hours of the per-surface TTL (e.g. 7h on a default 8h TTL).
+    /// Bump to 4 if you want more lead time before firing the warning.
+    /// </summary>
+    public int ExpiryWarningHours { get; set; } = 1;
 }
 
 /// <summary>

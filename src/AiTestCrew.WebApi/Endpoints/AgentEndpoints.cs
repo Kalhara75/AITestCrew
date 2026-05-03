@@ -33,7 +33,8 @@ public static class AgentEndpoints
 
         // POST /api/agents/{id}/heartbeat — keep-alive
         group.MapPost("/{id}/heartbeat", async (string id, HeartbeatRequest request,
-            IAgentRepository repo, IRunQueueRepository queueRepo) =>
+            IAgentRepository repo, IRunQueueRepository queueRepo,
+            IAgentAuthStateRepository? authStateRepo) =>
         {
             var existing = await repo.GetByIdAsync(id);
             if (existing is null) return Results.NotFound(new { error = $"Agent '{id}' not registered" });
@@ -54,6 +55,25 @@ public static class AgentEndpoints
 
             var status = string.IsNullOrWhiteSpace(request.Status) ? "Online" : request.Status;
             await repo.HeartbeatAsync(id, status);
+
+            // Persist the agent's current view of its cached storage-state files so
+            // the dashboard can warn about stale auth before a run kicks off.
+            // Tolerated as null for older agents that don't yet send the field.
+            if (authStateRepo is not null && request.AuthStateFiles is not null)
+            {
+                var entries = request.AuthStateFiles
+                    .Where(f => !string.IsNullOrEmpty(f.EnvKey) && !string.IsNullOrEmpty(f.Surface))
+                    .Select(f => new AgentAuthState
+                    {
+                        AgentId = id,
+                        EnvironmentKey = f.EnvKey,
+                        Surface = Enum.TryParse<AuthSurface>(f.Surface, out var s) ? s : AuthSurface.WebBlazor,
+                        FileExists = f.FileExists,
+                        FileMtimeUtc = f.FileMtimeUtc,
+                    })
+                    .ToList();
+                await authStateRepo.ReplaceForAgentAsync(id, entries);
+            }
 
             // Include any job the server thinks this agent is actively running
             var activeJob = await queueRepo.GetActiveForAgentAsync(id);
@@ -85,11 +105,15 @@ public static class AgentEndpoints
         });
 
         // DELETE /api/agents/{id} — graceful deregister (Ctrl+C on Runner)
-        group.MapDelete("/{id}", async (string id, IAgentRepository repo) =>
+        group.MapDelete("/{id}", async (string id, IAgentRepository repo,
+            IAgentAuthStateRepository? authStateRepo) =>
         {
             var existing = await repo.GetByIdAsync(id);
             if (existing is null) return Results.NotFound(new { error = $"Agent '{id}' not registered" });
             await repo.DeleteAsync(id);
+            // Auth-state rows are owned by the agent — drop them so the health
+            // panel doesn't keep showing stale info for a machine that left.
+            if (authStateRepo is not null) await authStateRepo.DeleteForAgentAsync(id);
             return Results.NoContent();
         });
 
@@ -128,4 +152,7 @@ public static class AgentEndpoints
 }
 
 public record RegisterAgentRequest(string? Id, string Name, string[] Capabilities, string? Version);
-public record HeartbeatRequest(string? Status);
+
+public record HeartbeatRequest(string? Status, AuthStateFileReport[]? AuthStateFiles = null);
+
+public record AuthStateFileReport(string EnvKey, string Surface, bool FileExists, DateTime? FileMtimeUtc);

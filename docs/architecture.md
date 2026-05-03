@@ -1497,6 +1497,321 @@ CLI override: `--no-defer-verifications` forces the synchronous inline path for 
 
 ---
 
+## Seamless Authentication Recovery
+
+Authentication failures used to be a dead-end: an expired JWT or a bumped UI session failed the test, the user noticed, dropped to a terminal, ran `--auth-setup`, and re-triggered the run. Seamless Auth turns that into: detect centrally → silently retry → if recovery isn't possible, pause the run and prompt the user once → one click resumes every paused run sharing the same scope. A complementary pre-flight panel surfaces stale cached storage state *before* the user kicks off a run so the typical case (TTL elapsed) is caught without anyone having to fail first.
+
+### Three layers, three triggers
+
+| Layer | Scope | What it does |
+|---|---|---|
+| **1 — Silent auto-recovery** | API + UI agents | Categorise auth failures via `AuthRequiredException`. API: 401/403 → invalidate cached JWT → retry once. UI: per-step URL check against `Auth.LoginRedirectUrlPatterns` → if matched → delete storage state and best-effort re-run TOTP-automated login. Recovers the common case (rotated JWT, expired cookie) with zero user interaction. |
+| **2 — Pause-and-resume orchestration** | WebApi + queue + janitor | `AwaitingAuth` run/queue state mirroring `AwaitingVerification`. `run_auth_refreshes` table with dedup-by-scope. Agent catches `AuthRequiredException`, registers a refresh, re-enqueues the same work with `auth_refresh_id` + far-future `not_before_at`. Janitor releases dependent entries when the refresh completes. |
+| **3 — Dashboard surfaces + local prompt** | UI + Runner CLI | Reactive `AuthRefreshBanner` polls active refreshes — surface · env · paused-run count, one-click "Refresh auth" enqueues an `AuthSetup` job to the right agent. Pre-flight `AuthHealthPanel` polls `/api/auth-health` and warns about stale storage state before a run is even triggered. CLI mode prints a Spectre hint with the exact `--auth-setup` command and exits with code 2. |
+
+### Auth surfaces
+
+The system is scoped to three surfaces (`AuthSurface` enum in `Core.Models.Enums`):
+
+| Surface | Storage | Recovery flow |
+|---|---|---|
+| `Api` | In-memory JWT cache (per `(env, stack)` in `LoginTokenProvider`) | Re-acquire from `AuthUsername` + `AuthPassword`. Any agent — or the WebApi itself — can do this. |
+| `WebBlazor` | Playwright `StorageState` JSON file (per env) | Delete file + re-run Azure SSO with TOTP-automated MFA via `BraveCloudUiTotpSecret`. Must run on the agent that owns the file. |
+| `WebMvc` | Playwright `StorageState` JSON file (per env) | Delete file + re-run forms login. Must run on the agent that owns the file. |
+
+WinForms is intentionally out of scope — desktop has no auth concept; the app is launched fresh per test case.
+
+### Detection points
+
+**API path** (`ApiTestAgent.ExecuteTestCaseAsync`):
+
+1. Send the request as normal.
+2. On 401/403 and `Auth.AutoRecoverApi = true`: `await tokenProvider.InvalidateAsync(ct)` clears the cache under the existing semaphore, then the request is rebuilt (an `HttpRequestMessage` can only be sent once) and resent.
+3. If the retry returns 401/403 and `Auth.PauseOnAuthFailure = true`, throw `AuthRequiredException(env, AuthSurface.Api, stackKey, ...)`.
+4. Other status codes preserve existing semantics (`Failed` step with detail).
+
+**UI path** (`BaseWebUiTestAgent.CheckForLoginRedirectAsync`, run after each successful step):
+
+1. Read `page.Url`. Match against `Auth.LoginRedirectUrlPatterns` (case-insensitive substring; defaults to `login.microsoftonline.com`, `/Account/Login`).
+2. If matched and `Auth.AutoRecoverUi = true`: best-effort call `TryRecoverFromLoginRedirectAsync(browser, ct)` — subclasses delete the cached storage state and re-run their one-time auth setup. The current step's test case is still abandoned, but the storage state is now fresh for future runs.
+3. If `Auth.PauseOnAuthFailure = true`, throw `AuthRequiredException(env, surface, null, ...)`.
+
+`AuthRequiredException` propagates through every catch-all in the agent stack — each adds an explicit `catch (AuthRequiredException) { throw; }` re-throw guard before its broad catch — so the exception lands in either:
+
+- The agent-mode `JobExecutor` (distributed runs) — registers a refresh, re-enqueues the work, returns success-with-`AuthRefreshId`.
+- The local-mode Runner top-level catch in `Program.cs` (CLI runs) — prints a Spectre remediation hint and exits with code 2.
+
+The post-step orchestrator's `RunOneInlineAsync` carries the same re-throw guard, so a Legacy MVC verification dispatched as a sub-step from an aseXML delivery flows the auth exception through to the queue dispatcher rather than swallowing it as a plain `Error` step. The `JobExecutor`'s deferred-verification branch also catches `AuthRequiredException` and parks via the same helper — both inline and deferred paths are covered.
+
+#### `AuthRequiredException` vs `LoginFailedException` — different remediation paths
+
+Two distinct auth-failure shapes flow through the API path, and they're caught separately on purpose:
+
+| Exception | Thrown when | Caught where | Remediation |
+|---|---|---|---|
+| `AuthRequiredException` | The cached JWT was rejected and the silent retry-once didn't recover (or the surface is UI). The configured creds *do* work, but the cached session is bad. | `JobExecutor.TryParkOnAuthRefreshAsync` — parks the run as `AwaitingAuth`, surfaces in the reactive `AuthRefreshBanner`. | Dashboard "Refresh auth" click. For UI surfaces, a fresh recording. For API, the next agent attempt re-acquires from creds via `LoginTokenProvider`. |
+| `LoginFailedException` | `LoginTokenProvider.LoginAsync` itself returned non-2xx (typically 401/403 with "username or password is incorrect"). The configured creds are wrong / locked / rotated. | `ApiTestAgent.ExecuteTestCaseAsync` — returned as a clean `TestStep.Err` with message "Authentication failed: SEC API rejected the configured credentials… Check TestEnvironment.AuthUsername / AuthPassword in appsettings.json…". | **Human** edit of `appsettings.json` and / or unlocking the account. The dashboard refresh banner deliberately does **not** fire — for API surface its `/start` handler would just succeed silently and the next test would fail again. |
+
+The carrier on `LoginFailedException` (`LoginUrl`, `Username`, `HttpStatusCode`, trimmed `ResponseSnippet`) is enough for the step-detail line to point straight at the fix. Don't repurpose this for "session bumped" cases — that's `AuthRequiredException`'s job.
+
+### Schema (v8)
+
+```sql
+CREATE TABLE run_auth_refreshes (
+    id                  TEXT PRIMARY KEY,
+    env_key             TEXT NOT NULL,
+    surface             TEXT NOT NULL,        -- Api | WebBlazor | WebMvc
+    stack_key           TEXT,                  -- only set for Api
+    agent_id            TEXT,                  -- NULL for Api; set for UI surfaces
+    requested_by_run_id TEXT,
+    status              TEXT NOT NULL,         -- Pending | InProgress | Completed | Failed | Cancelled
+    auto_attempt_count  INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at     TEXT,
+    created_at          TEXT NOT NULL,
+    completed_at        TEXT,
+    error_message       TEXT
+);
+
+CREATE UNIQUE INDEX uq_auth_refresh_active_scope
+    ON run_auth_refreshes (env_key, surface, COALESCE(stack_key, ''), COALESCE(agent_id, ''))
+    WHERE status IN ('Pending', 'InProgress');
+
+ALTER TABLE run_queue ADD COLUMN auth_refresh_id TEXT;
+```
+
+The unique partial index is the **dedup-by-scope** mechanism: at most one active row per `(env, surface, stack, agent)`. Concurrent failures at the same scope race the INSERT; the loser falls back to returning the existing active row. One refresh row → many paused queue entries → one-click recovery for all of them.
+
+### Pause-and-resume state flow
+
+```
+            ┌────────────────────────────────────────┐
+            │ Agent catches AuthRequiredException    │
+            │ (or proactive click in AuthHealthPanel)│
+            └────────────────┬───────────────────────┘
+                             │
+            ┌────────────────▼─────────────────┐
+            │ POST /api/auth-refreshes         │
+            │  → InsertOrJoinAsync(scope)      │
+            │  → returns existing active row OR│
+            │    creates new Pending row       │
+            └────────────────┬─────────────────┘
+                             │   (failure path only)
+            ┌────────────────▼─────────────────┐
+            │ Re-enqueue same RequestJson with:│
+            │  • auth_refresh_id = id          │
+            │  • not_before_at = UtcNow + 7 d  │
+            │  • parent_run_id = job.JobId     │
+            └────────────────┬─────────────────┘
+                             │
+            ┌────────────────▼─────────────────┐
+            │ Report queue result with         │
+            │ AuthRefreshId set                │
+            │  → run_queue: Completed          │
+            │  → RunTracker: AwaitingAuth      │
+            └────────────────┬─────────────────┘
+                             │   ◄── AuthRefreshBanner appears
+                             │   ◄── User clicks "Refresh auth"
+            ┌────────────────▼──────────────────┐
+            │ POST /api/auth-refreshes/{id}/start│
+            │  → marks InProgress                │
+            │  • Api: marks Completed in-process │
+            │  • UI:  enqueues AuthSetup queue   │
+            │    entry for the right agent       │
+            └────────────────┬──────────────────┘
+                             │
+            ┌────────────────▼──────────────────┐
+            │ Agent runs RecordingService.       │
+            │   AuthSetupAsync (browser + TOTP)  │
+            │  → POST /api/auth-refreshes/{id}/  │
+            │       complete (or /fail)          │
+            └────────────────┬──────────────────┘
+                             │
+            ┌────────────────▼──────────────────┐
+            │ Janitor sweep (30 s tick)          │
+            │  • Completed:                      │
+            │    UPDATE run_queue                │
+            │    SET auth_refresh_id = NULL,     │
+            │        not_before_at = NOW         │
+            │    WHERE auth_refresh_id = id      │
+            │  • Failed: cancel dependent entries│
+            └────────────────┬──────────────────┘
+                             │
+            ┌────────────────▼──────────────────┐
+            │ Next agent claim picks up the entry│
+            │  → Run resumes from failing step   │
+            │  → RunTracker → Running            │
+            └───────────────────────────────────┘
+```
+
+### Janitor sweeps
+
+`AgentHeartbeatMonitor.SweepAuthRefreshesAsync` runs on the existing 30 s tick:
+
+1. **Time out stale `InProgress`** past `Auth.AuthRefreshMaxLatencySeconds` (default 300 s) → mark `Failed` with timeout error.
+2. **For Completed refreshes since last tick** (small lookback overlap for safety) → call `SqliteRunQueueRepository.ReleaseForAuthRefreshAsync(id)` (clears `auth_refresh_id`, resets `not_before_at = now`).
+3. **For Failed refreshes** → call `CancelForAuthRefreshAsync(id, error)` (marks dependent queue entries `Cancelled` with the failure error).
+
+### AuthSetup queue payload
+
+The `/start` endpoint enqueues a queue row with `JobKind = "AuthSetup"`, `TargetType = "UI_Web_Blazor" | "UI_Web_MVC"`, and `RequestJson` matching `AuthSetupRequest(Target, EnvironmentKey, AuthRefreshId?)`. The `target` field is the `TestTargetType` string (used by `RecordingService.AuthSetupAsync` to pick Blazor vs Legacy MVC flow); `authRefreshId` flows back so the agent's `JobExecutor.ExecuteAuthSetupAsync` can call `MarkCompletedAsync` (or `MarkFailedAsync`) on the refresh row after the recording finishes — without it the `run_auth_refreshes` row would stay `InProgress` until the janitor's 5-minute timeout.
+
+### `AuthSetupAsync` hardening — positive proof of auth
+
+The Blazor branch of `RecordingService.AuthSetupAsync` requires **positive proof** that the SSO flow actually fired before saving state, plus a cookie sanity check. Without these guards, a fresh browser context navigating to a public landing page (or any URL whose first response doesn't redirect before `NetworkIdle` returns) trivially passes the "URL doesn't contain `login.microsoftonline.com`" check on the first poll, and the agent silently saves an empty `{"cookies":[],"origins":[]}` storage-state file that fails on the next test:
+
+1. `sawSsoRedirect` flag inside the wait loop flips true the first time `page.Url` contains `login.microsoftonline.com`. Blazor `isLoggedIn` requires this flag *and* the URL to be back on the configured baseUrl. Failure path: 3-minute timeout returns *"Timed out waiting for Azure SSO redirect — never saw login.microsoftonline.com."*
+2. Before `StorageStateAsync`, call `browserCtx.CookiesAsync()` — refuse to save when the count is zero. Belt-and-braces against any future regression that lets the URL check fall through with no real session.
+
+The success log line includes the cookie count so an empty-state regression is visible at a glance: *"Auth state saved → … (12 cookies, valid for 8 hours)"*.
+
+### Local Runner mode (no agent, no WebApi)
+
+`TestOrchestrator.RunAsync` doesn't catch `AuthRequiredException` itself — it lets the exception bubble out via `Task.WhenAll`. The Runner CLI top-level catch in `Program.cs` prints a Spectre remediation hint:
+
+```
+Authentication required for env sumo-retail surface WebBlazor.
+Session expired — page redirected to login at https://login.microsoftonline.com/...
+→ Re-run: dotnet run --project src/AiTestCrew.Runner -- --auth-setup --target UI_Web_Blazor --environment sumo-retail
+```
+
+…and exits with code 2. CLI auto-recovery (in-process re-auth + retry) is a future extension; if added, do it at the Runner top-level, **not** in the orchestrator.
+
+### Pre-flight health (schema v9)
+
+The reactive flow above only fires after a run has already failed. The pre-flight panel adds a complementary signal: surface stale cached storage state in the dashboard *before* the user kicks off a run.
+
+| Layer | What it does |
+|---|---|
+| **Agent** | `AuthStateScanner` walks `IEnvironmentResolver.ListKeys()` × `[WebBlazor, WebMvc]` on each heartbeat, stats the resolved storage-state file (`File.GetLastWriteTimeUtc` only — read-only, never opens or locks the file), and ships `{ envKey, surface, fileExists, fileMtimeUtc }` entries on the heartbeat payload. Envs with `EnvironmentConfig.AuthHealthEnabled = false` are skipped. |
+| **WebApi** | The heartbeat handler replaces the agent's rows in `agent_auth_state` (PK `(agent_id, env_key, surface)`) wholesale per tick — authoritative for that agent's view. `DELETE /api/agents/{id}` cleans the rows when an agent deregisters. |
+| **Endpoint** | `GET /api/auth-health` joins `agent_auth_state` with the `agents` table (filters Offline) and active rows in `run_auth_refreshes`, computes per-(env, surface) status, then groups by **env**. Returns one tile per environment containing the surfaces (Blazor / MVC) that need attention. Surfaces that are Fresh OR already covered by an in-flight refresh are dropped from the env's surface list; an env with no remaining surfaces disappears entirely. Envs with `AuthHealthEnabled = false` are filtered out even when historical rows exist. |
+| **UI** | `AuthHealthPanel` polls every 30 s. One tile per env with the env display name + slug at the top, then a row per surface needing attention. Each row has its own status pill (`Never recorded` / `Expired` / `Expiring soon`) and an independent **Refresh** button. Clicking creates a Pending refresh at that scope (`POST /api/auth-refreshes`) then starts it (`POST /api/auth-refreshes/{id}/start`) — same dispatch path the reactive banner uses. Once dispatched, the row moves to the `AuthRefreshBanner` (the active-refresh filter on the health endpoint hides it from this panel to avoid double UI). Errors from the click round-trip are surfaced inline below the row. |
+
+Schema v9 adds:
+
+```sql
+CREATE TABLE agent_auth_state (
+    agent_id        TEXT NOT NULL,
+    env_key         TEXT NOT NULL,
+    surface         TEXT NOT NULL,        -- WebBlazor | WebMvc
+    file_exists     INTEGER NOT NULL,     -- 0/1
+    file_mtime_utc  TEXT,                 -- null when file doesn't exist
+    reported_at_utc TEXT NOT NULL,
+    PRIMARY KEY (agent_id, env_key, surface)
+);
+
+CREATE INDEX idx_agent_auth_state_scope ON agent_auth_state (env_key, surface);
+```
+
+**Status thresholds** — given a per-surface TTL `T` (default 8 h via `BraveCloudUiStorageStateMaxAgeHours` / `LegacyWebUiStorageStateMaxAgeHours`) and `Auth.ExpiryWarningHours = W` (default 1):
+
+| Status | Condition |
+|---|---|
+| `Missing` | No agent has the file. |
+| `Stale` | At least one agent has age ≥ `T`. |
+| `ExpiringSoon` | At least one agent has age ≥ `T − W` but < `T`. |
+| `Fresh` | All agents have age < `T − W`. (Hidden from the panel.) |
+
+**What this catches and what it doesn't** — file mtime catches the common case (TTL elapsed, user forgot to re-record). It does **not** catch server-side cookie invalidation of a fresh-by-age file (admin reset, password change, conditional-access policy change). The reactive flow is the safety net for those — the two systems together cover both axes.
+
+WinForms / API surfaces are deliberately out of scope. WinForms has no auth concept; API tokens live in-memory per WebApi process and have no file mtime to track. Phase 1's silent retry on 401/403 is the right tool for API.
+
+### Configuration
+
+Under `TestEnvironment.Auth` in `appsettings.json` (defaults shown):
+
+```json
+"Auth": {
+  "AutoRecoverApi": true,
+  "AutoRecoverUi": true,
+  "LoginRedirectUrlPatterns": ["login.microsoftonline.com", "/Account/Login"],
+  "AuthRefreshMaxLatencySeconds": 300,
+  "PauseOnAuthFailure": true,
+  "ExpiryWarningHours": 1
+}
+```
+
+| Knob | Effect |
+|---|---|
+| `AutoRecoverApi` | When `true`, a 401/403 response invalidates the cached JWT and retries the request once before failing. |
+| `AutoRecoverUi` | When `true`, a mid-test login redirect deletes the cached storage state and re-runs the existing TOTP-automated login. |
+| `LoginRedirectUrlPatterns` | Substrings (case-insensitive) that flag a UI session as bumped to login. Add custom IDP hostnames here. |
+| `AuthRefreshMaxLatencySeconds` | Janitor times out `InProgress` refreshes past this. Default 300 s — long enough for Azure SSO + TOTP, short enough that a forgotten refresh doesn't park runs forever. |
+| `PauseOnAuthFailure` | Headless-CI escape hatch. When `false`, `AuthRequiredException` is suppressed and tests fail with normal Failed-step semantics. **Don't remove this knob** — CI needs it. |
+| `ExpiryWarningHours` | Pre-flight warning window. The auth-health panel surfaces a file as `ExpiringSoon` when its age is within this many hours of the per-surface TTL. |
+
+Per-env opt-out is `EnvironmentConfig.AuthHealthEnabled` (default `true`) under each `Environments.<key>` block. Setting it to `false` hides that env from the pre-flight panel and stops the agent scanner from emitting rows for it.
+
+JSON enum binding is global: `ConfigureHttpJsonOptions` registers `JsonStringEnumConverter` so endpoints that take an enum-typed body (notably `POST /api/auth-refreshes` with `{"surface":"WebBlazor"}`) accept string values. Without this, the dashboard's "Refresh now" button silently fails — the deserializer rejects string enums on input even though `surface = r.Surface.ToString()` is used on output.
+
+### API surface
+
+```
+POST   /api/auth-refreshes                         Insert (or join existing active row by scope)
+GET    /api/auth-refreshes/active                  Reactive banner data
+GET    /api/auth-refreshes/{id}                    Detail
+POST   /api/auth-refreshes/{id}/start              UI button — marks InProgress + enqueues AuthSetup job
+POST   /api/auth-refreshes/{id}/complete           Agent reports success
+POST   /api/auth-refreshes/{id}/fail               Agent reports failure
+POST   /api/auth-refreshes/{id}/cancel             User dismiss
+GET    /api/auth-health                            Pre-flight panel: env-grouped tiles
+```
+
+`POST /api/queue/{jobId}/result` accepts an optional `authRefreshId`. When set, the run is marked `AwaitingAuth` instead of `Completed` / `Failed`.
+
+### Critical files
+
+| Layer | File | Purpose |
+|---|---|---|
+| Core | `src/AiTestCrew.Core/Exceptions/AuthRequiredException.cs` | Carries `(env, surface, stack?)` — session bumped / cache bad, recoverable via dashboard refresh |
+| Core | `src/AiTestCrew.Core/Exceptions/LoginFailedException.cs` | Carries `(loginUrl, username, httpStatus, responseSnippet)` — configured creds are wrong / locked, requires human config fix |
+| Core | `src/AiTestCrew.Core/Models/Enums.cs` | `AuthSurface`, `TestStatus.AuthRequired` |
+| Core | `src/AiTestCrew.Core/Models/AuthRefreshRequest.cs` | Persisted refresh-request model |
+| Core | `src/AiTestCrew.Core/Models/AgentAuthState.cs` | Pre-flight health row model |
+| Core | `src/AiTestCrew.Core/Interfaces/IAuthRefreshRepository.cs` | DI contract for refreshes |
+| Core | `src/AiTestCrew.Core/Interfaces/IAgentAuthStateRepository.cs` | DI contract for pre-flight scanner reports |
+| Core | `src/AiTestCrew.Core/Interfaces/ITokenProvider.cs` | Has `InvalidateAsync` |
+| Core | `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` | `AuthRecoveryConfig` block (Auth.* knobs) |
+| Core | `src/AiTestCrew.Core/Configuration/EnvironmentConfig.cs` | Per-env `AuthHealthEnabled` flag |
+| Auth | `src/AiTestCrew.Agents/Auth/LoginTokenProvider.cs` | `InvalidateAsync` clears cache under semaphore |
+| Auth | `src/AiTestCrew.Agents/Auth/AuthStateScanner.cs` | Heartbeat scanner — file mtime per (env, surface) |
+| API agent | `src/AiTestCrew.Agents/ApiAgent/ApiTestAgent.cs` | 401-retry-once + throw `AuthRequiredException`; separate catch for `LoginFailedException` returns clean step error pointing at appsettings.json |
+| Web base | `src/AiTestCrew.Agents/WebUiBase/BaseWebUiTestAgent.cs` | `CheckForLoginRedirectAsync`, virtual `TryRecoverFromLoginRedirectAsync` |
+| Blazor | `src/AiTestCrew.Agents/BraveCloudUiAgent/BraveCloudUiTestAgent.cs` | Surface = WebBlazor; recovery via `PerformSsoLoginAsync` |
+| MVC | `src/AiTestCrew.Agents/LegacyWebUiAgent/LegacyWebUiTestAgent.cs` | Surface = WebMvc; recovery via `PerformFormsLoginAsync` |
+| Recording | `src/AiTestCrew.Agents/Recording/RecordingService.cs` | `AuthSetupAsync` — positive SSO proof + cookie sanity check |
+| Recording | `src/AiTestCrew.Agents/Recording/RecordingRequests.cs` | `AuthSetupRequest(Target, EnvironmentKey, AuthRefreshId?)` |
+| Post-step | `src/AiTestCrew.Agents/PostSteps/PostStepOrchestrator.cs` | Re-throw guard in `RunOneInlineAsync` |
+| Storage | `src/AiTestCrew.Storage/Sqlite/DatabaseMigrator.cs` | Schema v8 + v9 |
+| Storage | `src/AiTestCrew.Storage/Sqlite/SqliteAuthRefreshRepository.cs` | Dedup-by-scope INSERT |
+| Storage | `src/AiTestCrew.Storage/Sqlite/SqliteAgentAuthStateRepository.cs` | Pre-flight rows: `ReplaceForAgentAsync`, `ListForOnlineAgentsAsync` |
+| Storage | `src/AiTestCrew.Storage/Sqlite/SqliteRunQueueRepository.cs` | `ReleaseForAuthRefreshAsync`, `CancelForAuthRefreshAsync` |
+| Runner remote | `src/AiTestCrew.Runner/RemoteRepositories/ApiClientAuthRefreshRepository.cs` | HTTP-backed |
+| Agent dispatch | `src/AiTestCrew.Runner/AgentMode/JobExecutor.cs` | `TryParkOnAuthRefreshAsync`, `ExecuteAuthSetupAsync` settles refresh row |
+| Agent dispatch | `src/AiTestCrew.Runner/AgentMode/AgentRunner.cs` | Heartbeat loop invokes `AuthStateScanner` |
+| Runner CLI | `src/AiTestCrew.Runner/Program.cs` | Top-level Spectre hint, exit code 2 |
+| WebApi | `src/AiTestCrew.WebApi/Endpoints/AuthRefreshEndpoints.cs` | Refresh CRUD + `/start` enqueue |
+| WebApi | `src/AiTestCrew.WebApi/Endpoints/AuthHealthEndpoints.cs` | Pre-flight aggregation, env-grouped |
+| WebApi | `src/AiTestCrew.WebApi/Endpoints/AgentEndpoints.cs` | Heartbeat upserts auth-state rows |
+| WebApi | `src/AiTestCrew.WebApi/Endpoints/QueueEndpoints.cs` | `/result` honours `authRefreshId` |
+| WebApi | `src/AiTestCrew.WebApi/Services/RunTracker.cs` | `MarkAwaitingAuth` |
+| WebApi | `src/AiTestCrew.WebApi/Services/AgentHeartbeatMonitor.cs` | `SweepAuthRefreshesAsync` |
+| UI | `ui/src/components/AuthRefreshBanner.tsx` | Reactive banner |
+| UI | `ui/src/components/AuthHealthPanel.tsx` | Pre-flight panel — env-grouped tiles |
+| UI | `ui/src/components/StatusBadge.tsx` | Amber `AwaitingAuth` / `AuthRequired` pills |
+| UI | `ui/src/api/authRefreshes.ts` | `fetchActiveAuthRefreshes`, `createAuthRefresh`, `startAuthRefresh`, `cancelAuthRefresh` |
+| UI | `ui/src/api/authHealth.ts` | `fetchAuthHealth` |
+
+### Future extensions
+
+- **CLI auto-recovery** — wire the Runner top-level catch to invoke `RecordingService.AuthSetupAsync` in-process, then retry the failed step. Out of scope for v1; if added, do it at the Runner top-level, not inside `TestOrchestrator`.
+- **More auth surfaces** — add a value to `AuthSurface`, plumb through `LoginRedirectUrlPatterns`, override `Surface` + `TryRecoverFromLoginRedirectAsync` on the new agent. The existing pause-and-resume pipeline carries the new surface through unchanged.
+- **Per-stack API creds** — today `AuthUsername` / `AuthPassword` are global. Multi-tenant API auth would move them onto `ApiStackConfig` and adjust `LoginTokenProvider` construction in `ApiTargetResolver`.
+- **Loop multiple envs in one AuthSetup browser session** — when a customer shares creds across envs but uses per-env URLs, today each env requires its own `AuthSetup` (browser + SSO). A future variant could keep the browser open, navigate per-env in turn, and reuse the cached Microsoft login cookie so the user only logs in once.
+- **WinForms** — only relevant if desktop apps gain authenticated workflows; would need a new surface enum value and a recovery story (probably out-of-process credential prompt).
+
+---
+
 ## Chat Assistant
 
 The Assistant is a right-edge drawer in the React UI that translates natural-language test-engineering requests into structured actions the user confirms with a click. It reuses the existing LLM wrapper, endpoints, and dispatch infrastructure — it is a routing + presentation layer, not a new execution path.
@@ -1749,6 +2064,17 @@ This section complements the "Where to extend" table in `CLAUDE.md` with archite
 - **Changing the retry decision policy** (e.g. cap attempts by count, not time): modify `AseXmlDeliveryAgent.DeferredVerifyAsync` retry branch. All decisions are co-located in that method — the server-side endpoints are data proxies, they don't enforce policy.
 - **Adding a new surface that also wants deferred execution** (e.g. background job polling): the pattern is reusable — give your agent access to `IRunQueueRepository` + `IPendingVerificationRepository` (DI already wired in both Sqlite and remote modes), build a JSON payload carrying a `"kind"` discriminator, enqueue with a future `not_before_at` and a `parent_run_id`, and add a matching branch in `JobExecutor.TryParseDeferredRequest`.
 - **Common symptom: "Awaiting" forever** — usually means no agent has a matching capability or the janitor hasn't run yet. Check the `agents` table for online agents with the verification's target type; check `run_pending_verifications` + `run_queue` rows for the parent run.
+
+### Tuning seamless authentication recovery
+
+- **Tuning what counts as a login redirect**: `Auth.LoginRedirectUrlPatterns` in `appsettings.json`. Add custom IDP hostnames or login paths. Case-insensitive substring match.
+- **Disabling silent auto-recovery** (e.g. for diagnosing why a session is being bumped): `Auth.AutoRecoverApi = false` and/or `Auth.AutoRecoverUi = false`. The detection still runs and `AuthRequiredException` still throws — only the in-process invalidate-and-retry is suppressed.
+- **Headless CI mode**: `Auth.PauseOnAuthFailure = false` suppresses `AuthRequiredException` entirely so failures fall back to a normal `Failed` step. Don't remove this knob — CI needs it.
+- **Tuning the pre-flight warning window**: `Auth.ExpiryWarningHours` (default 1). Bumping this to 4 makes the auth-health panel fire `ExpiringSoon` 4 hours before the file's TTL elapses.
+- **Hiding an env from the pre-flight panel**: `EnvironmentConfig.AuthHealthEnabled = false` under that env's block. The agent scanner stops emitting rows for the env on its next heartbeat, and the endpoint filters it server-side too.
+- **Common symptom: "Refresh in progress" forever** — the auth-refresh row is `InProgress` but the agent never called `/complete`. Confirm `AuthSetupRequest.AuthRefreshId` is being threaded through the queue payload (the `/start` endpoint must serialise `target` + `authRefreshId`, the agent must call `_authRefreshRepo.MarkCompletedAsync` after `RecordingService.AuthSetupAsync`). The janitor will time it out as `Failed` after `AuthRefreshMaxLatencySeconds` regardless.
+- **Common symptom: Blazor refresh saves an empty cookie file** — the `sawSsoRedirect` guard in `RecordingService.AuthSetupAsync` requires the URL to visit `login.microsoftonline.com` before saving; if your customer URL doesn't trigger Azure SSO at the root path you'll hit the 3-minute timeout. Adjust `BraveCloudUiUrl` to a path that requires auth, or extend the guard with an alternative positive signal.
+- **Common symptom: API tests fail with "Authentication failed: SEC API rejected the configured credentials"** — the configured `AuthUsername` / `AuthPassword` (top-level or per-env) are wrong, rotated, or the account is locked. This is a `LoginFailedException`, **not** an `AuthRequiredException` — the dashboard refresh banner deliberately doesn't fire because it can't fix `appsettings.json`. Edit the creds (and / or unlock the account), restart the WebApi, re-run.
 
 ### Adding a richer wait strategy for verifications
 

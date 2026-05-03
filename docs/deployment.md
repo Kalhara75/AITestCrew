@@ -280,6 +280,12 @@ cp src/AiTestCrew.Runner/appsettings.json docker-config/appsettings.json
 # Review docker-config/appsettings.json — set ApiStacks, auth credentials,
 # per-customer Environments (with LegacyWebUiUrl, BraveCloudUiUrl, BravoDbConnectionString,
 # ApiStackBaseUrls per env), and DefaultEnvironment.
+#
+# ⚠ This file is the SOURCE OF TRUTH at runtime — the container reads it from
+# the volume mount AFTER the appsettings.json baked into the image. Editing
+# src/AiTestCrew.WebApi/appsettings.json (or the Runner's copy) does NOT
+# flow into the running container without copying it here. See "Config
+# precedence" below.
 
 # 4. Create the auth state directory (for Playwright SSO sessions)
 mkdir docker-auth-state
@@ -296,6 +302,24 @@ docker compose logs -f
 # 7. Open http://localhost:5050
 ```
 
+**Shortcut — `publish.ps1 -Docker`:** steps 1 + 5 (UI build + `docker compose up -d --build`) can be run as a single command from the repo root:
+
+```powershell
+.\publish.ps1 -Docker
+```
+
+The script aborts if `.env` is missing, then builds `ui/dist/` on the host (required because Vite's native bindings don't load in Server Core), and finally invokes Compose. Steps 2 + 4 (`.env`, `docker-auth-state/`) are still one-time setup — the script does not create them.
+
+For step 3 (`docker-config/appsettings.json`) the script does help: on first deploy it bootstraps the file from `src/AiTestCrew.WebApi/appsettings.json` (or the example, if the source-tree copy is absent), and on every subsequent deploy it warns when `src/AiTestCrew.WebApi/appsettings.json` has been edited more recently than `docker-config/appsettings.json` — that's the case where someone forgets the override exists and wonders why their changes aren't taking effect. It never overwrites an existing `docker-config/appsettings.json` by default, so the secrets you've placed there (real passwords / API keys not committed to git) survive every redeploy.
+
+If your dev workflow keeps the source-tree `appsettings.json` as the canonical config (no separate prod secrets in `docker-config/`), pass `-SyncDockerConfig` to force-overwrite on every deploy:
+
+```powershell
+.\publish.ps1 -Docker -SyncDockerConfig
+```
+
+Use this when you'd rather flip from "warn me" to "trust me, just sync" — typical for dev boxes where one engineer owns both files. Production deploys with real secrets stashed in `docker-config/appsettings.json` should leave the flag off so a careless `publish.ps1 -Docker` doesn't clobber them.
+
 **Startup data-pack scripts** (optional — see `docs/data-packs.md`): the Dockerfile copies `data/datapacks/` into the build context so `<Content Include="..\..\data\datapacks\**\*.sql">` resolves during the in-container `dotnet publish`. Authored `.sql` files automatically ship into the image's `wwwroot/../datapacks/` and the WebApi runs them at startup against any env that has `RunDataPacksOnStartup: true`. **Adding a new `.sql` file requires a `docker compose build` to repackage the image** — runtime changes to `data/datapacks/` on the host do not flow into the running container.
 
 **Data persistence:** Three directories are mounted into the container:
@@ -307,6 +331,29 @@ docker compose logs -f
 | `./docker-auth-state/` | `C:/auth-state/` | Playwright SSO storage state JSON files | Yes |
 
 The SQLite database survives container restarts and rebuilds. Config and auth state can be edited on the host and the container picks up changes without rebuild (config is read at startup, auth state is read per-test-run).
+
+#### Config precedence (the docker-config foot-gun)
+
+The WebApi loads `TestEnvironment` from these sources, in order — **later sources override earlier ones**:
+
+1. `appsettings.json` baked into the image (built from `src/AiTestCrew.WebApi/appsettings.json` at `docker compose build` time).
+2. `appsettings.{Environment}.json` (default ASP.NET Core; usually `Production` in Docker — only matters if you've added one).
+3. `../AiTestCrew.Runner/appsettings.json` — only resolves outside Docker; non-existent path inside the container, silently skipped.
+4. **`C:/config/appsettings.json`** ← the volume-mounted `./docker-config/appsettings.json` from the host. **This is what the running container actually reads creds from at runtime.** Wins over the baked-in copy.
+5. Environment variables prefixed `AITESTCREW_` (from `.env` and inline `environment:` entries in `docker-compose.yml`).
+
+The two most common ways this bites:
+
+- **"I edited `src/AiTestCrew.WebApi/appsettings.json` and rebuilt — why is the old password still being used?"** — the volume-mounted `docker-config/appsettings.json` overrides whatever you baked in. Edit `docker-config/appsettings.json` (and `docker compose restart webapi` to pick it up — no rebuild needed). `publish.ps1 -Docker` warns when the source-tree file is newer than the docker-config copy, but only if you used the script.
+- **"My password rotated — where do I update it?"** — `docker-config/appsettings.json` for the dashboard / WebApi. `src/AiTestCrew.Runner/appsettings.json` for any local CLI runs. The two files don't cross-talk; update both if you use both.
+
+Sanity-check what the container is actually loading without restarting it:
+
+```powershell
+docker compose exec webapi powershell -Command "Get-Item C:/config/appsettings.json | Format-List FullName, LastWriteTime"
+```
+
+If the `LastWriteTime` doesn't match what you expect on the host, the volume mount isn't doing what you think.
 
 **Refreshing auth state:** Playwright's SSO sessions expire after `StorageStateMaxAgeHours` (default 8h). To refresh, repeat per environment — each one writes to its own storage-state filename:
 
@@ -721,6 +768,8 @@ Rebuild the Runner package and redistribute the zip/folder. The Runner is statel
 | `unable to open database file` | The parent directory for the SQLite file doesn't exist. The app creates it automatically — check the path is valid. |
 | `Missing X-Api-Key header` | Auth is active (SQLite mode). Pass your API key via `X-Api-Key` header or log in via the web UI. |
 | Docker build fails | Ensure Docker Desktop is in Windows container mode. Linux containers cannot build `net8.0-windows` projects. |
+| `docker compose up` fails with `network aitestcrew_default ... has incorrect label com.docker.compose.network set to "" (expected: "default")` | A network from an earlier Compose version is missing the label this version expects. Build succeeds but the up step bails before starting the container. Fix: `docker network rm aitestcrew_default` then `docker compose up -d --build`. The network is recreated automatically — nothing in it is load-bearing. |
+| `docker network rm aitestcrew_default` errors with `network ... has active endpoints (name:"aitestcrew-webapi-1" ...)` | An old container from a previous run is still attached. Remove it first, then drop the network: `docker rm -f aitestcrew-webapi-1` → `docker network rm aitestcrew_default` → `docker compose up -d --build`. Safe to do — all persistent state lives in the `aitestcrew-data` volume and the `./docker-config` / `./docker-auth-state` bind mounts, not in the container. |
 | Runner can't connect to server | Check `ServerUrl` in appsettings.json. Verify the server is reachable: `curl http://<server>:5050/api/health` |
 | Playwright browser not found | Run `npx playwright install chromium` in the Runner directory. |
 | Auth state expired | Re-run `--auth-setup --target <UI_Web_Blazor\|UI_Web_MVC> --environment <envKey>`. Default expiry is 8 hours. Repeat per customer env — each writes to its own storage-state filename. |

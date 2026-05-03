@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using AiTestCrew.Core.Exceptions;
 using AiTestCrew.Core.Interfaces;
 
 namespace AiTestCrew.Agents.Auth;
@@ -56,6 +57,21 @@ public class LoginTokenProvider : ITokenProvider
         }
     }
 
+    public async Task InvalidateAsync(CancellationToken ct = default)
+    {
+        await _semaphore.WaitAsync(ct);
+        try
+        {
+            _cachedToken = null;
+            _expiresAt = DateTimeOffset.MinValue;
+            _logger.LogInformation("JWT cache invalidated for user {User} — next GetTokenAsync will re-login", _username);
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+    }
+
     private async Task<string> LoginAsync(CancellationToken ct)
     {
         _logger.LogInformation("Acquiring JWT from {Url} for user {User}", _loginUrl, _username);
@@ -81,8 +97,16 @@ public class LoginTokenProvider : ITokenProvider
         var responseBody = await response.Content.ReadAsStringAsync(ct);
 
         if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException(
-                $"Login failed: {(int)response.StatusCode} {response.StatusCode} — {responseBody}");
+        {
+            // Trim to ~200 chars so the exception message stays useful in UI step
+            // detail without dumping a wall of HTML. Strip newlines so the message
+            // is one tidy line in Spectre + the dashboard.
+            var snippet = responseBody.Length > 200
+                ? responseBody[..200] + "…"
+                : responseBody;
+            snippet = snippet.Replace('\n', ' ').Replace('\r', ' ').Trim();
+            throw new LoginFailedException(_loginUrl, _username, (int)response.StatusCode, snippet);
+        }
 
         // Parse the JWT from the response.
         // Handle both a raw JWT string and a JSON wrapper (e.g. {"token":"eyJ..."}).

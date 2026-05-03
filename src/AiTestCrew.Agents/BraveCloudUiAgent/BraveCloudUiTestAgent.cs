@@ -47,6 +47,7 @@ public class BraveCloudUiTestAgent : BaseWebUiTestAgent
 
     protected override string TargetBaseUrl => _envResolver.ResolveBraveCloudUiUrl(CurrentEnvironmentKey);
     protected override string TargetBaseUrlConfigKey => "BraveCloudUiUrl";
+    protected override AuthSurface Surface => AuthSurface.WebBlazor;
 
     public BraveCloudUiTestAgent(
         Kernel kernel,
@@ -268,5 +269,29 @@ public class BraveCloudUiTestAgent : BaseWebUiTestAgent
 
         var age = DateTime.UtcNow - File.GetLastWriteTimeUtc(path);
         return age.TotalHours < _config.BraveCloudUiStorageStateMaxAgeHours;
+    }
+
+    /// <summary>
+    /// Silent recovery on login-redirect detection: delete the cached storage state
+    /// and re-run the SSO flow. Succeeds when <c>BraveCloudUiTotpSecret</c> is
+    /// configured (fully automated MFA) — failure modes (wrong password, rotated
+    /// TOTP, headless without secret) bubble out and are caught by the caller.
+    /// </summary>
+    protected override async Task<bool> TryRecoverFromLoginRedirectAsync(IBrowser browser, CancellationToken ct)
+    {
+        var path = ResolveStorageStatePath();
+        if (!string.IsNullOrEmpty(path) && File.Exists(path))
+        {
+            try { File.Delete(path); }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "[{Agent}] Failed to delete stale storage state at {Path}", Name, path);
+            }
+        }
+
+        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions());
+        var page = await context.NewPageAsync();
+        await PerformSsoLoginAsync(page, context);
+        return true;
     }
 }

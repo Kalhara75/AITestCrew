@@ -171,12 +171,50 @@ public static class DatabaseMigrator
             CREATE INDEX IF NOT EXISTS idx_chat_messages_conv
                 ON chat_messages (conversation_id, created_at);
 
+            CREATE TABLE IF NOT EXISTS run_auth_refreshes (
+                id                  TEXT PRIMARY KEY,
+                env_key             TEXT NOT NULL,
+                surface             TEXT NOT NULL,
+                stack_key           TEXT,
+                agent_id            TEXT,
+                requested_by_run_id TEXT,
+                status              TEXT NOT NULL,
+                auto_attempt_count  INTEGER NOT NULL DEFAULT 0,
+                last_attempt_at     TEXT,
+                created_at          TEXT NOT NULL,
+                completed_at        TEXT,
+                error_message       TEXT
+            );
+
+            -- Dedup-by-scope: at most one Pending or InProgress row per
+            -- (env, surface, stack, agent). COALESCE flattens NULLs so the
+            -- index treats them as a sentinel rather than 'always distinct'.
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_auth_refresh_active_scope
+                ON run_auth_refreshes (env_key, surface, COALESCE(stack_key, ''), COALESCE(agent_id, ''))
+                WHERE status IN ('Pending', 'InProgress');
+
+            CREATE INDEX IF NOT EXISTS idx_auth_refresh_status
+                ON run_auth_refreshes (status, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS agent_auth_state (
+                agent_id        TEXT NOT NULL,
+                env_key         TEXT NOT NULL,
+                surface         TEXT NOT NULL,
+                file_exists     INTEGER NOT NULL,
+                file_mtime_utc  TEXT,
+                reported_at_utc TEXT NOT NULL,
+                PRIMARY KEY (agent_id, env_key, surface)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_auth_state_scope
+                ON agent_auth_state (env_key, surface);
+
             CREATE TABLE IF NOT EXISTS schema_version (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
 
-            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '7');
+            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '9');
             """;
         cmd.ExecuteNonQuery();
 
@@ -269,9 +307,73 @@ public static class DatabaseMigrator
         // so v6 DBs upgrade cleanly without column ALTERs. Indexes are also covered
         // by the CREATE INDEX IF NOT EXISTS statements in the same block.
 
+        // ── v7 → v8: seamless auth recovery — auth_refresh_id on run_queue ──
+        // The CREATE TABLE block above already creates run_auth_refreshes for
+        // fresh DBs. For upgraded DBs, the run_queue ALTER below is the only
+        // schema change needed beyond the new table.
+        if (!ColumnExists(conn, "run_queue", "auth_refresh_id"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE run_queue ADD COLUMN auth_refresh_id TEXT";
+            alter.ExecuteNonQuery();
+        }
+
+        // Ensure auth-refresh table + index exist on upgraded DBs (CREATE TABLE
+        // IF NOT EXISTS on the initial block won't run if the schema_version
+        // already advanced past v8 and the DB shape differs — defensive copy).
+        using (var createAuthRefresh = conn.CreateCommand())
+        {
+            createAuthRefresh.CommandText = """
+                CREATE TABLE IF NOT EXISTS run_auth_refreshes (
+                    id                  TEXT PRIMARY KEY,
+                    env_key             TEXT NOT NULL,
+                    surface             TEXT NOT NULL,
+                    stack_key           TEXT,
+                    agent_id            TEXT,
+                    requested_by_run_id TEXT,
+                    status              TEXT NOT NULL,
+                    auto_attempt_count  INTEGER NOT NULL DEFAULT 0,
+                    last_attempt_at     TEXT,
+                    created_at          TEXT NOT NULL,
+                    completed_at        TEXT,
+                    error_message       TEXT
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_auth_refresh_active_scope
+                    ON run_auth_refreshes (env_key, surface, COALESCE(stack_key, ''), COALESCE(agent_id, ''))
+                    WHERE status IN ('Pending', 'InProgress');
+                CREATE INDEX IF NOT EXISTS idx_auth_refresh_status
+                    ON run_auth_refreshes (status, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_run_queue_auth_refresh
+                    ON run_queue (auth_refresh_id) WHERE auth_refresh_id IS NOT NULL;
+                """;
+            createAuthRefresh.ExecuteNonQuery();
+        }
+
+        // ── v8 → v9: pre-flight auth health — agent_auth_state ──
+        // Fresh DBs get the table from the initial CREATE block above. Upgraded
+        // DBs need this defensive create so existing v8 installs gain the table
+        // without manual intervention. CREATE TABLE IF NOT EXISTS is idempotent.
+        using (var createAuthState = conn.CreateCommand())
+        {
+            createAuthState.CommandText = """
+                CREATE TABLE IF NOT EXISTS agent_auth_state (
+                    agent_id        TEXT NOT NULL,
+                    env_key         TEXT NOT NULL,
+                    surface         TEXT NOT NULL,
+                    file_exists     INTEGER NOT NULL,
+                    file_mtime_utc  TEXT,
+                    reported_at_utc TEXT NOT NULL,
+                    PRIMARY KEY (agent_id, env_key, surface)
+                );
+                CREATE INDEX IF NOT EXISTS idx_agent_auth_state_scope
+                    ON agent_auth_state (env_key, surface);
+                """;
+            createAuthState.ExecuteNonQuery();
+        }
+
         // Ensure schema_version reflects the latest applied migration even on upgraded DBs
         using var bump = conn.CreateCommand();
-        bump.CommandText = "UPDATE schema_version SET value = '7' WHERE key = 'version' AND CAST(value AS INTEGER) < 7";
+        bump.CommandText = "UPDATE schema_version SET value = '9' WHERE key = 'version' AND CAST(value AS INTEGER) < 9";
         bump.ExecuteNonQuery();
     }
 

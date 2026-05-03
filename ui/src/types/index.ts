@@ -484,6 +484,50 @@ export interface QueueEntry {
   attemptCount?: number;
   parentQueueEntryId?: string | null;
   parentRunId?: string | null;
+
+  // Seamless-auth pause (v8): set when this entry is parked on an outstanding
+  // auth-refresh; the janitor releases the entry when the refresh terminates.
+  authRefreshId?: string | null;
+}
+
+export type AuthSurface = 'Api' | 'WebBlazor' | 'WebMvc';
+
+export interface AuthRefreshRequest {
+  id: string;
+  environmentKey: string;
+  surface: AuthSurface;
+  apiStackKey: string | null;
+  agentId: string | null;
+  requestedByRunId: string | null;
+  status: 'Pending' | 'InProgress' | 'Completed' | 'Failed' | 'Cancelled' | string;
+  autoAttemptCount: number;
+  lastAttemptAt: string | null;
+  createdAt: string;
+  completedAt: string | null;
+  errorMessage: string | null;
+}
+
+export interface AuthHealthAgentReport {
+  agentId: string;
+  agentName: string;
+  fileExists: boolean;
+  ageHours: number | null;
+}
+
+export type AuthHealthStatus = 'Missing' | 'Stale' | 'ExpiringSoon' | 'Fresh';
+
+export interface AuthHealthSurfaceEntry {
+  surface: AuthSurface;
+  status: AuthHealthStatus;
+  ageHours: number;
+  ttlHours: number;
+  agentReports: AuthHealthAgentReport[];
+}
+
+export interface AuthHealthEntry {
+  envKey: string;
+  envDisplayName: string;
+  surfaces: AuthHealthSurfaceEntry[];
 }
 
 export interface PendingVerificationSummary {

@@ -8,6 +8,7 @@ using AiTestCrew.Agents.Environment;
 using AiTestCrew.Agents.PostSteps;
 using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Configuration;
+using AiTestCrew.Core.Exceptions;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
 
@@ -86,6 +87,21 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
     /// Returns null if credentials are not configured.
     /// </summary>
     protected virtual (string Username, string Password)? GetConfiguredCredentials() => null;
+
+    /// <summary>
+    /// The auth scope this agent represents. Carried on <see cref="AuthRequiredException"/>
+    /// so the orchestrator dispatches the refresh against the right storage state file.
+    /// </summary>
+    protected abstract AuthSurface Surface { get; }
+
+    /// <summary>
+    /// Best-effort silent recovery when a login redirect is detected mid-test:
+    /// delete the cached storage state file and re-run one-time auth setup so the
+    /// next run starts authenticated. Default returns false (no recovery available).
+    /// Subclasses with storage-state caching override.
+    /// </summary>
+    protected virtual Task<bool> TryRecoverFromLoginRedirectAsync(IBrowser browser, CancellationToken ct)
+        => Task.FromResult(false);
 
     // ─────────────────────────────────────────────────────
     // Main execution entry point
@@ -250,6 +266,11 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
         }
         catch (OperationCanceledException)
         {
+            throw;
+        }
+        catch (AuthRequiredException)
+        {
+            // Bubble out so the orchestrator can park the run as AwaitingAuth.
             throw;
         }
         catch (Exception ex)
@@ -598,6 +619,14 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                         Status = TestStatus.Passed,
                         Duration = sw.Elapsed
                     });
+
+                    // Detect mid-test login redirect and route to seamless-auth recovery.
+                    await CheckForLoginRedirectAsync(page, browser, ct);
+                }
+                catch (AuthRequiredException)
+                {
+                    // Bubble out so the orchestrator can park the run as AwaitingAuth.
+                    throw;
                 }
                 catch (PlaywrightException ex)
                 {
@@ -667,6 +696,11 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
                 }
             }
         }
+        catch (AuthRequiredException)
+        {
+            // Bubble out — orchestrator parks the run as AwaitingAuth.
+            throw;
+        }
         catch (PlaywrightException ex)
         {
             // StartUrl navigation failure — no individual steps ran yet
@@ -693,6 +727,60 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
         }
 
         return stepResults;
+    }
+
+    // ─────────────────────────────────────────────────────
+    // Login-redirect detection (seamless auth recovery)
+    // ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// After each step, checks whether the page URL matches a configured login pattern
+    /// (Azure SSO host, /Account/Login, etc.). If matched, best-effort silently refreshes
+    /// the cached storage state so future runs start authenticated, then throws
+    /// <see cref="AuthRequiredException"/> so the orchestrator can park the run as
+    /// AwaitingAuth. The current step has already failed (we got bumped to login) —
+    /// mid-step recovery is not attempted in Phase 1.
+    /// </summary>
+    protected async Task CheckForLoginRedirectAsync(IPage page, IBrowser browser, CancellationToken ct)
+    {
+        if (!_config.Auth.AutoRecoverUi && !_config.Auth.PauseOnAuthFailure) return;
+        var patterns = _config.Auth.LoginRedirectUrlPatterns;
+        if (patterns is null || patterns.Length == 0) return;
+
+        string currentUrl;
+        try { currentUrl = page.Url; }
+        catch { return; }
+        if (string.IsNullOrEmpty(currentUrl)) return;
+
+        var matched = patterns.Any(p =>
+            !string.IsNullOrEmpty(p)
+            && currentUrl.Contains(p, StringComparison.OrdinalIgnoreCase));
+        if (!matched) return;
+
+        Logger.LogWarning("[{Agent}] Login redirect detected at {Url} — session expired", Name, currentUrl);
+
+        if (_config.Auth.AutoRecoverUi)
+        {
+            try
+            {
+                var recovered = await TryRecoverFromLoginRedirectAsync(browser, ct);
+                if (recovered)
+                    Logger.LogInformation("[{Agent}] Storage state refreshed silently — future runs will start authenticated", Name);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "[{Agent}] Silent storage-state refresh failed", Name);
+            }
+        }
+
+        if (_config.Auth.PauseOnAuthFailure)
+        {
+            throw new AuthRequiredException(
+                CurrentEnvironmentKey ?? "default",
+                Surface,
+                null,
+                $"Session expired — page redirected to login at {currentUrl}");
+        }
     }
 
     // ─────────────────────────────────────────────────────

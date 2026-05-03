@@ -32,11 +32,10 @@ public class RunTracker : IRunTracker
     {
         if (_runs.TryGetValue(runId, out var status))
         {
-            // Don't overwrite AwaitingVerification with Completed — the delivery agent
-            // returned but the run is still waiting on deferred verifications. The
-            // finalise path (DeferredVerifyAsync → FinaliseParentRun) transitions the
-            // run to Passed/Failed once every pending row terminal.
-            if (status.Status == "AwaitingVerification") return;
+            // Don't overwrite paused states (AwaitingVerification, AwaitingAuth)
+            // with Completed — the agent returned but the run is parked waiting
+            // on a sibling action that will finalise it later.
+            if (status.Status is "AwaitingVerification" or "AwaitingAuth") return;
 
             status.Status = "Completed";
             status.CompletedAt = DateTime.UtcNow;
@@ -54,10 +53,28 @@ public class RunTracker : IRunTracker
         }
     }
 
+    /// <summary>
+    /// Park a run pending an outstanding auth-refresh. Mirrors
+    /// <see cref="MarkAwaitingVerification"/>: the run is not finalised until
+    /// the refresh completes (or fails) and the dependent queue entries flow
+    /// through to terminal states.
+    /// </summary>
+    public void MarkAwaitingAuth(string runId, string? testSetId = null)
+    {
+        if (_runs.TryGetValue(runId, out var status))
+        {
+            status.Status = "AwaitingAuth";
+            if (testSetId is not null) status.TestSetId = testSetId;
+        }
+    }
+
     public void Fail(string runId, string error)
     {
         if (_runs.TryGetValue(runId, out var status))
         {
+            // Don't override an explicit AwaitingAuth pause with a generic failure;
+            // the orchestrator decides the final state after the refresh terminates.
+            if (status.Status == "AwaitingAuth") return;
             status.Status = "Failed";
             status.CompletedAt = DateTime.UtcNow;
             status.Error = error;
@@ -73,7 +90,8 @@ public class RunTracker : IRunTracker
 
     private static bool IsActive(RunStatus r) =>
         r.Status == "Running" || r.Status == "Queued"
-        || r.Status == "Claimed" || r.Status == "AwaitingVerification";
+        || r.Status == "Claimed" || r.Status == "AwaitingVerification"
+        || r.Status == "AwaitingAuth";
 }
 
 public class RunStatus

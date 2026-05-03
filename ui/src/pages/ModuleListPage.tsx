@@ -6,6 +6,8 @@ import { CreateModuleDialog } from '../components/CreateModuleDialog';
 import { AgentsPanel } from '../components/AgentsPanel';
 import { DataPacksPanel } from '../components/DataPacksPanel';
 import { QueueBanner } from '../components/QueueBanner';
+import { AuthRefreshBanner } from '../components/AuthRefreshBanner';
+import { AuthHealthPanel } from '../components/AuthHealthPanel';
 import { useActiveRun } from '../contexts/ActiveRunContext';
 
 export function ModuleListPage() {
@@ -22,6 +24,8 @@ export function ModuleListPage() {
 
   return (
     <div>
+      <AuthRefreshBanner />
+      <AuthHealthPanel />
       <QueueBanner />
       <AgentsPanel />
       <DataPacksPanel />

@@ -58,4 +58,17 @@ public class EnvironmentConfig
     /// the ApiStacks[key].BaseUrl when this environment is active.
     /// </summary>
     public Dictionary<string, string> ApiStackBaseUrls { get; set; } = new();
+
+    /// <summary>
+    /// Whether this env should appear in the dashboard's pre-flight
+    /// auth-health panel. Defaults to true; set to false to hide an env from
+    /// the panel — useful for environments you don't actively run UI tests
+    /// against (e.g. a customer you only hit via API), so its cached UI auth
+    /// state never prompts for attention.
+    ///
+    /// Effect is twofold: agents skip the env when scanning storage-state
+    /// files, AND the WebApi endpoint will not surface tiles for it even if
+    /// historical rows exist in <c>agent_auth_state</c>.
+    /// </summary>
+    public bool AuthHealthEnabled { get; set; } = true;
 }

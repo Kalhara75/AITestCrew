@@ -18,7 +18,23 @@ public enum TestStatus
     /// Objective/step has a post-delivery verification queued for later execution.
     /// The run does not finalise until all awaited verifications complete or exceed their deadline.
     /// </summary>
-    AwaitingVerification
+    AwaitingVerification,
+    /// <summary>
+    /// Step hit an authentication failure (401/403, login redirect, expired storage state).
+    /// The run is paused pending an auth-refresh — see Auth Recovery model.
+    /// </summary>
+    AuthRequired
+}
+
+/// <summary>
+/// Authentication scope. Controls which credential set / storage state is refreshed
+/// when a run pauses on auth failure. WinForms has no auth concept.
+/// </summary>
+public enum AuthSurface
+{
+    Api,
+    WebBlazor,
+    WebMvc
 }
 
 public enum TestTargetType

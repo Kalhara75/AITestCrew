@@ -9,6 +9,7 @@ using AiTestCrew.Agents.Base;
 using AiTestCrew.Agents.Environment;
 using AiTestCrew.Agents.PostSteps;
 using AiTestCrew.Core.Configuration;
+using AiTestCrew.Core.Exceptions;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
 
@@ -226,6 +227,12 @@ public class ApiTestAgent : BaseTestAgent
                 Duration = sw.Elapsed
             };
         }
+        catch (AuthRequiredException)
+        {
+            // Bubble out so the orchestrator can park the run as AwaitingAuth
+            // and dispatch a refresh — see seamless auth recovery model.
+            throw;
+        }
         catch (Exception ex)
         {
             Logger.LogError(ex, "[{Agent}] Unhandled error", Name);
@@ -355,34 +362,64 @@ public class ApiTestAgent : BaseTestAgent
     {
         var stepSw = Stopwatch.StartNew();
 
-        try
+        var url = BuildUrl(tc, apiBaseUrl);
+
+        async Task<HttpRequestMessage> BuildRequestAsync()
         {
-            // Build the request
-            var url = BuildUrl(tc, apiBaseUrl);
-            var request = new HttpRequestMessage(
+            var req = new HttpRequestMessage(
                 new HttpMethod(tc.Method.ToUpperInvariant()), url);
 
-            // Add headers from the generated test case
             foreach (var (key, value) in tc.Headers)
-            {
-                request.Headers.TryAddWithoutValidation(key, value);
-            }
+                req.Headers.TryAddWithoutValidation(key, value);
 
-            // Inject auth credentials (overrides anything the LLM generated
-            // for the same header, ensuring real credentials are always used).
-            await InjectAuthAsync(request, stackKey, envKey, ct);
+            await InjectAuthAsync(req, stackKey, envKey, ct);
 
-            // Add body for non-GET requests
             if (tc.Body is not null && tc.Method.ToUpperInvariant() != "GET")
             {
                 var json = tc.Body is string s ? s : JsonSerializer.Serialize(tc.Body);
-                request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+                req.Content = new StringContent(json, Encoding.UTF8, "application/json");
             }
+            return req;
+        }
 
-            // Send it
+        try
+        {
             Logger.LogInformation("[{Agent}] >> {Method} {Url}", Name, tc.Method, url);
+            var request = await BuildRequestAsync();
             var response = await _http.SendAsync(request, ct);
             var responseBody = await response.Content.ReadAsStringAsync(ct);
+
+            // ── Silent auth recovery: 401/403 → invalidate cached JWT, retry once ──
+            // Handles the common case of a token rotated/revoked mid-flight without
+            // any user interaction. Only one retry: persistent 401 throws
+            // AuthRequiredException so the orchestrator can pause the run.
+            if (_config.Auth.AutoRecoverApi
+                && (response.StatusCode == HttpStatusCode.Unauthorized
+                    || response.StatusCode == HttpStatusCode.Forbidden))
+            {
+                Logger.LogWarning(
+                    "[{Agent}] {Status} for {Url} — invalidating token and retrying once",
+                    Name, (int)response.StatusCode, url);
+                response.Dispose();
+
+                var tokenProvider = _resolver.GetTokenProvider(stackKey, envKey);
+                await tokenProvider.InvalidateAsync(ct);
+
+                request = await BuildRequestAsync();
+                response = await _http.SendAsync(request, ct);
+                responseBody = await response.Content.ReadAsStringAsync(ct);
+
+                if ((response.StatusCode == HttpStatusCode.Unauthorized
+                     || response.StatusCode == HttpStatusCode.Forbidden)
+                    && _config.Auth.PauseOnAuthFailure)
+                {
+                    throw new AuthRequiredException(
+                        envKey ?? "default",
+                        AuthSurface.Api,
+                        stackKey,
+                        $"API returned {(int)response.StatusCode} after token refresh for {tc.Method} {tc.Endpoint}");
+                }
+            }
 
             Logger.LogInformation("[{Agent}] << {Status} ({Length} bytes)",
                 Name, (int)response.StatusCode, responseBody.Length);
@@ -398,6 +435,27 @@ public class ApiTestAgent : BaseTestAgent
                 Detail = FormatResponseDetail(url, response, responseBody, request),
                 Duration = stepSw.Elapsed
             };
+        }
+        catch (AuthRequiredException)
+        {
+            // Let it bubble — the orchestrator pauses the run as AwaitingAuth.
+            throw;
+        }
+        catch (LoginFailedException ex)
+        {
+            // Configured AuthUsername / AuthPassword are wrong, expired, or the
+            // account is locked. Not an AuthRequiredException — the dashboard's
+            // refresh banner can't fix appsettings.json; the user has to.
+            // Surface it as a clean step error with actionable text instead of
+            // letting it bubble up to ExecuteAsync's broad catch as "Unhandled
+            // exception: Login failed: ...".
+            return TestStep.Err(
+                $"{tc.Method} {tc.Endpoint}",
+                $"[{tc.Name}] Authentication failed: SEC API rejected the configured credentials " +
+                $"(HTTP {ex.HttpStatusCode} for user '{ex.Username}'). " +
+                $"Check TestEnvironment.AuthUsername / AuthPassword in appsettings.json, " +
+                $"or unlock the account if it's been locked out by repeated failures. " +
+                $"Server response: {ex.ResponseSnippet}");
         }
         catch (HttpRequestException ex)
         {

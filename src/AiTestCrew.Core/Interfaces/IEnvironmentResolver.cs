@@ -65,4 +65,12 @@ public interface IEnvironmentResolver
     /// Falls back to <c>ApiStacks[stackKey].BaseUrl</c>.
     /// </summary>
     string ResolveApiStackBaseUrl(string? key, string stackKey);
+
+    /// <summary>
+    /// Whether this env should be tracked by the dashboard's pre-flight
+    /// auth-health panel. Defaults to true; an env with the flag set to false
+    /// is skipped by the agent scanner and hidden from the
+    /// <c>/api/auth-health</c> endpoint.
+    /// </summary>
+    bool ResolveAuthHealthEnabled(string? key);
 }
