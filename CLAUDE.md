@@ -318,6 +318,7 @@ Adding a ___ is → ___
 - `docs/functional.md` — user-facing feature reference and CLI runbook
 - `docs/architecture.md` — component structure, data flow, design decisions, extension patterns. Includes deep-dive sections for **Distributed Execution (Phase 4)**, **Deferred Post-Delivery Verification**, **Seamless Authentication Recovery** (silent retry → AwaitingAuth pause-and-resume → pre-flight AuthHealthPanel, schemas v8 + v9), **Chat Assistant**, and **Startup Data Packs**.
 - `docs/data-packs.md` — startup-time SQL data-pack guide (folder layout, opt-in config, authoring rules, dashboard troubleshooting)
+- `docs/agentic-development-team.md` — five-agent pipeline (`feature-coordinator` → `implementation-planner` → `implementer` → `doc-writer` → `code-reviewer`) that turns a `requirements/REQ-*.md` file into a review-ready feature branch. Hand a requirement to `feature-coordinator` for hands-off implementation.
 - Phase 3 decision: the aseXML feature is feature-complete through **Generate → Deliver → Wait → Verify**. Future work is extension (new transaction types, new protocols, richer wait strategies, desktop edit dialog, Phase 1.5 UI edit for non-verification aseXML steps) rather than new phases.
 
 Keep docs updated when behaviour or structure changes. The `/add-*` skills codify the "right way" to extend — reach for them first before hand-editing.
