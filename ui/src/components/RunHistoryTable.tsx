@@ -1,6 +1,8 @@
 import { Link } from 'react-router-dom';
 import type { RunSummary } from '../types';
-import { StatusBadge } from './StatusBadge';
+import { StatusBadge } from './execution/StatusBadge';
+import { ModeBadge } from './execution/ModeBadge';
+import { StatsBar } from './execution/StatsBar';
 
 export function RunHistoryTable({ runs, testSetId, moduleId }: { runs: RunSummary[]; testSetId: string; moduleId?: string }) {
   if (runs.length === 0) {
@@ -32,23 +34,10 @@ export function RunHistoryTable({ runs, testSetId, moduleId }: { runs: RunSummar
                   {r.runId}
                 </Link>
               </td>
-              <td style={tdStyle}>
-                <span style={{
-                  fontSize: 12,
-                  fontWeight: 500,
-                  padding: '2px 8px',
-                  borderRadius: 4,
-                  background: r.mode === 'Reuse' ? '#f0f9ff' : r.mode === 'Rebaseline' ? '#fff7ed' : '#f8fafc',
-                  color: r.mode === 'Reuse' ? '#0369a1' : r.mode === 'Rebaseline' ? '#c2410c' : '#475569',
-                }}>
-                  {r.mode}
-                </span>
-              </td>
+              <td style={tdStyle}><ModeBadge mode={r.mode} /></td>
               <td style={tdStyle}><StatusBadge status={r.status} /></td>
               <td style={tdStyle}>
-                <span style={{ color: '#16a34a', fontWeight: 600 }}>{r.passedObjectives}</span>
-                <span style={{ color: '#94a3b8' }}> / {r.totalObjectives}</span>
-                {r.failedObjectives > 0 && <span style={{ color: '#dc2626', fontSize: 12, marginLeft: 4 }}>({r.failedObjectives} failed)</span>}
+                <StatsBar passed={r.passedObjectives} failed={r.failedObjectives} total={r.totalObjectives} size="sm" />
               </td>
               <td style={{ ...tdStyle, fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 13 }}>{r.totalDuration}</td>
               <td style={{ ...tdStyle, fontSize: 13, color: '#64748b' }}>

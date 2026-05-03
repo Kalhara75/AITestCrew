@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { triggerRun } from '../api/runs';
 import { useActiveRun } from '../contexts/ActiveRunContext';
+import { RunningIndicator } from './execution/RunningIndicator';
 
 interface Props {
   testSetId: string;
@@ -82,20 +83,13 @@ export function TriggerRunButton({ testSetId, moduleId, apiStackKey, apiModule, 
         {/* Awaiting is a scheduled / parked state — no spinner, just an icon.
             Only active execution (Queued/Claimed/Running) gets the spinner. */}
         {isAwaiting ? (
-          <span style={{ fontSize: 16, lineHeight: 1 }}>{'\u23F3'}</span>
+          <span style={{ fontSize: 16, lineHeight: 1 }}>{'⏳'}</span>
         ) : (
-          <div style={{
-            width: 16, height: 16,
-            border: `2.5px solid ${palette.border}`,
-            borderTop: `2.5px solid ${palette.fg}`,
-            borderRadius: '50%',
-            animation: 'spin 0.8s linear infinite',
-          }} />
+          <RunningIndicator state={isQueued ? 'queued' : 'running'} size="md" />
         )}
         <span style={{ fontSize: 13, color: palette.fg, fontWeight: 500 }}>
           {label}
         </span>
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
     );
   }

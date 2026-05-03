@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ObjectiveResult, StepResult } from '../types';
-import { StatusBadge } from './StatusBadge';
+import { StatusBadge } from './execution/StatusBadge';
+import { DeferredCountdownChip } from './execution/DeferredCountdownChip';
 
 /** Prefer the ISO UTC timestamp the agent stores in detail — deterministic across
  *  timezones. Fall back to parsing the HH:MM:SS from the summary as a last resort.
@@ -63,7 +64,7 @@ function ObjectiveSection({ objective }: { objective: ObjectiveResult }) {
           transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
           display: 'inline-block',
         }}>
-          {'\u25B6'}
+          {'▶'}
         </span>
         <StatusBadge status={objective.status} />
         <span style={{ fontWeight: 600, fontSize: 14, color: '#1e293b', flex: 1 }}>
@@ -108,10 +109,6 @@ function parseScreenshot(detail: string | null): { text: string; screenshotFile:
 function StepRow({ step, isLast }: { step: StepResult; isLast: boolean }) {
   const [showDetail, setShowDetail] = useState(false);
   const isAwaiting = step.status === 'AwaitingVerification';
-  const statusIcon = step.status === 'Passed' ? '\u2705'
-    : step.status === 'Failed' ? '\u274C'
-    : isAwaiting ? '\u23F3'
-    : '\u26A0\uFE0F';
   const { text: detailText, screenshotFile } = parseScreenshot(step.detail);
   const hasDetail = !!(step.detail);
   const dueTime = isAwaiting ? extractDueTime(step.summary, step.detail) : null;
@@ -132,7 +129,8 @@ function StepRow({ step, isLast }: { step: StepResult; isLast: boolean }) {
         onMouseEnter={e => { if (hasDetail) e.currentTarget.style.background = '#fafafa'; }}
         onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
       >
-        <span style={{ width: 20, textAlign: 'center' }}>{statusIcon}</span>
+        {/* StatusBadge replaces hardcoded emoji status icons */}
+        <StatusBadge status={step.status} size="sm" />
         <span style={{
           fontFamily: 'ui-monospace, Consolas, monospace',
           fontWeight: 600,
@@ -143,7 +141,7 @@ function StepRow({ step, isLast }: { step: StepResult; isLast: boolean }) {
           {step.action}
         </span>
         <span style={{ color: isAwaiting ? '#0e7490' : '#64748b', flex: 1 }}>{step.summary}</span>
-        {dueTime && <Countdown target={dueTime} />}
+        {dueTime && <DeferredCountdownChip target={dueTime} />}
         {hasDetail && (
           <span style={{ color: '#94a3b8', fontSize: 11 }}>{showDetail ? 'Hide' : 'Detail'}</span>
         )}
@@ -195,41 +193,5 @@ function StepRow({ step, isLast }: { step: StepResult; isLast: boolean }) {
   );
 }
 
-function Countdown({ target }: { target: Date }) {
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => setTick(t => t + 1), 1000);
-    return () => clearInterval(id);
-  }, []);
-  // keep the tick reference to force re-renders
-  void tick;
-
-  const diffMs = target.getTime() - Date.now();
-  if (diffMs <= 0) {
-    return (
-      <span style={{
-        background: '#fef9c3',
-        color: '#854d0e',
-        padding: '2px 8px',
-        borderRadius: 10,
-        fontSize: 11,
-        fontWeight: 600,
-      }}>awaiting claim</span>
-    );
-  }
-  const totalSeconds = Math.floor(diffMs / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  const label = minutes > 0 ? `in ${minutes}m ${seconds}s` : `in ${seconds}s`;
-  return (
-    <span style={{
-      background: '#cffafe',
-      color: '#0e7490',
-      padding: '2px 8px',
-      borderRadius: 10,
-      fontSize: 11,
-      fontWeight: 600,
-      fontFamily: 'ui-monospace, Consolas, monospace',
-    }}>{label}</span>
-  );
-}
+// Keep this hook exported so any future surface can reuse it
+export { extractDueTime };

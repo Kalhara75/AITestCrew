@@ -8,6 +8,8 @@ import { triggerRun } from '../api/runs';
 import { useActiveRun } from '../contexts/ActiveRunContext';
 import { EditWebUiTestCaseDialog } from './EditWebUiTestCaseDialog';
 import { EditDesktopUiTestCaseDialog } from './EditDesktopUiTestCaseDialog';
+import { ExecutionModeBadge } from './execution/ExecutionModeBadge';
+import { TargetBadge } from './execution/TargetBadge';
 
 interface Props {
   /** The parent step type whose post-steps are being rendered. */
@@ -146,22 +148,20 @@ export function PostStepsPanel({
                     {expandable ? (isExpanded ? '\u25BE' : '\u25B8') : ''}
                   </td>
                   <td style={tdS}>{i + 1}</td>
-                  <td style={tdS}><span style={targetBadge(p.target)}>{p.target}</span></td>
+                  <td style={tdS}><TargetBadge target={p.target} /></td>
                   <td style={tdS}>{p.description}</td>
                   <td style={tdS}>{p.waitBeforeSeconds}s</td>
                   <td style={tdS}>
-                    <span
-                      style={executionModeBadgeStyle(isDeferred)}
+                    <ExecutionModeBadge
+                      deferred={isDeferred}
                       title={
                         verifConfig === undefined
-                          ? 'Loading execution mode\u2026'
+                          ? 'Loading execution mode…'
                           : isDeferred
-                          ? `Deferred \u2014 at least one post-step in this objective waits > ${verifConfig.verificationDeferThresholdSeconds}s, so all post-steps are queued and run by an agent later.`
-                          : 'Inline \u2014 all waits are at or below the defer threshold; post-steps run synchronously after the parent step.'
+                          ? `Deferred — at least one post-step in this objective waits > ${verifConfig.verificationDeferThresholdSeconds}s, so all post-steps are queued and run by an agent later.`
+                          : 'Inline — all waits are at or below the defer threshold; post-steps run synchronously after the parent step.'
                       }
-                    >
-                      {isDeferred ? 'Deferred' : 'Inline'}
-                    </span>
+                    />
                   </td>
                   <td style={{ ...tdS, fontFamily: 'ui-monospace,Consolas,monospace', fontSize: 12, color: '#64748b' }}>
                     <PayloadSummary p={p} />
@@ -456,9 +456,6 @@ function computeIsDeferred(
   return postSteps.some(p => p.waitBeforeSeconds > cfg.verificationDeferThresholdSeconds);
 }
 
-function executionModeBadgeStyle(deferred: boolean): React.CSSProperties {
-  const palette = deferred
-    ? { bg: '#ecfeff', fg: '#0e7490', border: '#a5f3fc' }
     : { bg: '#f1f5f9', fg: '#475569', border: '#cbd5e1' };
   return {
     fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
@@ -466,23 +463,6 @@ function executionModeBadgeStyle(deferred: boolean): React.CSSProperties {
   };
 }
 
-function targetBadge(target: string): React.CSSProperties {
-  const palette = target.includes('Desktop')
-    ? { bg: '#ecfdf5', fg: '#047857', border: '#a7f3d0' }
-    : target.includes('Blazor') || target.includes('Web_Blazor')
-    ? { bg: '#eff6ff', fg: '#1d4ed8', border: '#bfdbfe' }
-    : target.includes('MVC')
-    ? { bg: '#fef3c7', fg: '#92400e', border: '#fde68a' }
-    : target.includes('Db_')
-    ? { bg: '#fae8ff', fg: '#86198f', border: '#f5d0fe' }
-    : target.includes('API')
-    ? { bg: '#fef2f2', fg: '#991b1b', border: '#fecaca' }
-    : { bg: '#f1f5f9', fg: '#334155', border: '#cbd5e1' };
-  return {
-    fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
-    background: palette.bg, color: palette.fg, border: `1px solid ${palette.border}`,
-  };
-}
 
 const thS: React.CSSProperties = {
   padding: '6px 10px', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5,

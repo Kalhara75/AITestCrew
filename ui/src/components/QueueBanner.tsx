@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchQueue, cancelQueuedJob } from '../api/queue';
 import { fetchAgents } from '../api/agents';
 import type { QueueEntry, AgentSummary } from '../types';
+import { DeferredCountdownChip } from './execution/DeferredCountdownChip';
 
 /**
  * Shows a banner listing queued / claimed / running jobs that need an agent.
@@ -57,18 +58,16 @@ function QueueRow({ job, agents, onCancel }: { job: QueueEntry; agents: AgentSum
   const hasCapableAgent = capable.length > 0;
 
   // Deferred post-delivery verification: queued but with a future not_before_at.
-  // Show a different message so the user understands the job is scheduled, not stalled.
   const notBefore = job.notBeforeAt ? new Date(job.notBeforeAt) : null;
   const isDeferred = notBefore !== null && notBefore.getTime() > Date.now();
   const isRetry = (job.attemptCount ?? 0) > 0;
 
   let message: React.ReactNode;
   if (job.status === 'Queued' && isDeferred) {
-    const mins = Math.max(0, Math.round((notBefore!.getTime() - Date.now()) / 60_000));
-    const whenLabel = mins > 0 ? `in ~${mins} min` : `shortly (${notBefore!.toLocaleTimeString()})`;
     const attemptLabel = isRetry ? <> (retry {job.attemptCount})</> : null;
     message = <>
-      <b>Deferred verification</b>{attemptLabel} — next attempt {whenLabel}
+      <b>Deferred verification</b>{attemptLabel} — next attempt{' '}
+      <DeferredCountdownChip target={notBefore!} size="sm" />
       {' '}on an agent with <b>{job.targetType}</b>
     </>;
   } else if (job.status === 'Queued') {

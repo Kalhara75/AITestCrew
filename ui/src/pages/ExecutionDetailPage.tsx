@@ -2,7 +2,9 @@ import { useParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { fetchRun } from '../api/testSets';
 import { fetchModuleRun, fetchModule } from '../api/modules';
-import { StatusBadge } from '../components/StatusBadge';
+import { StatusBadge } from '../components/execution/StatusBadge';
+import { ModeBadge } from '../components/execution/ModeBadge';
+import { StatsBar } from '../components/execution/StatsBar';
 import { StepList } from '../components/StepList';
 
 export function ExecutionDetailPage() {
@@ -71,16 +73,7 @@ export function ExecutionDetailPage() {
       <div style={cardStyle({ marginBottom: 24 })}>
         <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
           <StatusBadge status={run.status} size="md" />
-          <span style={{
-            fontSize: 12,
-            fontWeight: 500,
-            padding: '2px 8px',
-            borderRadius: 4,
-            background: run.mode === 'Reuse' ? '#f0f9ff' : run.mode === 'Rebaseline' ? '#fff7ed' : '#f8fafc',
-            color: run.mode === 'Reuse' ? '#0369a1' : run.mode === 'Rebaseline' ? '#c2410c' : '#475569',
-          }}>
-            {run.mode}
-          </span>
+          <ModeBadge mode={run.mode} />
         </div>
         <h1 style={{ margin: '0 0 8px', fontSize: 22, fontWeight: 700, color: '#0f172a', lineHeight: 1.4 }}>
           {run.objective}
@@ -89,21 +82,16 @@ export function ExecutionDetailPage() {
           Run ID: <code style={{ fontSize: 12, color: '#64748b' }}>{run.runId}</code>
         </div>
 
-        {/* Stats grid */}
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
-          gap: 16,
-          paddingTop: 20,
-          borderTop: '1px solid #f1f5f9',
-        }}>
-          <StatBox label="Total Objectives" value={run.totalObjectives} />
-          <StatBox label="Passed" value={run.passedObjectives} color="#16a34a" />
-          <StatBox label="Failed" value={run.failedObjectives} color={run.failedObjectives > 0 ? '#dc2626' : undefined} />
-          {run.errorObjectives > 0 && <StatBox label="Errors" value={run.errorObjectives} color="#d97706" />}
-          <StatBox label="Duration" value={run.totalDuration} mono />
-          <StatBox label="Started" value={new Date(run.startedAt).toLocaleString()} />
-        </div>
+        {/* Stats grid — uses shared StatsBar component */}
+        <StatsBar
+          passed={run.passedObjectives}
+          failed={run.failedObjectives}
+          total={run.totalObjectives}
+          errors={run.errorObjectives}
+          duration={run.totalDuration}
+          startedAt={run.startedAt}
+          size="lg"
+        />
       </div>
 
       {/* Summary */}
@@ -137,22 +125,6 @@ export function ExecutionDetailPage() {
   );
 }
 
-function StatBox({ label, value, color, mono }: { label: string; value: string | number; color?: string; mono?: boolean }) {
-  return (
-    <div style={{ background: '#f8fafc', padding: '12px 16px', borderRadius: 8 }}>
-      <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>{label}</div>
-      <div style={{
-        fontSize: 18,
-        fontWeight: 700,
-        color: color || '#1e293b',
-        fontFamily: mono || typeof value === 'string' ? 'ui-monospace, Consolas, monospace' : 'inherit',
-        ...(typeof value === 'string' ? { fontSize: 13, fontWeight: 600 } : {}),
-      }}>
-        {value}
-      </div>
-    </div>
-  );
-}
 
 function cardStyle(extra: React.CSSProperties): React.CSSProperties {
   return {
