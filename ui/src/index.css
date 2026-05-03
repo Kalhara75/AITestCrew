@@ -12,3 +12,41 @@ body {
 code {
   font-family: ui-monospace, Consolas, 'Courier New', monospace;
 }
+
+/* ───────────────────────────────────────────────────────────────────────
+ * Chat assistant animations. All class names are namespaced with `chat-`
+ * to avoid collisions with the rest of the inline-styled UI.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+@keyframes chat-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes chat-typing-dot {
+  0%, 80%, 100% { opacity: 0.3; transform: scale(0.85); }
+  40%           { opacity: 1;   transform: scale(1);    }
+}
+
+.chat-fade-in {
+  animation: chat-fade-in 180ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.chat-typing-dot {
+  animation: chat-typing-dot 1.2s ease-in-out infinite;
+}
+
+/* Reveal the composer drag-handle grip on hover so the affordance is
+ * discoverable but doesn't add visual noise at rest. */
+[role="separator"]:hover .chat-composer-grip,
+[role="separator"]:focus-visible .chat-composer-grip {
+  opacity: 1 !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-fade-in,
+  .chat-typing-dot {
+    animation: none !important;
+    transition: none !important;
+  }
+}

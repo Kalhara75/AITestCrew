@@ -4,6 +4,7 @@ import { ModuleListPage } from './pages/ModuleListPage';
 import { ModuleDetailPage } from './pages/ModuleDetailPage';
 import { TestSetDetailPage } from './pages/TestSetDetailPage';
 import { ExecutionDetailPage } from './pages/ExecutionDetailPage';
+import { AssistantPage } from './pages/AssistantPage';
 import { LoginPage } from './pages/LoginPage';
 import { useAuth } from './contexts/AuthContext';
 
@@ -23,6 +24,9 @@ export default function App() {
         <Route path="/modules/:moduleId" element={<ModuleDetailPage />} />
         <Route path="/modules/:moduleId/testsets/:id" element={<TestSetDetailPage />} />
         <Route path="/modules/:moduleId/testsets/:id/runs/:runId" element={<ExecutionDetailPage />} />
+
+        {/* Full-page assistant (pop-out from the drawer) */}
+        <Route path="/assistant" element={<AssistantPage />} />
 
         {/* Legacy routes (for backward-compat bookmarks) */}
         <Route path="/testsets/:id" element={<TestSetDetailPage />} />
