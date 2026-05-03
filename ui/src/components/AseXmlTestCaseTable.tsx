@@ -1,8 +1,10 @@
-import type { TestObjective, AseXmlTestDefinition } from '../types';
+import { StatusBadge } from './execution/StatusBadge';
+import type { TestObjective, AseXmlTestDefinition, ObjectiveStatus } from '../types';
 import { PostStepsPanel } from './PostStepsPanel';
 
 interface Props {
   objectives: TestObjective[];
+  objectiveStatuses?: Record<string, ObjectiveStatus>;
   moduleId?: string;
   testSetId?: string;
   onTestCaseUpdated?: () => void;
@@ -15,7 +17,7 @@ interface Props {
  * planned edit dialog (Phase 1.5) will be driven by the template manifest's
  * field specs, letting users edit user-source fields directly.
  */
-export function AseXmlTestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdated }: Props) {
+export function AseXmlTestCaseTable({ objectives, objectiveStatuses, moduleId, testSetId, onTestCaseUpdated }: Props) {
   const allCases = objectives
     .filter(o => o.aseXmlSteps && o.aseXmlSteps.length > 0)
     .flatMap(o => o.aseXmlSteps.map((step, idx) => ({
@@ -39,6 +41,7 @@ export function AseXmlTestCaseTable({ objectives, moduleId, testSetId, onTestCas
             <th style={thStyle}>Transaction</th>
             <th style={thStyle}>Template</th>
             <th style={thStyle}>Field Values</th>
+            <th style={{ ...thStyle, width: 90 }}>Last Result</th>
           </tr>
         </thead>
         <tbody>
@@ -73,6 +76,9 @@ export function AseXmlTestCaseTable({ objectives, moduleId, testSetId, onTestCas
               </td>
               <td style={tdStyle}>
                 <FieldValuePreview step={tc.step} />
+              </td>
+              <td style={tdStyle}>
+                <StatusBadge status={objectiveStatuses?.[tc.objectiveId]?.status ?? null} size="sm" />
               </td>
             </tr>
           ))}

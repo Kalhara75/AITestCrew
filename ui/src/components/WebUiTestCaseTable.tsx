@@ -2,16 +2,18 @@ import { useState } from 'react';
 import { updateObjective, deleteObjective } from '../api/modules';
 import { EditWebUiTestCaseDialog } from './EditWebUiTestCaseDialog';
 import { PostStepsPanel } from './PostStepsPanel';
-import type { TestObjective } from '../types';
+import { StatusBadge } from './execution/StatusBadge';
+import type { TestObjective, ObjectiveStatus } from '../types';
 
 interface Props {
   objectives: TestObjective[];
+  objectiveStatuses?: Record<string, ObjectiveStatus>;
   moduleId?: string;
   testSetId?: string;
   onTestCaseUpdated?: () => void;
 }
 
-export function WebUiTestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdated }: Props) {
+export function WebUiTestCaseTable({ objectives, objectiveStatuses, moduleId, testSetId, onTestCaseUpdated }: Props) {
   const [editing, setEditing] = useState<{
     objective: TestObjective;
     stepIndex: number;
@@ -64,6 +66,7 @@ export function WebUiTestCaseTable({ objectives, moduleId, testSetId, onTestCase
             <th style={thStyle}>Start URL</th>
             <th style={thStyle}>Steps</th>
             <th style={thStyle}>Screenshot</th>
+            <th style={{ ...thStyle, width: 90 }}>Last Result</th>
             {editable && <th style={{ ...thStyle, width: 70 }}></th>}
           </tr>
         </thead>
@@ -93,6 +96,9 @@ export function WebUiTestCaseTable({ objectives, moduleId, testSetId, onTestCase
                 <span style={{ fontSize: 13, color: tc.takeScreenshotOnFailure ? '#166534' : '#94a3b8' }}>
                   {tc.takeScreenshotOnFailure ? '✓ on fail' : '—'}
                 </span>
+              </td>
+              <td style={tdStyle}>
+                <StatusBadge status={objectiveStatuses?.[tc.objectiveId]?.status ?? null} size="sm" />
               </td>
               {editable && (
                 <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>

@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { updateObjective, deleteObjective } from '../api/modules';
 import { EditTestCaseDialog } from './EditTestCaseDialog';
 import { PostStepsPanel } from './PostStepsPanel';
-import type { TestObjective } from '../types';
+import { StatusBadge } from './execution/StatusBadge';
+import type { TestObjective, ObjectiveStatus } from '../types';
 
 const methodColor: Record<string, { fg: string; bg: string }> = {
   GET:    { fg: '#166534', bg: '#dcfce7' },
@@ -14,12 +15,13 @@ const methodColor: Record<string, { fg: string; bg: string }> = {
 
 interface Props {
   objectives: TestObjective[];
+  objectiveStatuses?: Record<string, ObjectiveStatus>;
   moduleId?: string;
   testSetId?: string;
   onTestCaseUpdated?: () => void;
 }
 
-export function TestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdated }: Props) {
+export function TestCaseTable({ objectives, objectiveStatuses, moduleId, testSetId, onTestCaseUpdated }: Props) {
   const [editing, setEditing] = useState<{
     objective: TestObjective;
     stepIndex: number;
@@ -69,6 +71,7 @@ export function TestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdat
             <th style={thStyle}>Endpoint</th>
             <th style={thStyle}>Test Name</th>
             <th style={thStyle}>Expected</th>
+            <th style={{ ...thStyle, width: 90 }}>Last Result</th>
             {editable && <th style={{ ...thStyle, width: 70 }}></th>}
           </tr>
         </thead>
@@ -104,6 +107,9 @@ export function TestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdat
                 }}>
                   {tc.expectedStatus}
                 </span>
+              </td>
+              <td style={tdStyle}>
+                <StatusBadge status={objectiveStatuses?.[tc.objectiveId]?.status ?? null} size="sm" />
               </td>
               {editable && (
                 <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>

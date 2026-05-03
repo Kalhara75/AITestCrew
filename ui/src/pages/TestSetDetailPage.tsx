@@ -274,6 +274,7 @@ export function TestSetDetailPage() {
           {selectedObjective.apiSteps.length > 0 && (
             <TestCaseTable
               objectives={[selectedObjective]}
+              objectiveStatuses={testSet.objectiveStatuses}
               moduleId={moduleId}
               testSetId={id}
               onTestCaseUpdated={handleTestCaseUpdated}
@@ -282,6 +283,7 @@ export function TestSetDetailPage() {
           {selectedObjective.webUiSteps.length > 0 && (
             <WebUiTestCaseTable
               objectives={[selectedObjective]}
+              objectiveStatuses={testSet.objectiveStatuses}
               moduleId={moduleId}
               testSetId={id}
               onTestCaseUpdated={handleTestCaseUpdated}
@@ -290,6 +292,7 @@ export function TestSetDetailPage() {
           {selectedObjective.desktopUiSteps?.length > 0 && (
             <DesktopUiTestCaseTable
               objectives={[selectedObjective]}
+              objectiveStatuses={testSet.objectiveStatuses}
               moduleId={moduleId}
               testSetId={id}
               onTestCaseUpdated={handleTestCaseUpdated}
@@ -298,6 +301,7 @@ export function TestSetDetailPage() {
           {selectedObjective.aseXmlSteps?.length > 0 && (
             <AseXmlTestCaseTable
               objectives={[selectedObjective]}
+              objectiveStatuses={testSet.objectiveStatuses}
               moduleId={moduleId}
               testSetId={id}
               onTestCaseUpdated={handleTestCaseUpdated}
@@ -306,6 +310,7 @@ export function TestSetDetailPage() {
           {selectedObjective.aseXmlDeliverySteps?.length > 0 && (
             <AseXmlDeliveryTestCaseTable
               objectives={[selectedObjective]}
+              objectiveStatuses={testSet.objectiveStatuses}
               moduleId={moduleId}
               testSetId={id}
               onTestCaseUpdated={handleTestCaseUpdated}

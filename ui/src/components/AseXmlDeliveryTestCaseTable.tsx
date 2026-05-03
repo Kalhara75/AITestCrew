@@ -1,8 +1,10 @@
-import type { TestObjective, AseXmlDeliveryTestDefinition } from '../types';
+import { StatusBadge } from './execution/StatusBadge';
+import type { TestObjective, AseXmlDeliveryTestDefinition, ObjectiveStatus } from '../types';
 import { PostStepsPanel } from './PostStepsPanel';
 
 interface Props {
   objectives: TestObjective[];
+  objectiveStatuses?: Record<string, ObjectiveStatus>;
   moduleId?: string;
   testSetId?: string;
   onTestCaseUpdated?: () => void;
@@ -14,7 +16,7 @@ interface Props {
  * shared PostStepsPanel (parentKind=AseXmlDeliver), consolidating them
  * with all other post-step types under a single renderer.
  */
-export function AseXmlDeliveryTestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdated }: Props) {
+export function AseXmlDeliveryTestCaseTable({ objectives, objectiveStatuses, moduleId, testSetId, onTestCaseUpdated }: Props) {
   const allCases = objectives
     .filter(o => o.aseXmlDeliverySteps && o.aseXmlDeliverySteps.length > 0)
     .flatMap(o => o.aseXmlDeliverySteps.map((step, idx) => ({
@@ -39,6 +41,7 @@ export function AseXmlDeliveryTestCaseTable({ objectives, moduleId, testSetId, o
             <th style={thStyle}>Template</th>
             <th style={thStyle}>Endpoint</th>
             <th style={thStyle}>Field Values</th>
+            <th style={{ ...thStyle, width: 90 }}>Last Result</th>
           </tr>
         </thead>
         <tbody>
@@ -93,6 +96,9 @@ export function AseXmlDeliveryTestCaseTable({ objectives, moduleId, testSetId, o
               </td>
               <td style={tdStyle}>
                 <FieldValuePreview step={tc.step} />
+              </td>
+              <td style={tdStyle}>
+                <StatusBadge status={objectiveStatuses?.[tc.objectiveId]?.status ?? null} size="sm" />
               </td>
             </tr>
           ))}

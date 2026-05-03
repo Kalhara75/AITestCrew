@@ -2,10 +2,12 @@ import { useState } from 'react';
 import { updateObjective, deleteObjective } from '../api/modules';
 import { EditDesktopUiTestCaseDialog } from './EditDesktopUiTestCaseDialog';
 import { PostStepsPanel } from './PostStepsPanel';
-import type { TestObjective, DesktopUiStep } from '../types';
+import { StatusBadge } from './execution/StatusBadge';
+import type { TestObjective, DesktopUiStep, ObjectiveStatus } from '../types';
 
 interface Props {
   objectives: TestObjective[];
+  objectiveStatuses?: Record<string, ObjectiveStatus>;
   moduleId?: string;
   testSetId?: string;
   onTestCaseUpdated?: () => void;
@@ -22,7 +24,7 @@ function selectorLabel(s: DesktopUiStep): string {
   return '(none)';
 }
 
-export function DesktopUiTestCaseTable({ objectives, moduleId, testSetId, onTestCaseUpdated }: Props) {
+export function DesktopUiTestCaseTable({ objectives, objectiveStatuses, moduleId, testSetId, onTestCaseUpdated }: Props) {
   const [editing, setEditing] = useState<{
     objective: TestObjective;
     stepIndex: number;
@@ -75,6 +77,7 @@ export function DesktopUiTestCaseTable({ objectives, moduleId, testSetId, onTest
             <th style={thStyle}>Steps</th>
             <th style={thStyle}>Preview</th>
             <th style={thStyle}>Screenshot</th>
+            <th style={{ ...thStyle, width: 90 }}>Last Result</th>
             {editable && <th style={{ ...thStyle, width: 70 }}></th>}
           </tr>
         </thead>
@@ -110,6 +113,9 @@ export function DesktopUiTestCaseTable({ objectives, moduleId, testSetId, onTest
                 <span style={{ fontSize: 13, color: tc.takeScreenshotOnFailure ? '#166534' : '#94a3b8' }}>
                   {tc.takeScreenshotOnFailure ? '\u2713 on fail' : '\u2014'}
                 </span>
+              </td>
+              <td style={tdStyle}>
+                <StatusBadge status={objectiveStatuses?.[tc.objectiveId]?.status ?? null} size="sm" />
               </td>
               {editable && (
                 <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
