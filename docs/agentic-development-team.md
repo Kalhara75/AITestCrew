@@ -277,6 +277,8 @@ Symptom-to-fix examples:
 | New `docs/*.md` file added but doc-writer doesn't know about it | `doc-writer.md` step 2 decision table + `code-reviewer.md` 4d — add the new doc to both tables |
 | Doc style drifts (new entries don't match existing prose) | `doc-writer.md` step 3 — strengthen "read existing structure" requirement |
 | Coordinator pushed without approval | `feature-coordinator.md` Hard rules — should never happen; treat as a bug |
+| Coordinator skipped plan-approval gate (spawned implementer without user `approve`) | `feature-coordinator.md` step 2b + Hard rules — strengthen the "STOP" language; verify the autonomous-mode trigger phrases in `# Modes` haven't been broadened |
+| Subagent handovers not visible in console | `feature-coordinator.md` "Console visibility" section — agent skipping the `→ HANDING OFF TO` / `← RETURNED FROM` banners; reinforce that they're non-negotiable |
 | User had to redirect mid-pipeline more than once | The plan was too vague — strengthen `implementation-planner.md` quality bar |
 
 When in doubt, edit the agent prompt and re-run the same requirement to confirm the fix works.
