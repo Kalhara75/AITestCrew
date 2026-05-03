@@ -283,6 +283,8 @@ Symptom-to-fix examples:
 | Coordinator pushed without approval | `feature-coordinator.md` Hard rules — should never happen; treat as a bug |
 | Coordinator skipped plan-approval gate (spawned implementer without user `approve`) | `feature-coordinator.md` step 2b + Hard rules — strengthen the "STOP" language; verify the autonomous-mode trigger phrases in `# Modes` haven't been broadened |
 | Subagent handovers not visible in console | `feature-coordinator.md` "Console visibility" section — agent skipping the `→ HANDING OFF TO` / `← RETURNED FROM` banners; reinforce that they're non-negotiable |
+| Build fails when user runs it manually after a "verified" pipeline run | Two prompts to tighten — `implementer.md` Step 3 (build must run AFTER final commit, capture verbatim stdout, exit-code-zero gate) AND `code-reviewer.md` Step 4 (run build INDEPENDENTLY, paste verbatim stdout into report). Don't trust self-reported pass without evidence. |
+| Implementer leaves orphaned ternaries / dangling braces from scripted edits | `implementer.md` Hard rules — strengthen the "prefer Edit tool over `python3 -c` / `sed` / heredoc" guidance; require Read-after-script verification |
 | User had to redirect mid-pipeline more than once | The plan was too vague — strengthen `implementation-planner.md` quality bar |
 
 When in doubt, edit the agent prompt and re-run the same requirement to confirm the fix works.

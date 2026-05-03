@@ -58,15 +58,27 @@ Walk the diff and look for:
 - "The UI looks right" — flag for user manual check.
 - "The dev server starts" — flag for user manual check unless the implementer ran it and reported on it.
 
-## 4. Run the project's quality gates
+## 4. Run the project's quality gates — INDEPENDENTLY
 
-Run, capture pass/fail:
-- `dotnet build` (if .NET sources changed)
-- `npm --prefix ui run build` (if `ui/` changed)
-- Any test command the plan named
-- `npm --prefix ui run lint` if it exists and the diff touches `ui/`
+You **must run the build yourself** against the current state of the branch. Do **not** trust the implementer's self-reported build status — the implementer may have built before the final commit, or claimed success without actually running it. The whole point of this stage is independent verification.
 
-If a command isn't applicable to this diff, say so.
+For each applicable gate:
+1. **Run the actual command** with the Bash tool.
+2. **Capture the exit code AND the last 25 lines of stdout/stderr verbatim.**
+3. **Treat non-zero exit as a blocking issue** — no exceptions, no "looks like just a warning". A build that fails to compile is the most blocking issue possible.
+4. **Include the verbatim output in your report** under the build/test gates table.
+
+Commands to run (skip rows that don't apply to this diff, and say so):
+- `dotnet build` from solution root — if the diff touches `.cs` / `.csproj` / `*.sln`
+- `npm --prefix ui run build` — if the diff touches anything under `ui/`
+- Any test command the plan named — if the plan named one
+- `npm --prefix ui run lint` — if it exists and the diff touches `ui/`
+
+If you report "Pass" for a gate without showing its verbatim output, you have not completed this step. The user has been burned by false-pass reports — they will check the build themselves and any discrepancy will be obvious.
+
+**Specific patterns that have caused false passes in this project:**
+- The implementer ran the build mid-phase, before the final commit; the diff at review time differs from the diff that built green. → Always run AFTER `git log main..HEAD --oneline` shows the final state.
+- Scripted file edits (`python3 -c`, `sed`, heredoc) leaving files syntactically broken — orphaned ternaries, dangling braces, half-removed functions. → Run the build to surface these; they will not show up in `git diff --stat`.
 
 ## 4b. Skill-conformance check
 
@@ -135,11 +147,24 @@ Return markdown:
 **<Approve / Approve with non-blocking comments / Changes requested>**
 
 ### Build & test gates
-| Gate | Result |
-|---|---|
-| `dotnet build` | Pass / Fail / N/A |
-| `npm --prefix ui run build` | Pass / Fail / N/A |
-| Tests (`<command>`) | Pass / Fail / N/A |
+| Gate | Exit code | Result |
+|---|---|---|
+| `dotnet build` | 0 / N | Pass / Fail / N/A |
+| `npm --prefix ui run build` | 0 / N | Pass / Fail / N/A |
+| Tests (`<command>`) | 0 / N | Pass / Fail / N/A |
+| `npm --prefix ui run lint` | 0 / N | Pass / Fail / N/A |
+
+**Build output** (last 25 lines of `npm --prefix ui run build`, verbatim):
+```
+<paste actual stdout here — required if Result is Pass or Fail>
+```
+
+**.NET build output** (last 25 lines of `dotnet build`, verbatim, if applicable):
+```
+<paste actual stdout here>
+```
+
+If a gate is reported "Pass" without verbatim output below, the gate has not been completed and the verdict cannot be Approve.
 
 ### Blocking issues
 1. **<short title>** — `path/to/file.tsx:42` — <what's wrong, why it blocks, suggested fix>
@@ -183,6 +208,7 @@ Return markdown:
 
 # Hard rules
 
+- **Never report "build passed" without running the build yourself, against the final committed state, and pasting verbatim stdout into the report.** False-pass reports are the worst failure mode of this agent — they let broken code reach the user under a "verified" label.
 - **Read-only**. Never edit, write, or commit. If you find an issue, describe the fix — don't apply it.
 - Don't be a checklist robot. A real review prioritises issues by impact. A typo in a comment is not blocking; a missing acceptance criterion is.
 - Don't manufacture issues to look thorough. "Non-blocking suggestions: None." is a valid section if the code is genuinely clean.

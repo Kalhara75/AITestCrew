@@ -42,14 +42,21 @@ For each phase:
    Use `git add <specific files>` — never `git add -A` or `git add .`.
 6. Mark the task completed.
 
-## 3. Final build + test sweep
+## 3. Final build + test sweep — HARD GATE
 
-After all phases are committed:
-1. Run a full build (e.g. `dotnet build` for .NET, `npm run build` in `ui/`).
-2. Run any unit/integration test suite the plan named.
-3. For UI changes, **start the dev server and load the affected page** to confirm it renders. If you cannot test the UI, say so explicitly in your summary — don't claim success.
+You **must not** report completion until the build passes against the **final committed state of the branch**. Stale build results from earlier phases do not count.
 
-If anything is red, fix it (or surface a real blocker if the fix is out of scope) before reporting completion.
+1. **Run the build after every phase commit, and once more as the absolute final step before reporting.** The final build must run after `git status` shows a clean working tree and the last commit is in place.
+   - .NET: `dotnet build` from solution root
+   - UI: `npm --prefix ui run build` (use `--prefix`, not `cd` — Bash sandboxes don't always carry working directory)
+2. **Capture the actual stdout** of the build command. Don't paraphrase. The last 25 lines of build output go into your report verbatim under "Build output".
+3. **If the exit code is non-zero, you have not passed the gate.** Read the error, fix it, recommit, re-run. Repeat until the build is green. Do not report "build passed" if the actual exit code was non-zero — that is a false success and the worst failure mode of this agent.
+4. Run any unit/integration test suite the plan named — same rules: real exit code, captured stdout, no claims of pass without evidence.
+5. For UI changes, **start the dev server and load the affected page** to confirm it renders. If you cannot test the UI in this environment, say so explicitly in your summary — don't claim success.
+
+**Specific failure mode to avoid**: scripted file edits via `python3 -c`, `sed`, or heredoc-driven Bash commands often leave files syntactically broken (orphaned ternary fallbacks, dangling braces, partial function removals). After any such edit, **read the modified file with the Read tool and visually verify the structure** before committing. The Edit tool is preferred over scripts for in-file changes precisely because it doesn't have this failure mode — reach for Edit first, scripts only if Edit can't express the change.
+
+If a build failure appears that you cannot diagnose or fix within scope, surface it as a blocker — don't claim success.
 
 ## 4. Report
 
@@ -67,9 +74,16 @@ Return to the caller:
 - Phase 2: ...
 
 ### Build & test results
-- Build: <pass/fail + command>
-- Tests: <pass/fail + command>
-- UI smoke: <what was loaded, what was observed — or "not tested, headless">
+- Build command: `<exact command>`
+- Build exit code: `<0 or non-zero>`
+- Build output (last 25 lines):
+```
+<verbatim stdout — do not paraphrase>
+```
+- Tests command: `<exact command, or "N/A — no tests in plan">`
+- Tests exit code: `<0 or non-zero>`
+- Tests output (last 25 lines): `<verbatim stdout, or "N/A">`
+- UI smoke: `<what was loaded, what was observed — or "not tested in this environment">`
 
 ### Deviations from plan
 - <If you went off-plan anywhere, justify it here. If you didn't, write "None.">
@@ -77,6 +91,8 @@ Return to the caller:
 ### Known follow-ups (not in scope)
 - <TodoWrite items you noted but didn't act on>
 ```
+
+If you cannot include verbatim build output (because the exit code was zero so you skipped it, or the command wasn't run), you have not completed the build gate — go back and run it.
 
 # Skills you must follow
 
@@ -141,6 +157,8 @@ If a UI change introduces shared components, place them where the plan said. If 
 
 # Hard rules
 
+- **Never report "build passed" without an exit-code-zero build run AFTER the final commit landed, with verbatim stdout in your report.** Building mid-phase and assuming it still passes after subsequent edits is a false success and the worst failure mode of this agent.
+- **Prefer the Edit tool over Bash scripts (`python3 -c`, `sed`, heredoc) for in-file changes.** Scripted edits silently leave files syntactically broken (orphaned ternaries, dangling braces, partial function removals) and have caused false-pass build claims in this project. If you must use a script, Read the file afterwards to verify structure before committing.
 - Never push, force-push, reset --hard, delete branches, or skip hooks.
 - Never modify `main`.
 - Never commit secrets or real `appsettings.json` values.

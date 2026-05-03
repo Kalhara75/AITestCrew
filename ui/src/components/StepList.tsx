@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { ObjectiveResult, StepResult } from '../types';
 import { StatusBadge } from './execution/StatusBadge';
 import { DeferredCountdownChip } from './execution/DeferredCountdownChip';

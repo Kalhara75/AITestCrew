@@ -456,14 +456,6 @@ function computeIsDeferred(
   return postSteps.some(p => p.waitBeforeSeconds > cfg.verificationDeferThresholdSeconds);
 }
 
-    : { bg: '#f1f5f9', fg: '#475569', border: '#cbd5e1' };
-  return {
-    fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
-    background: palette.bg, color: palette.fg, border: `1px solid ${palette.border}`,
-  };
-}
-
-
 const thS: React.CSSProperties = {
   padding: '6px 10px', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5,
 };
