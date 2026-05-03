@@ -30,15 +30,19 @@ This put the user in the loop for every decision and consumed main-thread contex
 
 ## Team composition
 
-| Agent | File | Tools | Role |
-|---|---|---|---|
-| **Feature Coordinator** | `.claude/agents/feature-coordinator.md` | Read, Bash, Glob, Grep, Task, TodoWrite | Pipeline orchestrator. Creates feature branch. Spawns the other four. Pauses for user approval at risky steps. |
-| **Implementation Planner** | `.claude/agents/implementation-planner.md` | Read, Glob, Grep, Bash, WebFetch, WebSearch | Read-only. Surveys the codebase, resolves open questions, produces a phase-by-phase plan with cited skills. |
-| **Implementer** | `.claude/agents/implementer.md` | Read, Write, Edit, Glob, Grep, Bash, TodoWrite | Executes the plan. Writes code, runs build/tests, commits incrementally. **Does not touch docs** — that's the doc-writer's job. |
-| **Doc Writer** | `.claude/agents/doc-writer.md` | Read, Write, Edit, Glob, Grep, Bash | Reads the diff, decides which of `docs/functional.md`, `docs/architecture.md`, `docs/deployment.md`, `docs/data-packs.md`, `docs/recording-troubleshooting.md`, and `CLAUDE.md` need updates, writes them in a separate commit. May skip with "No doc updates required". |
-| **Code Reviewer** | `.claude/agents/code-reviewer.md` | Read, Glob, Grep, Bash | Read-only QA. Verifies acceptance criteria, skill conformance, doc conformance, build/test gates. Returns structured report. |
+| Agent | File | Model | Tools | Role |
+|---|---|---|---|---|
+| **Feature Coordinator** | `.claude/agents/feature-coordinator.md` | Sonnet | Read, Bash, Glob, Grep, Task, TodoWrite | Pipeline orchestrator. Creates feature branch. Spawns the other four. Pauses for user approval at risky steps. |
+| **Implementation Planner** | `.claude/agents/implementation-planner.md` | **Opus** | Read, Glob, Grep, Bash, WebFetch, WebSearch | Read-only. Surveys the codebase, resolves open questions, produces a phase-by-phase plan with cited skills. |
+| **Implementer** | `.claude/agents/implementer.md` | **Opus** | Read, Write, Edit, Glob, Grep, Bash, TodoWrite | Executes the plan. Writes code, runs build/tests, commits incrementally. **Does not touch docs** — that's the doc-writer's job. |
+| **Doc Writer** | `.claude/agents/doc-writer.md` | Sonnet | Read, Write, Edit, Glob, Grep, Bash | Reads the diff, decides which of `docs/functional.md`, `docs/architecture.md`, `docs/deployment.md`, `docs/data-packs.md`, `docs/recording-troubleshooting.md`, and `CLAUDE.md` need updates, writes them in a separate commit. May skip with "No doc updates required". |
+| **Code Reviewer** | `.claude/agents/code-reviewer.md` | **Opus** | Read, Glob, Grep, Bash | Read-only QA. Verifies acceptance criteria, skill conformance, doc conformance, build/test gates. Returns structured report. |
 
-All five use `model: opus` by default — depth over speed for these roles. Drop to `sonnet` if cost/latency matters more than quality.
+### Model allocation rationale
+
+The three high-leverage thinking roles run on **Opus**: planner (a bad plan cascades), implementer (the largest token consumer, but cutting corners means rework), and reviewer (last gate before the user — a weak reviewer is worse than none). The two procedural roles run on **Sonnet**: coordinator (orchestration is mechanical — git ops, spawn calls, gate enforcement), and doc-writer (style-matching against existing docs is pattern work).
+
+To rebalance: change `model:` in the frontmatter of any agent file. Drop the coordinator or doc-writer to `haiku` if you want to squeeze cost further; promote the coordinator to `opus` if you find it drifting on gate enforcement under a tighter prompt.
 
 ---
 
