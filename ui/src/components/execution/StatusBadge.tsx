@@ -1,0 +1,64 @@
+import type { CSSProperties } from 'react';
+
+/**
+ * Canonical status badge — the single source of truth for rendering
+ * any run/step/objective status. All hardcoded palette objects elsewhere
+ * in the app have been removed in favour of this component.
+ */
+
+export const STATUS_COLORS: Record<string, { bg: string; fg: string; border: string }> = {
+  Passed:               { bg: '#dcfce7', fg: '#166534', border: '#bbf7d0' },
+  Failed:               { bg: '#fee2e2', fg: '#991b1b', border: '#fecaca' },
+  Error:                { bg: '#fef3c7', fg: '#92400e', border: '#fde68a' },
+  Skipped:              { bg: '#f1f5f9', fg: '#475569', border: '#e2e8f0' },
+  Running:              { bg: '#dbeafe', fg: '#1e40af', border: '#bfdbfe' },
+  Queued:               { bg: '#ede9fe', fg: '#5b21b6', border: '#ddd6fe' },
+  Claimed:              { bg: '#ede9fe', fg: '#5b21b6', border: '#ddd6fe' },
+  Cancelled:            { bg: '#f1f5f9', fg: '#475569', border: '#e2e8f0' },
+  AwaitingVerification: { bg: '#cffafe', fg: '#0e7490', border: '#a5f3fc' },
+  AwaitingAuth:         { bg: '#fef3c7', fg: '#92400e', border: '#fde68a' },
+  AuthRequired:         { bg: '#fef3c7', fg: '#92400e', border: '#fde68a' },
+};
+
+/** Shorter display labels for long status names. */
+const DISPLAY_NAME: Record<string, string> = {
+  AwaitingVerification: 'Awaiting',
+  AwaitingAuth:         'Auth needed',
+  AuthRequired:         'Auth needed',
+};
+
+const basePillStyle: CSSProperties = {
+  display: 'inline-block',
+  padding: '2px 10px',
+  borderRadius: 12,
+  fontSize: 12,
+  fontWeight: 600,
+  letterSpacing: 0.3,
+  whiteSpace: 'nowrap',
+  lineHeight: '20px',
+};
+
+export function StatusBadge({
+  status,
+  size = 'sm',
+}: {
+  status: string | null;
+  size?: 'sm' | 'md';
+}) {
+  if (!status) {
+    return (
+      <span style={{ ...basePillStyle, background: '#f1f5f9', color: '#94a3b8', border: '1px solid #e2e8f0' }}>
+        No runs
+      </span>
+    );
+  }
+  const c = STATUS_COLORS[status] ?? STATUS_COLORS.Skipped;
+  const style: CSSProperties = {
+    ...basePillStyle,
+    backgroundColor: c.bg,
+    color: c.fg,
+    border: `1px solid ${c.border}`,
+    ...(size === 'md' ? { padding: '4px 14px', fontSize: 13 } : {}),
+  };
+  return <span style={style}>{DISPLAY_NAME[status] ?? status}</span>;
+}
