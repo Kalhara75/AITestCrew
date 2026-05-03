@@ -601,10 +601,19 @@ ui/src/
     LoginPage.tsx                  — API key login form (shown when auth is enabled and no key stored)
   components/
     Layout.tsx                     — Header, nav, content area, user name display + logout button
-    StatusBadge.tsx                — Color-coded Passed/Failed/Error/Running badge
+    StatusBadge.tsx                — Re-export shim; source of truth is execution/StatusBadge.tsx
+    execution/                     — Execution design system (REQ-001)
+      StatusBadge.tsx              — Canonical status pill (Passed/Failed/Running/AwaitingVerification/…); STATUS_COLORS exported
+      ModeBadge.tsx                — Run mode pill (Reuse / Rebaseline / VerifyOnly)
+      ExecutionModeBadge.tsx       — Inline vs Deferred post-step mode pill
+      DeferredCountdownChip.tsx    — Live countdown chip (> 2 min: "~Nm"; ≤ 2 min: "Xm Ys"; overdue: "awaiting claim")
+      RunningIndicator.tsx         — Canonical CSS spin ring with size prop (sm=12px / md=16px / lg=20px)
+      StatsBar.tsx                 — Pass/fail stat bar; size=sm (pill row) or size=lg (grid of boxes)
+      TargetBadge.tsx              — UI target type pill (Desktop/Blazor/MVC/API/DB/…) with colour palette
+      index.ts                     — Barrel export for all execution components
     TestSetCard.tsx                — Test set summary card (module-scoped links)
-    TestCaseTable.tsx              — API test cases: HTTP method, endpoint, expected status table; inline delete per step
-    WebUiTestCaseTable.tsx         — Web UI test cases: name, start URL, step count, screenshot flag; inline delete per step
+    TestCaseTable.tsx              — API test cases: HTTP method, endpoint, expected status, Last Result badge; inline delete per step
+    WebUiTestCaseTable.tsx         — Web UI test cases: name, start URL, step count, screenshot flag, Last Result badge; inline delete per step
     RunHistoryTable.tsx            — Run list with status, duration, date (module-aware links)
     StepList.tsx                   — Expandable objective/step rows with detail
     TriggerRunButton.tsx           — Mode selector + trigger (uses ActiveRunContext for global progress)

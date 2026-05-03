@@ -467,6 +467,12 @@ Waiting 120–180 s for Bravo to process each delivered file used to mean the ex
 
 The run detail auto-refreshes every 3 s during execution and stops polling once terminal. The test set page's status column updates without a manual refresh.
 
+**Consistent execution state visual language** — Every surface that shows execution state (trigger button, queue banner, step row, run detail, run history, case-type table) uses the same shared component set from `ui/src/components/execution/`:
+- Status pills (Passed / Failed / Running / AwaitingVerification / Queued / …) come from `StatusBadge` with a single colour palette.
+- Deferred countdown chips ("in 2m 15s" precise below 2 min, "~5m" rounded above) come from `DeferredCountdownChip` so the format is byte-identical everywhere.
+- The spinning indicator (Queued/Running) comes from `RunningIndicator` with a `size` prop (sm/md/lg) instead of ad-hoc pixel values scattered across buttons.
+- All five case-type tables (API, Web UI, Desktop UI, aseXML Generate, aseXML Deliver) show a **Last Result** badge column sourced from `objectiveStatuses` on the test set.
+
 **Authoring-time indicator** — when editing a test case, the post-steps panel (and the legacy aseXML verifications panel) shows a **Mode** column with a per-row pill: cyan **Deferred** if any post-step in the objective waits longer than `VerificationDeferThresholdSeconds`, otherwise slate **Inline**. The pill is computed across the whole post-step list (mirroring the per-objective backend rule), so changing one wait flips every row in that objective together. Hover the pill for a tooltip explaining the threshold currently in effect. The values come from `GET /api/config/asexml-verification`, so retuning `DeferVerifications` / `VerificationDeferThresholdSeconds` and restarting the WebApi updates the indicator without a UI rebuild.
 
 **Retry model**
