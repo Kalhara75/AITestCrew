@@ -24,12 +24,8 @@ namespace AiTestCrew.Agents.DbAgent;
 ///   <item>Resolves the connection string via <see cref="IEnvironmentResolver"/>
 ///     (same path as the Bravo endpoint resolver / teardown executor).</item>
 ///   <item>Runs the SELECT and asserts the result against either
-///     <c>ExpectedRowCount</c> or <c>ExpectedColumnValues</c>.</item>
+///     <c>ExpectedRowCount</c> or <c>ColumnAssertions</c>.</item>
 /// </list>
-///
-/// Connection keys other than <c>"BravoDb"</c> surface as Fail — additional
-/// DBs can be added by routing <c>ConnectionKey</c> through a resolver, but
-/// that's out of scope for Slice 2.
 /// </summary>
 public class DbCheckAgent : BaseTestAgent
 {
@@ -164,35 +160,52 @@ public class DbCheckAgent : BaseTestAgent
                 return;
             }
 
-            if (check.ExpectedColumnValues.Count > 0)
+            if (check.ColumnAssertions.Count > 0)
             {
                 await using var reader = await cmd.ExecuteReaderAsync(ct);
                 if (!await reader.ReadAsync(ct))
                 {
                     steps.Add(TestStep.Fail(action,
-                        $"Expected at least one row with column values {FormatExpectations(check.ExpectedColumnValues)}, got no rows. SQL: {Preview(check.Sql)}"));
+                        $"Expected at least one row matching {check.ColumnAssertions.Count} assertion(s), got no rows. SQL: {Preview(check.Sql)}"));
                     return;
                 }
 
+                // Phase 1 minimal evaluator — only Equals is wired here. Phase 3
+                // replaces this with ColumnAssertionEvaluator, which covers every
+                // operator + JSONPath + NULL fidelity. Keeping legacy behaviour
+                // intact until then so the back-compat shim has something to
+                // assert against on a freshly migrated test set.
                 var mismatches = new List<string>();
-                foreach (var (col, expected) in check.ExpectedColumnValues)
+                foreach (var assertion in check.ColumnAssertions)
                 {
                     var ordinal = -1;
-                    try { ordinal = reader.GetOrdinal(col); }
+                    try { ordinal = reader.GetOrdinal(assertion.Column); }
                     catch (IndexOutOfRangeException)
                     {
-                        mismatches.Add($"column '{col}' missing from result set");
+                        mismatches.Add($"column '{assertion.Column}' missing from result set");
                         continue;
                     }
+
                     var actual = reader.IsDBNull(ordinal) ? "" : reader.GetValue(ordinal)?.ToString() ?? "";
-                    if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
-                        mismatches.Add($"{col}: expected '{expected}', got '{actual}'");
+
+                    if (assertion.Operator != AssertionOperator.Equals)
+                    {
+                        mismatches.Add(
+                            $"{assertion.Column}: operator '{assertion.Operator}' is not yet implemented (legacy path supports Equals only).");
+                        continue;
+                    }
+
+                    var comparison = assertion.IgnoreCase
+                        ? StringComparison.OrdinalIgnoreCase
+                        : StringComparison.Ordinal;
+                    if (!string.Equals(actual, assertion.Expected, comparison))
+                        mismatches.Add($"{assertion.Column}: expected '{assertion.Expected}', got '{actual}'");
                 }
 
                 if (mismatches.Count == 0)
                 {
                     steps.Add(TestStep.Pass(action,
-                        $"All {check.ExpectedColumnValues.Count} expected column value(s) matched on first row. SQL: {Preview(check.Sql)}"));
+                        $"All {check.ColumnAssertions.Count} expected column value(s) matched on first row. SQL: {Preview(check.Sql)}"));
                 }
                 else
                 {
@@ -203,7 +216,7 @@ public class DbCheckAgent : BaseTestAgent
             }
 
             steps.Add(TestStep.Err(action,
-                "DbCheck has neither ExpectedRowCount nor ExpectedColumnValues set — nothing to assert."));
+                "DbCheck has neither ExpectedRowCount nor ColumnAssertions set — nothing to assert."));
         }
         catch (Exception ex)
         {
@@ -219,9 +232,6 @@ public class DbCheckAgent : BaseTestAgent
         var s = single.ToString().Trim();
         return s.Length <= 160 ? s : s[..160] + "…";
     }
-
-    private static string FormatExpectations(Dictionary<string, string> exp) =>
-        "{ " + string.Join(", ", exp.Select(kv => $"{kv.Key}='{kv.Value}'")) + " }";
 
     private TestResult Build(
         TestTask task, List<TestStep> steps, TestStatus status, string summary, Stopwatch sw) =>
