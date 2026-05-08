@@ -100,13 +100,66 @@ export interface AseXmlTestDefinition {
   postSteps?: PostStep[];
 }
 
+/**
+ * Comparator operators on a `ColumnAssertion`. Mirrors the C# `AssertionOperator`
+ * enum, serialised as the bare name (`"Equals"`, `"IsNull"`, etc.).
+ */
+export type AssertionOperator =
+  | 'Equals' | 'NotEquals' | 'Contains' | 'NotContains'
+  | 'StartsWith' | 'EndsWith' | 'Regex'
+  | 'GreaterThan' | 'LessThan' | 'Between'
+  | 'IsNull' | 'IsNotNull'
+  | 'EqualsNumeric' | 'EqualsDate';
+
+export interface ColumnAssertion {
+  /** Column name from the SELECT result set. {{Token}} substituted. */
+  column: string;
+  /** Optional JSONPath inside the column's value (e.g. `$.OrderId`). {{Token}} substituted. */
+  jsonPath?: string;
+  operator: AssertionOperator;
+  /** Expected value (string projection). {{Token}} substituted. */
+  expected: string;
+  /** Upper bound for `Between`. {{Token}} substituted. */
+  expected2?: string;
+  ignoreCase: boolean;
+  toleranceSeconds?: number;
+  toleranceDelta?: number;
+}
+
+export interface ColumnCapture {
+  /** Column name. {{Token}} substituted. */
+  column: string;
+  /** Optional JSONPath inside the column's value. {{Token}} substituted. */
+  jsonPath?: string;
+  /** Token name to bind, e.g. "JobId" (no braces). NOT {{Token}} substituted. */
+  as: string;
+  /** When false, missing/null does NOT fail the step — token left undefined. */
+  required: boolean;
+}
+
 export interface DbCheckStepDefinition {
   name: string;
-  connectionKey: string;          // "BravoDb" (only value supported in Slice 2)
+  /** Logical connection key (e.g. "BravoDb", "SdrReportingDb"). */
+  connectionKey: string;
   sql: string;
+  /** Mutually exclusive with columnAssertions. */
   expectedRowCount?: number;
-  expectedColumnValues: Record<string, string>;
+  /**
+   * Per-column assertions on the first row. Replaces the legacy
+   * `expectedColumnValues` dict (the backend deserialises legacy JSON into a
+   * list of `Equals` entries; this field is the canonical shape).
+   */
+  columnAssertions: ColumnAssertion[];
+  /** Optional captures bound into the post-step run context as {{Token}}. */
+  captures: ColumnCapture[];
   timeoutSeconds: number;
+  /**
+   * Legacy field — only present on payloads from very old backends. The
+   * deserialiser shim normalises into `columnAssertions`; this stays optional
+   * so the chat-action card and read-only block can render mid-flight conversions.
+   * @deprecated Prefer `columnAssertions`.
+   */
+  expectedColumnValues?: Record<string, string>;
 }
 
 /**
@@ -270,6 +323,13 @@ export interface StepResult {
   detail: string | null;
   duration: string;
   timestamp: string;
+  /**
+   * Loose metadata bag forwarded by the agents — currently used by the DB
+   * check agent to attach the failing first row (`dbCheckRow`), additional
+   * sample rows (`dbCheckRows`), and captured tokens (`capturedTokens`) for
+   * the run-detail UI to render structured diagnostics.
+   */
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface RunStatusResponse {

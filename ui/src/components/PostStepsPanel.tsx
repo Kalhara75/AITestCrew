@@ -8,6 +8,7 @@ import { triggerRun } from '../api/runs';
 import { useActiveRun } from '../contexts/ActiveRunContext';
 import { EditWebUiTestCaseDialog } from './EditWebUiTestCaseDialog';
 import { EditDesktopUiTestCaseDialog } from './EditDesktopUiTestCaseDialog';
+import { EditDbCheckStepDialog } from './EditDbCheckStepDialog';
 import { ExecutionModeBadge } from './execution/ExecutionModeBadge';
 import { TargetBadge } from './execution/TargetBadge';
 
@@ -24,6 +25,8 @@ interface Props {
   postSteps: PostStep[];
   moduleId?: string;
   testSetId?: string;
+  /** Active customer environment key for the DB-check editor's connection dropdown + dry-run. */
+  environmentKey?: string | null;
   onChanged?: () => void;
 }
 
@@ -39,7 +42,7 @@ interface Props {
  */
 export function PostStepsPanel({
   parentKind, parentIndex, objectiveId, caseName, postSteps,
-  moduleId, testSetId, onChanged,
+  moduleId, testSetId, environmentKey, onChanged,
 }: Props) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [confirmDeleteIdx, setConfirmDeleteIdx] = useState<number | null>(null);
@@ -197,11 +200,13 @@ export function PostStepsPanel({
                               Run
                             </button>
                           )}
-                          {(p.webUi || p.desktopUi) && canEdit && (
+                          {(p.webUi || p.desktopUi || p.dbCheck) && canEdit && (
                             <span
                               onClick={() => setEditingIdx(i)}
                               style={{ fontSize: 13, color: '#1d4ed8', cursor: 'pointer', opacity: 0.7, marginRight: 8 }}
-                              title={p.desktopUi ? 'Edit Desktop UI steps' : 'Edit Web UI steps'}
+                              title={p.desktopUi
+                                ? 'Edit Desktop UI steps'
+                                : p.dbCheck ? 'Edit DB check' : 'Edit Web UI steps'}
                             >
                               &#9998;
                             </span>
@@ -283,6 +288,33 @@ export function PostStepsPanel({
           }}
         />
       )}
+
+      {editingIdx !== null && moduleId && testSetId
+        && postSteps[editingIdx].dbCheck
+        && !postSteps[editingIdx].webUi
+        && !postSteps[editingIdx].desktopUi && (
+        <EditDbCheckStepDialog
+          open
+          title="Edit Post-Step — DB Check"
+          definition={postSteps[editingIdx].dbCheck!}
+          caseName={postSteps[editingIdx].description}
+          envKey={environmentKey ?? null}
+          deleteLabel="Delete Post-Step"
+          deleteConfirmMessage="Delete this post-step?"
+          onClose={() => setEditingIdx(null)}
+          onSave={async ({ name, definition }) => {
+            const updated: PostStep = { ...postSteps[editingIdx], description: name, dbCheck: definition };
+            await updatePostStep(moduleId, testSetId, objectiveId, parentKind, parentIndex, editingIdx, updated);
+            setEditingIdx(null);
+            onChanged?.();
+          }}
+          onDelete={async () => {
+            await deletePostStep(moduleId, testSetId, objectiveId, parentKind, parentIndex, editingIdx);
+            setEditingIdx(null);
+            onChanged?.();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -297,11 +329,21 @@ function PayloadSummary({ p }: { p: PostStep }) {
     return <>{n} desktop step{n !== 1 ? 's' : ''}</>;
   }
   if (p.dbCheck) {
-    const expect = p.dbCheck.expectedRowCount !== undefined
-      ? `rows=${p.dbCheck.expectedRowCount}`
-      : (p.dbCheck.expectedColumnValues && Object.keys(p.dbCheck.expectedColumnValues).length > 0)
-        ? `cols=${Object.keys(p.dbCheck.expectedColumnValues).length}` : '(no expectations)';
-    return <>SQL / {expect}</>;
+    const dc = p.dbCheck;
+    const assertionCount = dc.columnAssertions?.length ?? 0;
+    const captureCount = dc.captures?.length ?? 0;
+    const legacyCount = dc.expectedColumnValues
+      ? Object.keys(dc.expectedColumnValues).length
+      : 0;
+    const expect = dc.expectedRowCount !== undefined && dc.expectedRowCount !== null
+      ? `rows=${dc.expectedRowCount}`
+      : assertionCount > 0
+        ? `assertions=${assertionCount}`
+        : legacyCount > 0
+          ? `cols=${legacyCount}`
+          : '(no expectations)';
+    const cap = captureCount > 0 ? ` / captures=${captureCount}` : '';
+    return <>SQL / {expect}{cap}</>;
   }
   if (p.api) return <>{p.api.method} {p.api.endpoint}</>;
   if (p.aseXmlDeliver) return <>deliver {p.aseXmlDeliver.templateId} → {p.aseXmlDeliver.endpointCode}</>;
@@ -310,6 +352,10 @@ function PayloadSummary({ p }: { p: PostStep }) {
 }
 
 function DbCheckBlock({ dc }: { dc: NonNullable<PostStep['dbCheck']> }) {
+  const assertions = dc.columnAssertions ?? [];
+  const captures = dc.captures ?? [];
+  const legacy = dc.expectedColumnValues ?? {};
+
   return (
     <div style={{ marginTop: 6, fontSize: 12 }}>
       <div style={{ color: '#64748b', marginBottom: 4 }}>
@@ -325,29 +371,55 @@ function DbCheckBlock({ dc }: { dc: NonNullable<PostStep['dbCheck']> }) {
           borderRadius: 4, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
         }}>{highlightTokensStr(dc.sql)}</pre>
       </div>
-      {dc.expectedRowCount !== undefined && (
+      {dc.expectedRowCount !== undefined && dc.expectedRowCount !== null && (
         <div style={{ color: '#64748b' }}>
           <strong>expected row count:</strong> {dc.expectedRowCount}
         </div>
       )}
-      {dc.expectedColumnValues && Object.keys(dc.expectedColumnValues).length > 0 && (
+      {assertions.length > 0 && (
         <div style={{ color: '#64748b', marginTop: 4 }}>
-          <strong>expected column values:</strong>
+          <strong>assertions:</strong>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
-            {Object.entries(dc.expectedColumnValues).map(([k, v]) => (
-              <span key={k} style={{
-                fontFamily: 'ui-monospace,Consolas,monospace', fontSize: 12,
-                background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 3, padding: '2px 6px',
-              }}>
-                <strong style={{ color: '#4f46e5' }}>{k}</strong>={v}
+            {assertions.map((a, i) => (
+              <span key={i} style={pillStyle}>
+                <strong style={{ color: '#4f46e5' }}>{a.column}</strong>
+                {a.jsonPath ? <span style={{ color: '#7c3aed' }}>.{a.jsonPath}</span> : null}
+                {' '}{a.operator}{' '}
+                {a.operator !== 'IsNull' && a.operator !== 'IsNotNull' ? `'${a.expected}'` : ''}
+                {a.operator === 'Between' && a.expected2 ? ` … '${a.expected2}'` : ''}
               </span>
             ))}
           </div>
         </div>
       )}
+      {captures.length > 0 && (
+        <div style={{ color: '#64748b', marginTop: 4 }}>
+          <strong>captures:</strong>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+            {captures.map((c, i) => (
+              <span key={i} style={pillStyle}>
+                <strong style={{ color: '#0d9488' }}>{`{{${c.as}}}`}</strong>
+                {' ← '}{c.column}{c.jsonPath ? `.${c.jsonPath}` : ''}
+                {!c.required ? ' (optional)' : ''}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {assertions.length === 0 && Object.keys(legacy).length > 0 && (
+        <div style={{ color: '#92400e', marginTop: 4, fontStyle: 'italic' }}>
+          (legacy expectedColumnValues — will normalise on next save)
+        </div>
+      )}
     </div>
   );
 }
+
+const pillStyle: React.CSSProperties = {
+  fontFamily: 'ui-monospace,Consolas,monospace', fontSize: 12,
+  background: '#eef2ff', border: '1px solid #c7d2fe',
+  borderRadius: 3, padding: '2px 6px',
+};
 
 function WebUiStepsTable({ steps, startUrl }: { steps: WebUiStep[]; startUrl?: string }) {
   if (!steps || steps.length === 0) {
