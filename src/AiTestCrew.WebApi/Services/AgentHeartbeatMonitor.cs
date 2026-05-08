@@ -30,6 +30,13 @@ public sealed class AgentHeartbeatMonitor : BackgroundService
     /// </summary>
     private DateTime _lastAuthRefreshSweepAt = DateTime.UtcNow;
 
+    /// <summary>
+    /// Last time <see cref="SweepRateLimiterAsync"/> ran — bounded to a 5-minute
+    /// cadence regardless of the 30s base tick. Initialised to startup so the
+    /// first sweep runs ~5 minutes after process start.
+    /// </summary>
+    private DateTime _lastRateLimiterSweepAt = DateTime.UtcNow;
+
     public AgentHeartbeatMonitor(IServiceProvider sp, ILogger<AgentHeartbeatMonitor> logger, TimeSpan timeout)
     {
         _sp = sp;
@@ -46,6 +53,7 @@ public sealed class AgentHeartbeatMonitor : BackgroundService
             await SweepStaleQueueClaimsAsync();
             await SweepExpiredPendingVerificationsAsync();
             await SweepAuthRefreshesAsync();
+            SweepRateLimiterIfDue();
 
             try
             {
@@ -252,6 +260,32 @@ public sealed class AgentHeartbeatMonitor : BackgroundService
         catch (Exception ex)
         {
             _logger.LogError(ex, "AgentHeartbeatMonitor: auth-refresh sweep failed");
+        }
+    }
+
+    /// <summary>
+    /// Drops users whose rate-limit window has expired so the in-memory bucket
+    /// doesn't grow without bound. Runs on a 5-minute cadence regardless of the
+    /// 30s base tick — rate-limit state doesn't need higher precision and the
+    /// sweep is O(N) over registered users.
+    /// </summary>
+    private void SweepRateLimiterIfDue()
+    {
+        try
+        {
+            var now = DateTime.UtcNow;
+            if (now - _lastRateLimiterSweepAt < TimeSpan.FromMinutes(5)) return;
+            _lastRateLimiterSweepAt = now;
+
+            var limiter = _sp.GetService<DbDryRunRateLimiter>();
+            if (limiter is null) return;
+            var dropped = limiter.Sweep(now);
+            if (dropped > 0)
+                _logger.LogDebug("DB dry-run rate limiter swept — {Count} expired bucket(s) released.", dropped);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "AgentHeartbeatMonitor: rate-limiter sweep failed");
         }
     }
 

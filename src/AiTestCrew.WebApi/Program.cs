@@ -224,6 +224,9 @@ builder.Services.AddSingleton<IModuleRunTracker, ModuleRunTracker>();
 // ── Chat intent service (LLM-backed natural-language → structured action) ──
 builder.Services.AddSingleton<IChatIntentService, ChatIntentService>();
 
+// ── DB dry-run rate limiter (per-user token bucket; janitor sweep on the heartbeat tick) ──
+builder.Services.AddSingleton<DbDryRunRateLimiter>(_ => new DbDryRunRateLimiter());
+
 // ── CORS ──
 builder.Services.AddCors(options =>
 {
@@ -293,6 +296,7 @@ app.MapGroup("/api/testsets").MapTestSetEndpoints();
 app.MapGroup("/api/runs").MapRunEndpoints();
 app.MapGroup("/api/chat").MapChatEndpoints();
 app.MapGroup("/api/data-packs").MapDataPackEndpoints();
+app.MapGroup("/api/db-check").MapDbCheckEndpoints();
 if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCase))
 {
     app.MapGroup("/api/users").MapUserEndpoints();
