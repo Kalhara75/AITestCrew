@@ -152,3 +152,28 @@ The top-level `CLAUDE.md` keeps only the entry-point files needed to navigate th
 | `src/AiTestCrew.WebApi/Services/AgentHeartbeatMonitor.cs` (`SweepAuthRefreshesAsync`) | 30 s sweeps: timeout stale `InProgress` past `Auth.AuthRefreshMaxLatencySeconds`; release dependent queue entries on Completed; cancel them on Failed |
 | `ui/src/components/AuthRefreshBanner.tsx` | Reactive banner above the modules grid — appears when at least one `run_auth_refreshes` row is `Pending`/`InProgress` |
 | `ui/src/components/AuthHealthPanel.tsx` | Pre-flight panel — env-grouped tiles with per-surface Refresh button. Polls `/api/auth-health` every 30 s |
+
+## DB Assert step
+
+| File | What it does |
+|---|---|
+| `src/AiTestCrew.Storage/DbAgent/DbCheckStepDefinition.cs` | Persistence model — `Sql`, `ConnectionKey`, `ExpectedRowCount`, `ColumnAssertions`, `Captures`, `TimeoutSeconds`; legacy `expectedColumnValues` JSON shim promotes old dict into `ColumnAssertions` on deserialise |
+| `src/AiTestCrew.Storage/DbAgent/ColumnAssertion.cs` | Per-column assertion — `Column`, `JsonPath`, `Operator`, `Expected`, `Expected2`, `IgnoreCase`, `ToleranceSeconds`, `ToleranceDelta` |
+| `src/AiTestCrew.Storage/DbAgent/ColumnCapture.cs` | Post-assertion token capture — `Column`, `JsonPath`, `As` (token name, not substituted), `Required` |
+| `src/AiTestCrew.Storage/DbAgent/AssertionOperator.cs` | 14-value enum: `Equals` / `NotEquals` / `Contains` / `NotContains` / `StartsWith` / `EndsWith` / `Regex` / `GreaterThan` / `LessThan` / `Between` / `IsNull` / `IsNotNull` / `EqualsNumeric` / `EqualsDate` |
+| `src/AiTestCrew.Agents/DbAgent/DbCheckAgent.cs` | Post-step-only agent — resolves per-check connection via `IEnvironmentResolver.ResolveDbConnectionString`, runs row-count or column-assertion mode, evaluates captures, attaches `dbCheckRow`/`capturedTokens` to step metadata |
+| `src/AiTestCrew.Agents/DbAgent/ColumnAssertionEvaluator.cs` | Pure static evaluator — NULL fidelity, JSONPath extraction, numeric/date tolerance, regex; returns typed `EvaluateResult(Passed, Reason)`, never throws |
+| `src/AiTestCrew.Agents/DbAgent/JsonValueExtractor.cs` | Thin wrapper over `JsonPath.Net` (`json-everything`, MIT); returns typed `ExtractionStatus` (Found / FoundNull / NotJson / InvalidPath / NotFound) |
+| `src/AiTestCrew.Agents/DbAgent/DbCheckSqlGuardrails.cs` | Read-only enforcement — rejects non-SELECT, semicolons, and a denied-keyword list; allows CTEs |
+| `src/AiTestCrew.Core/Interfaces/IEnvironmentResolver.cs` | Added `ResolveDbConnectionString`, `ResolveAllowDbDryRun`, `ListDbConnectionKeys` |
+| `src/AiTestCrew.Core/Configuration/EnvironmentConfig.cs` | Added `DbConnections: Dictionary<string,string>` and `AllowDbDryRun: bool` (default true) per env |
+| `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` | Added top-level `DbConnections: Dictionary<string,string>` fallback |
+| `src/AiTestCrew.Storage/AseXmlAgent/Delivery/DeferredVerificationRequest.cs` | Added `CapturedTokens: Dictionary<string,string>` — carries inline-sibling captures into deferred post-steps |
+| `src/AiTestCrew.Agents/PostSteps/PostStepOrchestrator.cs` | Merges `capturedTokens` from each completed child step into the working context (captured > existing); threads `CapturedTokens` through the deferred path; forwards `dbCheckRow` metadata through to parent run detail |
+| `src/AiTestCrew.WebApi/Endpoints/DbCheckEndpoints.cs` | `POST /api/db-check/dry-run` (rate-limited "Try query" preview, per-env opt-out) and `GET /api/db-check/connections` (connection-key list for the editor dropdown) |
+| `src/AiTestCrew.WebApi/Services/DbDryRunRateLimiter.cs` | In-memory fixed-window token bucket — 10 requests/minute/user; `Sweep(nowUtc)` called by `AgentHeartbeatMonitor` on a 5-minute cadence |
+| `ui/src/components/EditDbCheckStepDialog.tsx` | Full editor dialog — connection dropdown, SQL textarea, mode radio, assertions table, captures table, timeout, "Try query" preview with per-cell `+` to add assertions |
+| `ui/src/api/dbCheck.ts` | `dryRunDbCheck(envKey, connectionKey, sql, parameters)` + `getDbConnections(envKey)` API clients |
+| `ui/src/components/PostStepsPanel.tsx` | Wires `EditDbCheckStepDialog` into the edit-pencil branch; updated `DbCheckBlock` renders assertions + captures pills; updated `PayloadSummary` shows assertion/capture counts |
+| `ui/src/components/StepList.tsx` | `extractDbDiagnostics` reads `dbCheckRow`/`dbCheckRows` from step metadata; `DbDiagnosticsTable` renders the failing row as a column→value table under the failure reason |
+| `.claude/commands/add-db-assert.md` | `/add-db-assert` skill — validates parent step, calls dry-run, PUTs the post-step; mirrors `/add-asexml-verification` for DB assertions |
