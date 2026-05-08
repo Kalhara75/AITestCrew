@@ -292,6 +292,54 @@ Save → PUTs through the existing generic `updatePostStep` endpoint (no new sav
 - PUTs the post-step via `updatePostStep` (or appends to the parent's `PostSteps`).
 - On peek failure (auth / unknown queue / unreachable namespace), prints a typed remediation (config snippet showing how to add the connection to `appsettings.json`).
 
+### 9a. NL-driven peek-then-author (NEW chat action `peekServiceBusMessages`)
+
+Expanded NL coverage beyond §9 — the chat assistant becomes a first-class authoring surface for event assertions, not just a `confirmCreatePostStep` emitter. New action kind:
+
+```json
+{ "kind": "peekServiceBusMessages",
+  "summary": "Peek meter-events topic on sumo-retail",
+  "data": { "envKey": "sumo-retail", "connectionKey": "DefaultBus",
+            "entity": { "type": "Topic", "name": "meter-events", "subscriptionName": "test-runner" },
+            "max": 10, "correlationFilter": null } }
+```
+
+**System-prompt trigger phrasing:** "show me messages on …", "what's on the meter-events topic right now", "peek the queue", "are there any pending events for {{X}}".
+
+**Card behaviour** (`ui/src/components/chat/actions/PeekServiceBusMessagesCard.tsx`, NEW):
+
+- Calls `POST /api/event-assert/peek` and renders a compact message table (messageId, contentType, enqueuedTimeUtc, applicationProperties, body preview) — same shape the editor's "Peek messages" panel uses.
+- Each peeked message row exposes:
+  - **`+ Add as criterion`** — opens a field-path picker (system props / app props / Body.jsonpath); on selection emits a follow-up `confirmCreatePostStep` (or `confirmEditPostStep` if there's already an event-assert post-step on the contextual parent — derived from `catalog.currentTestSet.objectives[*].parentSteps[*].postSteps[*]`) with the criterion pre-seeded from the message's actual value.
+  - **`+ Add as capture`** — same picker; emits a follow-up action with `captures: [{ field, as: <field-tail>, required: true }]`.
+- The card never PUTs anything itself; all writes flow through follow-up `confirm*PostStep` cards for transparency and an explicit accept gate.
+
+This is what makes the slice an actual **NL step-injection expansion** — the user can converse with the assistant about messages on the bus, then turn observations directly into authored post-steps without leaving chat.
+
+### 9b. NL-driven edit of existing post-steps (NEW chat action `confirmEditPostStep`)
+
+`confirmCreatePostStep` only handles ADDS. To enable NL-driven mutations of existing post-steps (event-assert AND, as a back-port benefit, every other post-step type including REQ-002's DB asserts), add a second action kind:
+
+```json
+{ "kind": "confirmEditPostStep",
+  "summary": "Update event-assert post-step #2",
+  "data": { "moduleId": "...", "testSetId": "...", "objectiveId": "...",
+            "parentKind": "Api", "parentStepIndex": 0, "postStepIndex": 2,
+            "postStep": { /* full updated VerificationStep shape — full replacement, not a patch */ } } }
+```
+
+**System-prompt trigger phrasing:** "change the criterion on post-step N to use Contains", "add a capture for X on the event-assert step after the API call", "make the timeout on post-step 2 longer", "tighten the match-mode to ExactlyOne".
+
+**Authoring rule** (added to the system prompt's "Post-step authoring rules" block):
+
+> "For NEW post-steps emit `confirmCreatePostStep`. For MUTATIONS to existing post-steps emit `confirmEditPostStep`. Resolve `postStepIndex` from `catalog.currentTestSet.objectives[*].parentSteps[*].postSteps[*]` — exact match by description; ask if ambiguous. Always emit the FULL updated `postStep` payload (replacement, not patch) — keeps the runtime simple and makes the diff visible to the user."
+
+**Card behaviour** (`ui/src/components/chat/actions/ConfirmEditPostStepCard.tsx`, NEW):
+
+- Renders a before/after `KeyValueGrid` diff (the card has access to the prior shape via `catalog.currentTestSet`).
+- On accept, PUTs through the existing `PUT /api/modules/{m}/testsets/{ts}/objectives/{o}/post-steps/{parentKind}/{parentStepIndex}/{postIndex}` endpoint — generic, no new server route.
+- Generic across all post-step types — `dbCheck`, `webUi`, `desktopUi`, `aseXml`, `aseXmlDeliver`, `eventAssert`. **Back-port benefit:** REQ-002's DB asserts retroactively gain NL-edit support.
+
 ### 10. Distributed-execution capability
 
 - Add `"Event_AzureServiceBus"` to the agent capability registry (`src/AiTestCrew.Core/Models/AgentCapability.cs` if one exists; otherwise the agent capability is a free-form string and the agent advertises it via `AgentCapabilities` config — planner: confirm by reading `JobExecutor.ExecuteAsync` and the `--capabilities` CLI flag handler).
@@ -356,7 +404,10 @@ A reviewer should be able to verify each of these without ambiguity:
 10. **Diagnostics.** A failing assertion's run-detail UI surfaces up to 10 received-message summaries (truncated bodies + system properties + application properties + per-criterion pass/fail) under the failure reason. Verified by inspecting the JSON file written under `executions/`.
 11. **Editor dialog.** Clicking "Edit" on an `eventAssert` post-step in `PostStepsPanel.tsx` opens `EditEventAssertStepDialog` with all current values populated. "Peek messages" returns up to N messages without consuming them. The `+ Add criterion` button on a peeked message seeds a criterion with the actual field value. Saving PUTs through `updatePostStep` and the panel refreshes. Delete removes it via `deletePostStep`.
 12. **Chat assistant.** Sending the chat message "after the API publish step, confirm a `MeterReadingCreated` event was raised onto the `meter-events` topic on the `test-runner` subscription with a `MeterId` matching `{{MeterId}}` and capture the `EventId` for later" produces a `confirmCreatePostStep` action with: `target=Event_AzureServiceBus`, `entity={type:Topic, name:meter-events, subscriptionName:test-runner}`, criteria including `ApplicationProperties.EventType Equals "MeterReadingCreated"` and `Body.MeterId Equals "{{MeterId}}"`, and a capture `[{Field:Body.EventId, As:EventId}]`.
+12a. **NL peek-then-author (§9a).** Sending the chat message "show me the last 5 messages on the `meter-events` topic, `test-runner` sub, on `sumo-retail`" produces a `peekServiceBusMessages` action; the card calls `POST /api/event-assert/peek` and renders the message list. Clicking "Use field `ApplicationProperties.EventType` as criterion" on a peeked message emits a follow-up `confirmCreatePostStep` action whose payload pre-seeds that criterion with the actual value from the peeked message.
+12b. **NL-driven edit (§9b).** Against a test set that already has an event-assert post-step on `Api[0]`, sending the chat message "change the criterion on the event-assert post-step after the API call to use Contains instead of Equals" produces a `confirmEditPostStep` action with the operator updated to `Contains`, the rest of the payload identical, and `postStepIndex` resolved from `catalog.currentTestSet`. Accepting the card PUTs through the existing post-step CRUD endpoint and `PostStepsPanel.tsx` reflects the change on the next render.
 13. **Slash command.** `/add-event-assert <m> <ts> <o> Api 0 "after the publish, confirm a MeterReadingCreated event arrived on the meter-events topic, test-runner sub, MeterId={{MeterId}}, capture EventId"` produces a working post-step end-to-end on a clean test set, including a green peek probe.
+13a. **`confirmEditPostStep` is generic.** The same chat action also works against an existing `dbCheck` or `webUi` post-step (e.g. "change the SQL on the DB-check after the publish to filter by `Status='Processed'`" → `confirmEditPostStep` with the updated `dbCheck.sql`). Back-port benefit: REQ-002's DB asserts and earlier UI post-steps retroactively support NL-driven edits.
 14. **Distributed-execution.** A remote agent started with `--capabilities Event_AzureServiceBus` picks up a deferred event-assert post-step from the run queue, executes it, returns the result, and sibling captures arrive on the originating run.
 15. **SQL-style guardrails — N/A here.** Service Bus doesn't have an injection class equivalent to SQL. The peek endpoint only supports peek-mode (cannot drain), and the agent's settlement is gated behind `CompleteOnPass`. Document explicitly that there are no read-vs-write guardrails to apply.
 16. **Documentation.** `docs/architecture.md`, `docs/functional.md`, `docs/file-map.md`, and `CLAUDE.md` (extension map + slash commands) are updated.

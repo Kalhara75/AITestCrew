@@ -25,5 +25,8 @@
     <PackageReference Include="FluentFTP" Version="51.1.0" />
     <!-- REQ-002 DB-check JSONPath assertions (MIT, System.Text.Json native) -->
     <PackageReference Include="JsonPath.Net" Version="1.1.6" />
+    <!-- REQ-004 Azure Service Bus event assertion post-step -->
+    <PackageReference Include="Azure.Messaging.ServiceBus" Version="7.18.2" />
+    <PackageReference Include="Azure.Identity" Version="1.13.1" />
   </ItemGroup>
 </Project>
