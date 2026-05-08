@@ -59,10 +59,36 @@ export function ConfirmCreatePostStepCard({ summary, data }: { summary?: string;
     ['role', ps?.role],
   ];
   if (ps?.dbCheck) {
-    if (ps.dbCheck.expectedRowCount !== undefined)
+    if (ps.dbCheck.expectedRowCount !== undefined && ps.dbCheck.expectedRowCount !== null)
       rows.push(['expect rows', ps.dbCheck.expectedRowCount.toString()]);
-    if (ps.dbCheck.expectedColumnValues && Object.keys(ps.dbCheck.expectedColumnValues).length > 0)
-      rows.push(['expect cols', JSON.stringify(ps.dbCheck.expectedColumnValues)]);
+    const assertions = ps.dbCheck.columnAssertions ?? [];
+    if (assertions.length > 0) {
+      rows.push([
+        'assertions',
+        assertions.map(a => {
+          const col = a.jsonPath ? `${a.column}.${a.jsonPath}` : a.column;
+          if (a.operator === 'IsNull' || a.operator === 'IsNotNull') return `${col} ${a.operator}`;
+          if (a.operator === 'Between') return `${col} ${a.operator} '${a.expected}' … '${a.expected2 ?? ''}'`;
+          return `${col} ${a.operator} '${a.expected}'`;
+        }).join('; '),
+      ]);
+    }
+    const captures = ps.dbCheck.captures ?? [];
+    if (captures.length > 0) {
+      rows.push([
+        'captures',
+        captures.map(c => {
+          const src = c.jsonPath ? `${c.column}.${c.jsonPath}` : c.column;
+          return `{{${c.as}}} ← ${src}${c.required ? '' : ' (optional)'}`;
+        }).join('; '),
+      ]);
+    }
+    // Defensive — legacy chat-action card shape (in-flight conversations).
+    if (ps.dbCheck.expectedColumnValues
+        && Object.keys(ps.dbCheck.expectedColumnValues).length > 0
+        && assertions.length === 0) {
+      rows.push(['expect cols (legacy)', JSON.stringify(ps.dbCheck.expectedColumnValues)]);
+    }
     rows.push(['connection', ps.dbCheck.connectionKey]);
   }
 

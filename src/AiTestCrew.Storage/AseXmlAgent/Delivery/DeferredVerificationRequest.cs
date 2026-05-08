@@ -60,4 +60,13 @@ public class DeferredVerificationRequest
     /// subsequent ones wait incrementally inside the handler).
     /// </summary>
     public List<VerificationStep> Verifications { get; set; } = new();
+
+    /// <summary>
+    /// Tokens captured by inline post-steps that ran BEFORE this deferred batch
+    /// was enqueued (e.g. an inline DB check capturing <c>JobId</c>, followed by
+    /// a deferred sibling that uses <c>{{JobId}}</c>). Merged into the working
+    /// context with the same precedence as live captures: captured > existing.
+    /// Empty on rows enqueued before REQ-002.
+    /// </summary>
+    public Dictionary<string, string> CapturedTokens { get; set; } = new();
 }

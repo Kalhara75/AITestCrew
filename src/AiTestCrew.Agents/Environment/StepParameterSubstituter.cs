@@ -346,7 +346,32 @@ public static class StepParameterSubstituter
             ConnectionKey = source.ConnectionKey,
             Sql = Sub(source.Sql, context, unknownTokens) ?? "",
             ExpectedRowCount = source.ExpectedRowCount,
-            ExpectedColumnValues = SubDict(source.ExpectedColumnValues, context, unknownTokens),
+            ColumnAssertions = source.ColumnAssertions
+                .Select(a => new ColumnAssertion
+                {
+                    // Column / JsonPath / Expected / Expected2 are token-substituted —
+                    // useful for templated column names and dynamic indexes.
+                    Column = Sub(a.Column, context, unknownTokens) ?? "",
+                    JsonPath = Sub(a.JsonPath, context, unknownTokens),
+                    Operator = a.Operator,
+                    Expected = Sub(a.Expected, context, unknownTokens) ?? "",
+                    Expected2 = Sub(a.Expected2, context, unknownTokens),
+                    IgnoreCase = a.IgnoreCase,
+                    ToleranceSeconds = a.ToleranceSeconds,
+                    ToleranceDelta = a.ToleranceDelta,
+                })
+                .ToList(),
+            Captures = source.Captures
+                .Select(c => new ColumnCapture
+                {
+                    Column = Sub(c.Column, context, unknownTokens) ?? "",
+                    JsonPath = Sub(c.JsonPath, context, unknownTokens),
+                    // Captures.As is intentionally NOT substituted — it's a token target,
+                    // and substituting it would let parent context redirect captures.
+                    As = c.As,
+                    Required = c.Required,
+                })
+                .ToList(),
             TimeoutSeconds = source.TimeoutSeconds
         };
     }

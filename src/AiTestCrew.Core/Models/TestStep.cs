@@ -19,6 +19,15 @@ public class TestStep
     public TimeSpan Duration { get; init; }
     public DateTime Timestamp { get; init; } = DateTime.UtcNow;
 
+    /// <summary>
+    /// Loose metadata bag used by agents to attach structured diagnostics that
+    /// don't fit into the human-readable <see cref="Summary"/> / <see cref="Detail"/>
+    /// fields. Currently used by <c>DbCheckAgent</c> to carry the failing row
+    /// (<c>"dbCheckRow"</c>) and captured tokens (<c>"capturedTokens"</c>) through
+    /// to the UI's run-detail rendering.
+    /// </summary>
+    public Dictionary<string, object?> Metadata { get; init; } = new();
+
     /// <summary>Convenience factory for a passed step.</summary>
     public static TestStep Pass(string action, string summary, string? detail = null) =>
         new() { Action = action, Summary = summary, Status = TestStatus.Passed, Detail = detail };

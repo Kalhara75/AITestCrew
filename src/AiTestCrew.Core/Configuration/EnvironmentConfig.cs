@@ -37,6 +37,24 @@ public class EnvironmentConfig
     public string? BravoDbConnectionString { get; set; }
 
     /// <summary>
+    /// Per-customer-environment DB connection registry, keyed by logical
+    /// connection name (e.g. <c>"BravoDb"</c>, <c>"SdrReportingDb"</c>). Looked
+    /// up by <see cref="AiTestCrew.Core.Interfaces.IEnvironmentResolver.ResolveDbConnectionString"/>;
+    /// falls back to <see cref="TestEnvironmentConfig.DbConnections"/> when an
+    /// env doesn't override the key, and (for <c>"BravoDb"</c> only) to the
+    /// legacy <see cref="BravoDbConnectionString"/>.
+    /// </summary>
+    public Dictionary<string, string> DbConnections { get; set; } = new();
+
+    /// <summary>
+    /// Per-env opt-out for the <c>POST /api/db-check/dry-run</c> endpoint.
+    /// Default <c>true</c> — set to <c>false</c> on production-style envs to
+    /// disable exploratory queries for the dry-run "Try query" UI button while
+    /// still allowing scheduled DB-check post-steps to run as normal.
+    /// </summary>
+    public bool AllowDbDryRun { get; set; } = true;
+
+    /// <summary>
     /// Opt-in flag for SQL data teardown in this environment. When false
     /// (the default), test-set teardown steps are rejected before any SQL
     /// runs. Set to true only on environments where DELETE statements are safe

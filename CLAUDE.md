@@ -19,7 +19,7 @@ Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → C
 
 ## Key files
 
-These are entry points — start here when navigating the codebase. For the full file map (~80 entries: aseXML delivery, deferred verification, auth recovery, distributed agents, data packs, UI components), see `docs/file-map.md`.
+These are entry points — start here when navigating the codebase. For the full file map (~95 entries: aseXML delivery, deferred verification, auth recovery, distributed agents, data packs, DB Assert step, UI components), see `docs/file-map.md`.
 
 | File | What it does |
 |---|---|
@@ -113,6 +113,7 @@ All agents extend `BaseTestAgent` and implement `ITestAgent`:
 | `/add-validation <agent> "<rule>"` | Add a new response validation rule to an existing agent |
 | `/add-asexml-template <TransactionType> <templateId> "<desc>"` | Scaffold a new aseXML template + manifest pair (content-only — no agent changes) |
 | `/add-asexml-verification` | Scaffold a post-delivery UI verification attached to an existing delivery objective (recorder + auto-parameterisation) |
+| `/add-db-assert <moduleId> <testSetId> <objectiveId> <parentKind> <parentStepIndex> "<NL description>"` | Scaffold a DB Assert post-step attached to an existing parent test step |
 | `/add-data-pack-script` | Scaffold a startup-time SQL data-pack script (stored proc install, data prep, or cleanup) in the right folder with idempotency template |
 | `/add-delivery-protocol <scheme> "<desc>"` | Scaffold a new `IXmlDropTarget` implementation (AS2, HTTP POST, SMB, etc.) |
 | `/tune-deferred-verification` | Tune or debug deferred post-delivery verification (retry cadence, deadline, timeouts) + stuck-Awaiting diagnosis |
@@ -159,12 +160,14 @@ Adding a ___ is → ___
 | Adding a new auth surface (beyond Api / WebBlazor / WebMvc) | Manual — new `AuthSurface` enum value + agent override | Add to `AuthSurface` in `Core/Models/Enums.cs`; override `Surface` + `TryRecoverFromLoginRedirectAsync` on the new agent; plumb through `AuthHealthEndpoints` if pre-flight is needed. |
 | Debugging "Refresh in progress" stuck forever | Check `JobExecutor.ExecuteAuthSetupAsync` calls `_authRefreshRepo.MarkCompletedAsync(authRefreshId)` after `RecordingService.AuthSetupAsync` | Without it the `run_auth_refreshes` row sits `InProgress` until the janitor's 5-minute timeout marks it Failed. Also confirm `/start` payload threads `target` (not `surface`) + `authRefreshId`. |
 | Debugging "auth state saved but tests still fail" | Inspect the saved file — empty `{"cookies":[],"origins":[]}` means `RecordingService.AuthSetupAsync` saved without real auth | Blazor flow needs `sawSsoRedirect` to flip true (URL visited login.microsoftonline.com) AND non-empty cookies before saving. If your customer URL doesn't trigger Azure SSO at the root, point `BraveCloudUiUrl` at a path that does. |
+| A new DB connection (e.g. SDR Reporting DB) | Manual — config-only | `Environments.<key>.DbConnections.<connectionKey>` (or top-level `TestEnvironment.DbConnections.<connectionKey>` fallback). Zero code changes. |
+| A new column-assertion operator | Manual — enum + evaluator branch | Add to `src/AiTestCrew.Storage/DbAgent/AssertionOperator.cs`; branch in `src/AiTestCrew.Agents/DbAgent/ColumnAssertionEvaluator.cs`. Update editor dropdown in `EditDbCheckStepDialog.tsx` + chat prompt examples in `ChatIntentService.cs`. |
 
 ## Documentation
 
 - `docs/file-map.md` — full file-by-file map (subsystems: aseXML, deferred verification, auth recovery, distributed agents, data packs, UI). The `Key files` table above only lists entry points
 - `docs/functional.md` — user-facing feature reference and CLI runbook
-- `docs/architecture.md` — component structure, data flow, design decisions, extension patterns. Includes deep-dive sections for **Distributed Execution (Phase 4)**, **Deferred Post-Delivery Verification**, **Seamless Authentication Recovery** (silent retry → AwaitingAuth pause-and-resume → pre-flight AuthHealthPanel, schemas v8 + v9), **Chat Assistant**, and **Startup Data Packs**.
+- `docs/architecture.md` — component structure, data flow, design decisions, extension patterns. Includes deep-dive sections for **Distributed Execution (Phase 4)**, **Deferred Post-Delivery Verification**, **Seamless Authentication Recovery** (silent retry → AwaitingAuth pause-and-resume → pre-flight AuthHealthPanel, schemas v8 + v9), **Chat Assistant**, **Startup Data Packs**, and **DB Assert Step** (data model, JSONPath evaluator, capture semantics, multi-DB resolution, security envelope).
 - `docs/data-packs.md` — startup-time SQL data-pack guide (folder layout, opt-in config, authoring rules, dashboard troubleshooting)
 - `docs/agentic-development-team.md` — five-agent pipeline (`feature-coordinator` → `implementation-planner` → `implementer` → `doc-writer` → `code-reviewer`) that turns a `requirements/REQ-*.md` file into a review-ready feature branch. Hand a requirement to `feature-coordinator` for hands-off implementation.
 - Phase 3 decision: the aseXML feature is feature-complete through **Generate → Deliver → Wait → Verify**. Future work is extension (new transaction types, new protocols, richer wait strategies, desktop edit dialog, Phase 1.5 UI edit for non-verification aseXML steps) rather than new phases.

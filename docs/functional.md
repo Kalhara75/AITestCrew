@@ -515,6 +515,126 @@ If an "Awaiting" verification never claims within `VerificationMaxLatencySeconds
 
 ---
 
+### Asserting database state
+
+A DB Assert post-step runs a read-only SELECT against a configured SQL Server database after the parent step completes. It can assert row counts, compare column values with 14 operators, extract values from JSON columns via JSONPath, and capture results as `{{Token}}` for sibling post-steps. DB Assert post-steps are dialog/chat/skill-authored only — there is no recorder. The step always applies to the **first row** returned; if you need a specific row, filter in the SELECT.
+
+**When to use a DB Assert (vs. a UI or aseXML verification).** Use a DB Assert when you want to confirm application state that the UI doesn't expose (e.g. a Jobs table row, a status transition, an internal identifier for a downstream step), or when a UI verification would be fragile because the value only matters in the database. DB Assert is faster and more stable than a full UI playback; it is inappropriate for checking rendered output or workflow correctness that depends on visual state.
+
+#### Authoring routes
+
+**Chat assistant.** Ask the assistant in natural language:
+
+```
+After the WinForms search step, confirm the Jobs table has a row where MessageID
+matches the just-delivered message and the Payload JSON's OrderId equals 12345,
+and capture JobId for use in the next step.
+```
+
+The assistant emits a `confirmCreatePostStep` card with target `Db_SqlServer`, a drafted SELECT using `{{MessageID}}` from the delivery context, a `columnAssertions` entry for `Payload.OrderId` via JSONPath, and a `captures` entry binding `JobId`. Click **Create post-step** to save.
+
+**`/add-db-assert` skill.**
+
+```
+/add-db-assert aemo-b2b mfn-delivery-tests deliver-mfn AseXmlDeliver 0 \
+  "confirm Jobs has a row for {{MessageID}} with Status='Processed' and Payload.OrderId={{OrderId}}, capture JobId"
+```
+
+The skill reads the parent step, drafts SQL + assertions + captures, validates the SQL via the dry-run endpoint (`GET /api/db-check/connections` + `POST /api/db-check/dry-run`), and PUTs the post-step. On a dry-run failure it prints the column list it saw and a suggested correction — it does not silently retry.
+
+**Edit pencil.** Click the pencil ✎ icon on any existing `dbCheck` post-step row in the `PostStepsPanel` to open `EditDbCheckStepDialog` with all fields pre-populated.
+
+#### Editor walkthrough
+
+`EditDbCheckStepDialog` opens when you click the edit pencil on a DB Check post-step row:
+
+1. **Name** — label for the step.
+2. **Connection** — dropdown sourced from `GET /api/db-check/connections?envKey=<key>`. Always lists `BravoDb` plus any additional keys configured for the active env. Changing the connection resets the assertions list.
+3. **SQL** — multi-line monospaced textarea. `{{Token}}` placeholders are highlighted. Tokens available: the parent step's render context (e.g. `{{MessageID}}`, `{{NMI}}`) and any env `EnvironmentParameters` keys.
+4. **Mode radio** — "Assert row count" or "Assert column values". Switching clears the inactive section.
+5. **Expected row count** — number input (row-count mode only).
+6. **Assertions table** (column-values mode) — one row per assertion:
+   - `Column` — result-set column name.
+   - `JsonPath` — optional, e.g. `$.OrderId`. Leave blank for a direct column comparison.
+   - `Operator` — dropdown of 14 operators (see cheat-sheet below).
+   - `Expected` — expected value, `{{Token}}`-substituted. Hidden for `IsNull` / `IsNotNull`.
+   - `Expected2` — upper bound; only visible for `Between`.
+   - `IgnoreCase` — checkbox; defaults on.
+   - `Tolerance` — visible for `EqualsDate` (seconds) and `EqualsNumeric` (delta).
+   - `×` — delete the row. `+ Add assertion` appends a blank row.
+7. **Captures table** — one row per capture:
+   - `Column` — result-set column to read.
+   - `JsonPath` — optional sub-value path.
+   - `As` — token name (no braces). Sibling post-steps reference it as `{{As}}`.
+   - `Required` — when unchecked, a null/missing value leaves the token undefined rather than failing the step.
+   - `×` — delete. `+ Add capture` appends a blank row.
+8. **Timeout (s)** — number input; default 15.
+9. **Try query** — calls `POST /api/db-check/dry-run` with the current SQL and a dict of test parameter values you supply. The response renders a table of columns + first 5 rows. Each cell has a `+` button: clicking it inserts an `Equals` assertion for that column pre-filled with the cell value. For JSON-typed columns a prompt asks for a `JsonPath`.
+
+Save calls `PUT` through the existing `updatePostStep` endpoint (no new save endpoint). Delete calls `deletePostStep`.
+
+#### Operator cheat-sheet
+
+| Operator | Semantics |
+|---|---|
+| `Equals` | Case-insensitive string equality (default). `IgnoreCase: false` for case-sensitive. |
+| `NotEquals` | String inequality. |
+| `Contains` | Actual contains expected as a substring. |
+| `NotContains` | Actual does not contain expected as a substring. |
+| `StartsWith` | Actual starts with expected. |
+| `EndsWith` | Actual ends with expected. |
+| `Regex` | Actual matches the expected as a .NET regular expression. |
+| `GreaterThan` | Numeric or date comparison — actual > expected. Tries decimal first, then `DateTimeOffset`. |
+| `LessThan` | Actual < expected (same fallback). |
+| `Between` | Actual ≥ `Expected` AND ≤ `Expected2` (inclusive). Numeric or date. |
+| `IsNull` | Column (or JSON-extracted value) is SQL NULL or JSON `null`. |
+| `IsNotNull` | Column is not null. |
+| `EqualsNumeric` | Parses both sides as `decimal` (invariant culture) and compares within `ToleranceDelta`. |
+| `EqualsDate` | Parses both sides as `DateTimeOffset` (invariant culture, assumes UTC) and compares within `ToleranceSeconds`. Handles trailing-zero and fractional-second variations. |
+
+NULL fidelity: `IsNull` passes only for SQL NULL (or JSON `null`); `Equals ""` fails on a NULL column — NULL ≠ empty string.
+
+#### Capture-and-reuse example
+
+A DB check step captures `JobId` from the `Jobs` table row created by the preceding delivery:
+
+```json
+{
+  "target": "Db_SqlServer",
+  "dbCheck": {
+    "sql": "SELECT TOP 1 JobId, Status, Payload FROM Jobs WHERE MessageID = '{{MessageID}}'",
+    "columnAssertions": [
+      { "column": "Status", "operator": "Equals", "expected": "Processed" }
+    ],
+    "captures": [
+      { "column": "JobId", "as": "JobId", "required": true }
+    ]
+  }
+}
+```
+
+A sibling API post-step that runs after it can use `{{JobId}}` in its URL:
+
+```json
+{
+  "target": "Api",
+  "api": {
+    "method": "GET",
+    "endpoint": "/api/v1/jobs/{{JobId}}"
+  }
+}
+```
+
+Captures run only when all assertions pass. If the `Status` assertion fails, `JobId` is not bound and the sibling step receives the literal `{{JobId}}` (logged as WARN).
+
+Captured tokens round-trip through `DeferredVerificationRequest.CapturedTokens` so deferred siblings (those with `WaitBeforeSeconds` above the deferral threshold) also receive them when they fire later.
+
+#### Failure-row diagnostics
+
+When a column-value assertion fails, the run-detail page (`ExecutionDetailPage`) renders the full first row as a `column→value` table under the failure reason — labelled "Failing row". Cell values are truncated to 200 characters. Row-count failures additionally show up to three rows under "Additional rows". NULL cells display as `NULL` in italic. This rendering is done by `DbDiagnosticsTable` inside `StepList.tsx` and is triggered by the `dbCheckRow` / `dbCheckRows` keys in `step.metadata`.
+
+---
+
 ### Record (Web UI only)
 
 Record a Web UI test case by interacting with a real browser. The CLI opens a non-headless Chromium window and captures every form fill and button click as exact `WebUiTestDefinition` steps with verified DOM selectors.

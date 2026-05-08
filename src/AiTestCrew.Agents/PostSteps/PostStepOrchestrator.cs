@@ -88,6 +88,12 @@ public class PostStepOrchestrator
 
         var siblings = ResolveSiblings(callingAgent);
 
+        // Working copy of the context — DB-check post-steps merge captured
+        // tokens into this dict so subsequent siblings see them. Precedence:
+        // captured > parent context > env params (parent context already has
+        // env params merged in by the caller).
+        var workingContext = new Dictionary<string, string>(context, StringComparer.OrdinalIgnoreCase);
+
         for (var pIdx = 0; pIdx < postSteps.Count; pIdx++)
         {
             ct.ThrowIfCancellationRequested();
@@ -101,7 +107,7 @@ public class PostStepOrchestrator
                 post,
                 parentStepIndex,
                 pIdx + 1,
-                context,
+                workingContext,
                 stepSink,
                 environmentKey,
                 siblings,
@@ -114,7 +120,7 @@ public class PostStepOrchestrator
         VerificationStep postStep,
         int parentStepIndex,
         int postStepIndex,
-        IReadOnlyDictionary<string, string> context,
+        Dictionary<string, string> context,
         List<TestStep> stepSink,
         string? environmentKey,
         IReadOnlyList<ITestAgent> siblings,
@@ -197,14 +203,28 @@ public class PostStepOrchestrator
 
         foreach (var childStep in childResult.Steps)
         {
-            stepSink.Add(new TestStep
+            var rebuilt = new TestStep
             {
                 Action = $"{action} {childStep.Action}",
                 Summary = childStep.Summary,
                 Status = childStep.Status,
                 Detail = childStep.Detail,
                 Duration = childStep.Duration,
-            });
+            };
+            // Forward any structured diagnostics (e.g. DbCheck's "dbCheckRow")
+            // through to the parent run-detail UI.
+            foreach (var (k, v) in childStep.Metadata) rebuilt.Metadata[k] = v;
+            stepSink.Add(rebuilt);
+
+            // Merge any tokens this child step captured into the per-objective
+            // run context so subsequent siblings — including ones with their
+            // own waits — see them. Precedence: captured > existing context.
+            if (childStep.Metadata.TryGetValue("capturedTokens", out var capturedRaw)
+                && capturedRaw is IDictionary<string, string> captured
+                && captured.Count > 0)
+            {
+                MergeCaptured(context, captured, action);
+            }
         }
 
         if (childResult.Status is TestStatus.Failed or TestStatus.Error
@@ -216,6 +236,30 @@ public class PostStepOrchestrator
                 Summary = childResult.Summary,
                 Status = childResult.Status,
             });
+        }
+    }
+
+    /// <summary>
+    /// Merges captured tokens into the running context. Captured wins over
+    /// existing keys; an INFO log fires when an existing key is overwritten so
+    /// regressions are easy to spot.
+    /// </summary>
+    private void MergeCaptured(
+        Dictionary<string, string> context,
+        IDictionary<string, string> captured,
+        string action)
+    {
+        foreach (var (k, v) in captured)
+        {
+            if (string.IsNullOrEmpty(k)) continue;
+            if (context.TryGetValue(k, out var existing)
+                && !string.Equals(existing, v, StringComparison.Ordinal))
+            {
+                _logger.LogInformation(
+                    "{Action}: capture '{{{{{Tok}}}}}' overwrote existing context value (was '{Old}', now '{New}')",
+                    action, k, existing, v);
+            }
+            context[k] = v ?? "";
         }
     }
 
@@ -271,7 +315,8 @@ public class PostStepOrchestrator
         string testSetId,
         string parentObjectiveId,
         string parentObjectiveName,
-        CancellationToken ct)
+        CancellationToken ct,
+        IReadOnlyDictionary<string, string>? capturedTokens = null)
     {
         if (postSteps.Count == 0) return true;
         try
@@ -311,6 +356,9 @@ public class PostStepOrchestrator
                 ParentKind = parentKind,
                 DeliveryContext = new Dictionary<string, string>(context, StringComparer.OrdinalIgnoreCase),
                 Verifications = postSteps.ToList(),
+                CapturedTokens = capturedTokens is null
+                    ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    : new Dictionary<string, string>(capturedTokens, StringComparer.OrdinalIgnoreCase),
             };
 
             var firstTarget = postSteps[0].Target;
@@ -403,6 +451,9 @@ public class PostStepOrchestrator
         var historyRepo = _services.GetRequiredService<IExecutionHistoryRepository>();
 
         var context = new Dictionary<string, string>(dr.DeliveryContext, StringComparer.OrdinalIgnoreCase);
+        // Merge any tokens captured by inline siblings that ran BEFORE this batch
+        // was enqueued — captured wins over the delivery context snapshot.
+        foreach (var (k, v) in dr.CapturedTokens) context[k] = v;
 
         // First wait was consumed by the queue's not_before_at; later post-steps
         // wait their incremental delta relative to the first post-step's wait.
@@ -478,6 +529,20 @@ public class PostStepOrchestrator
             var nextDue = now.AddSeconds(retryInterval);
             if (nextDue > dr.DeadlineAt) nextDue = dr.DeadlineAt;
 
+            // Roll forward whatever tokens the failed attempt managed to capture
+            // (a retry may have made progress through the chain even if the final
+            // step failed). Captured > existing in dr.CapturedTokens.
+            var rolledCaptures = new Dictionary<string, string>(
+                dr.CapturedTokens, StringComparer.OrdinalIgnoreCase);
+            foreach (var (k, v) in context)
+            {
+                if (!dr.DeliveryContext.TryGetValue(k, out var orig)
+                    || !string.Equals(orig, v, StringComparison.Ordinal))
+                {
+                    rolledCaptures[k] = v;
+                }
+            }
+
             var retryRequest = new DeferredVerificationRequest
             {
                 PendingId = dr.PendingId,
@@ -493,6 +558,7 @@ public class PostStepOrchestrator
                 ParentKind = dr.ParentKind,
                 DeliveryContext = dr.DeliveryContext,
                 Verifications = dr.Verifications,
+                CapturedTokens = rolledCaptures,
             };
 
             var retryEntry = new RunQueueEntry

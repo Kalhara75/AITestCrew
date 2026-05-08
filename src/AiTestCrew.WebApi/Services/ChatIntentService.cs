@@ -467,12 +467,44 @@ public class ChatIntentService : IChatIntentService
                     "role": "Verification" | "Action",   // Verification unless the user described an action (drop aseXML, call API to mutate, etc.)
                     "dbCheck": {                         // present only when target is Db_SqlServer
                       "name": "<human label>",
-                      "connectionKey": "BravoDb",        // only supported value today
+                      "connectionKey": "BravoDb",        // logical key — usually BravoDb; SdrReportingDb / customer DBs allowed when configured
                       "sql": "<single read-only SELECT; {{Tokens}} from the parent context — NMI, MessageID, StartUrl etc. — are substituted at runtime>",
-                      "expectedRowCount": <optional integer>,
-                      "expectedColumnValues": { <col>: "<expected value or {{Token}}>", ... }, // use one of rowCount or columnValues
+                      "expectedRowCount": <optional integer>,         // EITHER expectedRowCount …
+                      "columnAssertions": [                            //   … OR an array of structured per-column assertions:
+                        {
+                          "column": "<column name from the SELECT>",
+                          "jsonPath": "$.OrderId",                    // optional — extract a JSON value inside the column before comparing
+                          "operator": "Equals",                        // Equals | NotEquals | Contains | NotContains | StartsWith | EndsWith | Regex | GreaterThan | LessThan | Between | IsNull | IsNotNull | EqualsNumeric | EqualsDate
+                          "expected": "<value or {{Token}}>",
+                          "expected2": "<upper bound — only for Between>",
+                          "ignoreCase": true,                          // string ops only; default true
+                          "toleranceSeconds": 5,                      // EqualsDate only
+                          "toleranceDelta": 0.01                      // EqualsNumeric only
+                        }
+                      ],
+                      "captures": [                                    // optional — bind a returned value into the run context as {{Token}}
+                        { "column": "JobId", "as": "JobId", "required": true },
+                        { "column": "Payload", "jsonPath": "$.OrderId", "as": "OrderId", "required": false }
+                      ],
                       "timeoutSeconds": 15
                     },
+                    // dbCheck examples (verbatim shape):
+                    //   1) Row-count check:
+                    //      { "name": "Job created", "connectionKey": "BravoDb",
+                    //        "sql": "SELECT 1 FROM Jobs WHERE MessageID = '{{MessageID}}'",
+                    //        "expectedRowCount": 1, "timeoutSeconds": 15 }
+                    //   2) JSON-column equality (Bravo's Payload column is JSON):
+                    //      { "name": "Order id matches",
+                    //        "sql": "SELECT TOP 1 Payload FROM Jobs WHERE MessageID = '{{MessageID}}'",
+                    //        "columnAssertions": [
+                    //          { "column": "Payload", "jsonPath": "$.OrderId", "operator": "Equals", "expected": "12345", "ignoreCase": true }
+                    //        ], "timeoutSeconds": 15 }
+                    //   3) Capture-and-reuse (DB check captures JobId; sibling API post-step uses {{JobId}}):
+                    //      { "name": "Find Jobs row + capture",
+                    //        "sql": "SELECT TOP 1 JobId, Status FROM Jobs WHERE MessageID = '{{MessageID}}'",
+                    //        "columnAssertions": [{ "column": "Status", "operator": "Equals", "expected": "Processed" }],
+                    //        "captures": [{ "column": "JobId", "as": "JobId", "required": true }],
+                    //        "timeoutSeconds": 15 }
                     "api": { <ApiTestDefinition shape> },            // present only when target is API_REST
                     "aseXml": { <AseXmlTestDefinition shape> },      // present only when target is AseXml_Generate
                     "aseXmlDeliver": { <AseXmlDeliveryTestDefinition shape> }  // present only when target is AseXml_Deliver
@@ -537,7 +569,11 @@ public class ChatIntentService : IChatIntentService
             Post-step authoring rules (confirmCreatePostStep):
             - Use this when the user wants to ADD a DB check, API call, aseXML generate, or aseXML deliver as a post-step of an existing parent. Typical phrases: "add a DB check that …", "confirm Jobs has a row for …", "after the WinForms test drop an MFN aseXML file".
             - Resolve parentKind + parentStepIndex from currentTestSet.objectives[*].parentSteps — exact match where possible; ask if ambiguous.
-            - For Db_SqlServer: write the SQL yourself from the user's description using {{Token}} placeholders (double curly braces in the actual JSON) for values they mentioned that look like parent context (NMI, MessageID, TransactionID, StartUrl). The SQL MUST be a single SELECT — no semicolons, no INSERT/UPDATE/DELETE/DDL. Prefer expectedRowCount for "confirm at least one row" checks; prefer expectedColumnValues when the user specified column values. Never invent values that weren't in the user's message or the parent context.
+            - For Db_SqlServer: write the SQL yourself from the user's description using {{Token}} placeholders (double curly braces in the actual JSON) for values they mentioned that look like parent context (NMI, MessageID, TransactionID, StartUrl). The SQL MUST be a single SELECT — no semicolons, no INSERT/UPDATE/DELETE/DDL. Prefer expectedRowCount for "confirm at least one row" checks; prefer columnAssertions when the user specified column values. Never invent values that weren't in the user's message or the parent context.
+            - When the user mentions a column ending in `Payload`, `RawPayload`, `Document`, or anything explicitly described as JSON, prefer a `jsonPath` assertion (e.g. `"$.OrderId"`) over a substring match on the whole column. If you don't know which JSON field the user meant, ask rather than guessing.
+            - When the user wants the row's ID (or any other column value) for a later step ("capture the JobId", "remember the OrderId for the API call after"), emit a `captures` entry rather than expecting them to copy-paste. The `as` value is the bare token name (e.g. `"JobId"`, no braces); siblings reference it as `{{JobId}}`.
+            - For comparators richer than equality, use the appropriate operator: `Contains` / `StartsWith` / `EndsWith` for substring matches; `Regex` for patterns; `GreaterThan` / `LessThan` / `Between` for thresholds (numbers OR dates work — pick the most natural shape); `EqualsNumeric` with `toleranceDelta` for decimal-formatted columns; `EqualsDate` with `toleranceSeconds` for timestamps; `IsNull` / `IsNotNull` for null-aware checks.
+            - The legacy `expectedColumnValues` dict is accepted on input but you should NEVER emit it — always use `columnAssertions`. The deserialiser shim handles old persisted JSON, but new actions must use the new shape so the chat history stays consistent.
             - For API_REST/AseXml_Generate/AseXml_Deliver post-steps, only emit if the user gave enough info to fully populate the respective definition. If not, ask for the missing fields rather than guessing.
             - Pick waitBeforeSeconds per the "Deferred vs inline post-steps" rules above — don't duplicate that logic here.
 

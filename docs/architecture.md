@@ -2001,6 +2001,125 @@ The Runner project does NOT ship the data folder — only the WebApi runs the ru
 
 ---
 
+## DB Assert Step
+
+A DB Assert is a read-only post-step that runs a single SELECT against a configured SQL Server database and asserts the result — either a row count or a structured set of per-column rules — with optional value capture into the run context. It is post-step-only by design: a database assertion without a preceding write has no signal. The agent (`DbCheckAgent`) documents this constraint explicitly and `TestOrchestrator` does not expose it as a standalone objective type.
+
+### Data model
+
+`DbCheckStepDefinition` (`src/AiTestCrew.Storage/DbAgent/DbCheckStepDefinition.cs`) carries:
+
+- `Sql` — the SELECT to run. `{{Token}}`-substituted before execution.
+- `ConnectionKey` — logical DB key (e.g. `"BravoDb"`, `"SdrReportingDb"`). Resolved at execution time via `IEnvironmentResolver.ResolveDbConnectionString`.
+- `TimeoutSeconds` — per-query timeout; default 15.
+- `ExpectedRowCount` — when non-null, the step passes if the query returns exactly this many rows. Mutually exclusive with `ColumnAssertions`: if both are present, the assertion list takes precedence.
+- `ColumnAssertions: List<ColumnAssertion>` — per-column rules evaluated against the **first row** of the result set. Each `ColumnAssertion` carries:
+  - `Column` — result-set column name. `{{Token}}`-substituted.
+  - `JsonPath` (optional) — JSONPath inside the column's value (e.g. `$.OrderId`, `$.Items[0].Code`). `{{Token}}`-substituted. When set, the column value is parsed as JSON and the path resolved before the operator runs.
+  - `Operator` — one of 14 values from `AssertionOperator` (`src/AiTestCrew.Storage/DbAgent/AssertionOperator.cs`): `Equals`, `NotEquals`, `Contains`, `NotContains`, `StartsWith`, `EndsWith`, `Regex`, `GreaterThan`, `LessThan`, `Between`, `IsNull`, `IsNotNull`, `EqualsNumeric`, `EqualsDate`.
+  - `Expected` / `Expected2` — expected value(s); `Expected2` is used as the upper bound by `Between`. Both are `{{Token}}`-substituted.
+  - `IgnoreCase` — defaults true for string operators; ignored by numeric/date operators.
+  - `ToleranceSeconds` / `ToleranceDelta` — tolerance windows for `EqualsDate` and `EqualsNumeric` respectively.
+- `Captures: List<ColumnCapture>` — values to bind into the run context after all assertions pass. Each `ColumnCapture` carries:
+  - `Column` — result-set column name. `{{Token}}`-substituted.
+  - `JsonPath` (optional) — path inside a JSON column. `{{Token}}`-substituted.
+  - `As` — bare token name to bind (e.g. `"JobId"`); sibling post-steps reference it as `{{JobId}}`. **Not** `{{Token}}`-substituted — substituting the target name would let parent context silently redirect captures.
+  - `Required` — defaults true. When false, a null/missing value leaves the token undefined (literal `{{As}}` survives lenient substitution; a WARN is logged via the existing `unknownTokens` collector).
+
+**Legacy JSON shim.** Persisted test sets saved before REQ-002 may carry `expectedColumnValues: {col: "value", ...}` (flat dict). A `[JsonPropertyName("expectedColumnValues")]` setter on `DbCheckStepDefinition` promotes each entry into a `ColumnAssertions` `Equals` entry on deserialise and never serialises back out — the same pattern `TestObjective` uses for `ApiDefinitionCompat`/`WebUiDefinitionCompat`. Round-tripping the file (load → save) normalises to the new shape. No one-time migration script runs; the shim is the contract.
+
+### Runtime path
+
+`DbCheckAgent.ExecuteAsync` (`src/AiTestCrew.Agents/DbAgent/DbCheckAgent.cs`):
+
+1. Reads `task.Parameters["PreloadedTestCases"]` as `List<DbCheckStepDefinition>` (reuse-mode contract). When the list is empty the step surfaces `TestStatus.Error`.
+2. For each definition, resolves the connection string via `IEnvironmentResolver.ResolveDbConnectionString(check.ConnectionKey, envKey)`. An unknown key returns null → `TestStatus.Error` naming the key and env (config issue, not data issue).
+3. Opens a fresh `SqlConnection` per definition — each check can target a different logical DB.
+4. Validates SQL via `DbCheckSqlGuardrails.Validate` before executing.
+5. **Mode 1 — row count**: when `ColumnAssertions` is empty and `ExpectedRowCount` is set. On mismatch, attaches the first row to `TestStep.Metadata["dbCheckRow"]`; if more than one row exists, also attaches the first three rows under `Metadata["dbCheckRows"]`.
+6. **Mode 2 — column assertions**: reads raw `object?` + `reader.IsDBNull(ordinal)` per column and passes them to the pure `ColumnAssertionEvaluator.Evaluate`. On any failure, the full first row is attached to `Metadata["dbCheckRow"]` and the step fails with a joined human-readable reason. On all passing, captures are evaluated (see below).
+7. If neither mode applies, the step surfaces `TestStatus.Error` ("nothing to assert").
+
+Cell values in `dbCheckRow`/`dbCheckRows` are truncated to 200 characters before storage. The run-detail UI (`StepList.tsx`) extracts these from `step.metadata` and renders them as a `column→value` table under the failure reason ("Failing row" heading).
+
+### JSONPath evaluator
+
+`JsonValueExtractor` (`src/AiTestCrew.Agents/DbAgent/JsonValueExtractor.cs`) wraps `Json.Path.JsonPath` from the `JsonPath.Net` NuGet package (json-everything suite, MIT licence, System.Text.Json-native). It was chosen over a hand-rolled subset because it is spec-aligned, predictable on edge cases (recursive descent, union operators, filters), and carries no extra serialiser dependency.
+
+`JsonValueExtractor.TryExtract` returns a typed status rather than throwing:
+
+| Status | Meaning |
+|---|---|
+| `Found` | Path resolved to a non-null JSON value. |
+| `FoundNull` | Path resolved, but to a JSON `null`. Treated like SQL NULL by `IsNull` / `IsNotNull`. |
+| `NotJson` | Column value is not parseable JSON. |
+| `InvalidPath` | Path expression is syntactically invalid. |
+| `NotFound` | JSON parsed successfully but no node matches the path. |
+
+`ColumnAssertionEvaluator` uses these statuses to produce typed failure reasons (`"column 'X' is not JSON"`, `"JSON path '$.Y' not found in column 'X'"`) rather than a generic exception.
+
+**NULL vs missing path.** Both `FoundNull` (JSON `null` at the path) and `NotFound` (path absent) fail `IsNotNull`, but only `FoundNull` passes `IsNull`. This mirrors SQL NULL semantics and is documented on `AssertionOperator.IsNull`.
+
+### NULL and type fidelity
+
+The evaluator reads raw `object?` + `isDbNull` rather than forcing `.ToString()` upfront:
+
+- `IsNull` / `IsNotNull` check `isDbNull` directly. SQL NULL ≠ empty string — `Equals ""` fails when the column is NULL.
+- `EqualsNumeric` parses both sides as `decimal` with `CultureInfo.InvariantCulture` and compares with `ToleranceDelta`. Parse failure → typed failure message.
+- `EqualsDate` parses both sides as `DateTimeOffset` with `InvariantCulture` + `DateTimeStyles.AssumeUniversal`; falls back to `DateTime.Parse` if needed. Comparison uses `ToleranceSeconds`. This handles trailing-zero, fractional-second, and UTC-offset differences that break `.ToString()` equality.
+- `GreaterThan`, `LessThan`, `Between` try decimal first, then `DateTimeOffset`, so thresholds work on both numeric and date-shaped columns without the author specifying which.
+- String operators (`Equals`, `Contains`, `StartsWith`, `EndsWith`, `Regex`) call `Convert.ToString(value, CultureInfo.InvariantCulture)` only at this stage.
+
+### Capture semantics and precedence
+
+Captures run only when the `ColumnAssertions` list passes in its entirety (or is empty). A failing assertion means the row is wrong; a value captured from a wrong row is suspect. This is documented on `ColumnCapture` and enforced in `DbCheckAgent.RunColumnAssertionsModeAsync`.
+
+After the pass, `EvaluateCaptures` walks each `ColumnCapture` entry and calls `JsonValueExtractor.TryExtract` for entries with a `JsonPath`. Captured tokens are stored in `TestStep.Metadata["capturedTokens"]` as `Dictionary<string,string>`.
+
+`PostStepOrchestrator` detects `capturedTokens` on each completed child step and merges them into its working context via `MergeCaptured`:
+
+**Precedence: captured > existing context > env params.**
+
+`MergeCaptured` overwrites an existing key and logs INFO when it does so — the log line names the token and both the old and new values so regressions are visible. The working context dict is local to the post-step chain for one parent step; it does not escape to a sibling parent-level step.
+
+**`Required: false` on a missing capture.** The token is left unbound. Subsequent `{{As}}` references pass through lenient substitution unchanged and are collected by the existing `unknownTokens` WARN log. The step does not fail.
+
+### Deferred path
+
+When any post-step in an objective has `WaitBeforeSeconds` above the deferral threshold, the whole batch is enqueued for a deferred agent. REQ-002 extends `DeferredVerificationRequest` (`src/AiTestCrew.Storage/AseXmlAgent/Delivery/DeferredVerificationRequest.cs`) with `CapturedTokens: Dictionary<string,string>`. This dict carries any tokens an inline sibling (e.g. an inline DB check that ran before the batch was enqueued) has already bound. At claim time, `PostStepOrchestrator.RunDeferredAsync` merges `CapturedTokens` into the working context before the first deferred post-step runs. Precedence is the same: captured > delivery context snapshot.
+
+On a failed deferred attempt that retries, `DeferredVerifyAsync` rolls any tokens that changed during the attempt forward into the new `DeferredVerificationRequest.CapturedTokens` so later retries see progress made by earlier ones.
+
+### Multi-DB resolution
+
+`IEnvironmentResolver.ResolveDbConnectionString(connectionKey, envKey)` (`src/AiTestCrew.Core/Interfaces/IEnvironmentResolver.cs`) resolves in three steps:
+
+1. Per-env `EnvironmentConfig.DbConnections[connectionKey]` — added by REQ-002 to `src/AiTestCrew.Core/Configuration/EnvironmentConfig.cs`.
+2. Top-level `TestEnvironmentConfig.DbConnections[connectionKey]` fallback — added to `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs`.
+3. Legacy back-compat for the `"BravoDb"` key only: falls back to `ResolveBravoDbConnectionString(envKey)` when neither dict defines it. New keys (e.g. `"SdrReportingDb"`) must be in one of the two dicts; they do not get a legacy fallback.
+
+Unknown key → returns `null` → `DbCheckAgent` surfaces `TestStatus.Error` naming the key and env. `IEnvironmentResolver.ListDbConnectionKeys(envKey)` returns the union of per-env keys, top-level keys, and the implicit `"BravoDb"` key; the `GET /api/db-check/connections` endpoint exposes this list to the UI editor's connection dropdown.
+
+`appsettings.example.json` shows both a top-level entry and a per-env override under `Environments.<env>.DbConnections`.
+
+### Security envelope
+
+**SQL guardrails.** `DbCheckSqlGuardrails.Validate` (`src/AiTestCrew.Agents/DbAgent/DbCheckSqlGuardrails.cs`) rejects:
+- Any statement that does not start with `SELECT` or `WITH` (CTEs allowed).
+- Semicolons (prevents statement chaining).
+- A denied-keyword list: `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `TRUNCATE`, `DROP`, `ALTER`, `CREATE`, `EXEC`, `EXECUTE`, `SHUTDOWN`, `GRANT`, `REVOKE`, `INTO`.
+
+CTEs (`WITH x AS (SELECT ...)`) are allowed at the top level; the keyword scan still catches write verbs smuggled inside a CTE (e.g. `WITH x AS (SELECT 1) INSERT INTO y`). The guardrail applies both at runtime (agent) and at dry-run time (endpoint) — read-only intent is enforced at both call sites.
+
+**Dry-run endpoint.** `POST /api/db-check/dry-run` (`src/AiTestCrew.WebApi/Endpoints/DbCheckEndpoints.cs`) runs a user-supplied SELECT against the configured DB and returns columns + first 5 rows + total row count. It is gated two ways:
+
+- **Per-env opt-in.** `EnvironmentConfig.AllowDbDryRun` (default `true`). Set to `false` on production-style envs to disable the "Try query" UI button while still allowing scheduled DB-check post-steps to run as normal. Resolved via `IEnvironmentResolver.ResolveAllowDbDryRun`; a disabled env returns HTTP 403.
+- **Rate limit.** `DbDryRunRateLimiter` (`src/AiTestCrew.WebApi/Services/DbDryRunRateLimiter.cs`) — an in-memory fixed-window token bucket, 10 requests/minute/user (keyed by `User.Id` from `HttpContext.Items["User"]`, or by remote IP when auth is disabled). The 11th request in a window returns HTTP 429. `AgentHeartbeatMonitor` runs a `Sweep(nowUtc)` on a 5-minute cadence (a sub-tick of its 30 s base tick) to drop expired buckets and bound memory growth.
+
+Cell values in the dry-run response are truncated to 500 characters; the SQL Server type name is included per column so the UI can render hints for JSON-typed columns.
+
+---
+
 ## Deployment
 
 ### Files

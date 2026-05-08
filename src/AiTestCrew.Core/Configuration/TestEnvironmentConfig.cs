@@ -146,6 +146,15 @@ public class TestEnvironmentConfig
     public bool DataTeardownEnabled { get; set; } = false;
 
     /// <summary>
+    /// Top-level DB connection registry — fallback when a per-env block
+    /// (<see cref="EnvironmentConfig.DbConnections"/>) doesn't define the key.
+    /// Used by <see cref="AiTestCrew.Core.Interfaces.IEnvironmentResolver.ResolveDbConnectionString"/>.
+    /// Entries are keyed by logical connection name (e.g. <c>"BravoDb"</c>,
+    /// <c>"SdrReportingDb"</c>).
+    /// </summary>
+    public Dictionary<string, string> DbConnections { get; set; } = new();
+
+    /// <summary>
     /// Stored-procedure name prefixes that teardown SQL is allowed to invoke
     /// via <c>EXEC</c>. Procs whose name does not start with one of these
     /// prefixes (case-insensitive) are rejected by <c>SqlGuardrails</c>.

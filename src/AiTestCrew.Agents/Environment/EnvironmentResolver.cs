@@ -100,6 +100,49 @@ public class EnvironmentResolver : IEnvironmentResolver
     public string ResolveBravoDbConnectionString(string? key) =>
         Pick(Resolve(key).BravoDbConnectionString, _config.AseXml.BravoDb.ConnectionString);
 
+    public string? ResolveDbConnectionString(string connectionKey, string? envKey)
+    {
+        if (string.IsNullOrWhiteSpace(connectionKey)) return null;
+
+        var env = Resolve(envKey);
+        if (env.DbConnections.TryGetValue(connectionKey, out var perEnv)
+            && !string.IsNullOrWhiteSpace(perEnv))
+            return perEnv;
+
+        if (_config.DbConnections.TryGetValue(connectionKey, out var topLevel)
+            && !string.IsNullOrWhiteSpace(topLevel))
+            return topLevel;
+
+        // Back-compat: "BravoDb" falls back to the legacy connection string.
+        if (string.Equals(connectionKey, "BravoDb", StringComparison.OrdinalIgnoreCase))
+        {
+            var legacy = ResolveBravoDbConnectionString(envKey);
+            if (!string.IsNullOrWhiteSpace(legacy)) return legacy;
+        }
+
+        return null;
+    }
+
+    public bool ResolveAllowDbDryRun(string? envKey)
+    {
+        // Unknown env keys are conservative-deny — typos shouldn't accidentally permit.
+        if (!string.IsNullOrWhiteSpace(envKey)
+            && !_config.Environments.ContainsKey(envKey))
+            return false;
+
+        var env = Resolve(envKey);
+        return env.AllowDbDryRun;
+    }
+
+    public IReadOnlyList<string> ListDbConnectionKeys(string? envKey)
+    {
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "BravoDb" };
+        var env = Resolve(envKey);
+        foreach (var k in env.DbConnections.Keys) keys.Add(k);
+        foreach (var k in _config.DbConnections.Keys) keys.Add(k);
+        return keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
     public bool ResolveDataTeardownEnabled(string? key)
     {
         var env = Resolve(key);

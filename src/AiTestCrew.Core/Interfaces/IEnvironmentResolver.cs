@@ -46,6 +46,34 @@ public interface IEnvironmentResolver
     string ResolveBravoDbConnectionString(string? key);
 
     /// <summary>
+    /// Resolves the SQL Server connection string for a logical DB key
+    /// (<c>"BravoDb"</c>, <c>"SdrReportingDb"</c>, etc.). Precedence:
+    /// per-env <see cref="EnvironmentConfig.DbConnections"/> →
+    /// top-level <see cref="TestEnvironmentConfig.DbConnections"/> →
+    /// (only for <c>"BravoDb"</c>) the legacy <c>BravoDbConnectionString</c>.
+    /// Returns <c>null</c> when nothing is configured for the key — callers
+    /// surface this as a config error (<c>TestStatus.Error</c>), not a data
+    /// failure.
+    /// </summary>
+    string? ResolveDbConnectionString(string connectionKey, string? envKey);
+
+    /// <summary>
+    /// Whether the <c>POST /api/db-check/dry-run</c> endpoint is enabled for
+    /// this env. Defaults to <c>true</c>; envs can opt out by setting
+    /// <see cref="EnvironmentConfig.AllowDbDryRun"/> to <c>false</c>.
+    /// </summary>
+    bool ResolveAllowDbDryRun(string? envKey);
+
+    /// <summary>
+    /// Lists every DB connection key configured for this env — the union of
+    /// per-env <see cref="EnvironmentConfig.DbConnections"/> keys, top-level
+    /// <see cref="TestEnvironmentConfig.DbConnections"/> keys, and the
+    /// implicit <c>"BravoDb"</c> key (always present because the legacy
+    /// fallback covers it).
+    /// </summary>
+    IReadOnlyList<string> ListDbConnectionKeys(string? envKey);
+
+    /// <summary>
     /// Returns whether SQL data teardown is opted-in for the given environment.
     /// Falls back to <see cref="TestEnvironmentConfig.DataTeardownEnabled"/>
     /// (default false) when the env block leaves it unset.
