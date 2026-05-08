@@ -1,10 +1,10 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using AiTestCrew.Agents.Base;
-using AiTestCrew.Agents.DbAgent;
 using AiTestCrew.Agents.PostSteps;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
@@ -21,14 +21,25 @@ namespace AiTestCrew.Agents.DbAgent;
 /// definition:
 /// <list type="number">
 ///   <item>Validates the SQL via <see cref="DbCheckSqlGuardrails"/>.</item>
-///   <item>Resolves the connection string via <see cref="IEnvironmentResolver"/>
-///     (same path as the Bravo endpoint resolver / teardown executor).</item>
+///   <item>Resolves the connection string via
+///     <see cref="IEnvironmentResolver.ResolveDbConnectionString"/>.</item>
 ///   <item>Runs the SELECT and asserts the result against either
-///     <c>ExpectedRowCount</c> or <c>ColumnAssertions</c>.</item>
+///     <c>ExpectedRowCount</c> or <c>ColumnAssertions</c>, with NULL-aware
+///     evaluation via <see cref="ColumnAssertionEvaluator"/>.</item>
+///   <item>On green assertions, evaluates each <see cref="ColumnCapture"/> and
+///     attaches the captured tokens to the step's <c>Metadata["capturedTokens"]</c>
+///     so <c>PostStepOrchestrator</c> can merge them into the run context for
+///     siblings (inline + deferred).</item>
 /// </list>
+///
+/// On any failure (assertion or row-count) the full first row is captured into
+/// <c>Metadata["dbCheckRow"]</c>; row-count failures additionally attach the
+/// first three rows under <c>Metadata["dbCheckRows"]</c> for the run-detail UI.
 /// </summary>
 public class DbCheckAgent : BaseTestAgent
 {
+    private const int RowCellTruncate = 200;
+
     private readonly IEnvironmentResolver _envResolver;
 
     public override string Name => "DB Check Agent";
@@ -69,30 +80,11 @@ public class DbCheckAgent : BaseTestAgent
             return Build(task, steps, TestStatus.Error, "No DB check definitions supplied.", sw);
         }
 
-        var connectionString = ResolveConnectionString(checks[0].ConnectionKey, envKey);
-        if (string.IsNullOrWhiteSpace(connectionString))
-        {
-            steps.Add(TestStep.Err("db-check",
-                $"No connection string resolved for key '{checks[0].ConnectionKey}' (env '{envKey ?? "default"}')."));
-            return Build(task, steps, TestStatus.Error, "DB check connection unresolved.", sw);
-        }
-
-        await using var conn = new SqlConnection(connectionString);
-        try
-        {
-            await conn.OpenAsync(ct);
-        }
-        catch (Exception ex)
-        {
-            steps.Add(TestStep.Err("db-check-open",
-                $"Failed to open connection for key '{checks[0].ConnectionKey}': {ex.Message}"));
-            return Build(task, steps, TestStatus.Error, "DB check connection failed.", sw);
-        }
-
+        // Per-check connection — each entry can target a different logical DB.
         for (var i = 0; i < checks.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
-            await RunOneAsync(conn, checks[i], i + 1, steps, ct);
+            await RunOneAsync(checks[i], i + 1, envKey, steps, ct);
         }
 
         var hasFails = steps.Any(s => s.Status == TestStatus.Failed);
@@ -106,20 +98,10 @@ public class DbCheckAgent : BaseTestAgent
         return Build(task, steps, status, summary, sw);
     }
 
-    private string? ResolveConnectionString(string connectionKey, string? envKey)
-    {
-        // Slice 2: only "BravoDb" is routed through the resolver. If future
-        // keys are added (e.g. SDR reporting DB), extend this switch — don't
-        // hardcode connection strings in the agent.
-        return string.Equals(connectionKey, "BravoDb", StringComparison.OrdinalIgnoreCase)
-            ? _envResolver.ResolveBravoDbConnectionString(envKey)
-            : null;
-    }
-
     private async Task RunOneAsync(
-        SqlConnection conn,
         DbCheckStepDefinition check,
         int index,
+        string? envKey,
         List<TestStep> steps,
         CancellationToken ct)
     {
@@ -132,6 +114,26 @@ public class DbCheckAgent : BaseTestAgent
             return;
         }
 
+        var connectionString = _envResolver.ResolveDbConnectionString(check.ConnectionKey, envKey);
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            steps.Add(TestStep.Err(action,
+                $"DB connection key '{check.ConnectionKey}' is not configured for env '{envKey ?? "default"}'."));
+            return;
+        }
+
+        await using var conn = new SqlConnection(connectionString);
+        try
+        {
+            await conn.OpenAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            steps.Add(TestStep.Err(action,
+                $"Failed to open connection for key '{check.ConnectionKey}' (env '{envKey ?? "default"}'): {ex.Message}"));
+            return;
+        }
+
         try
         {
             await using var cmd = new SqlCommand(check.Sql, conn)
@@ -139,90 +141,246 @@ public class DbCheckAgent : BaseTestAgent
                 CommandTimeout = Math.Max(1, check.TimeoutSeconds)
             };
 
-            if (check.ExpectedRowCount is int expectedCount)
+            // ── Mode 1: row-count assertion (column-assertions list takes precedence) ──
+            if (check.ColumnAssertions.Count == 0 && check.ExpectedRowCount is int expectedCount)
             {
-                var actualCount = 0;
-                await using (var reader = await cmd.ExecuteReaderAsync(ct))
-                {
-                    while (await reader.ReadAsync(ct)) actualCount++;
-                }
-
-                if (actualCount == expectedCount)
-                {
-                    steps.Add(TestStep.Pass(action,
-                        $"Row count matched ({actualCount}). SQL: {Preview(check.Sql)}"));
-                }
-                else
-                {
-                    steps.Add(TestStep.Fail(action,
-                        $"Expected {expectedCount} row(s), got {actualCount}. SQL: {Preview(check.Sql)}"));
-                }
+                await RunRowCountModeAsync(check, action, cmd, expectedCount, steps, ct);
                 return;
             }
 
+            // ── Mode 2: per-column assertions (with optional captures) ──
             if (check.ColumnAssertions.Count > 0)
             {
-                await using var reader = await cmd.ExecuteReaderAsync(ct);
-                if (!await reader.ReadAsync(ct))
-                {
-                    steps.Add(TestStep.Fail(action,
-                        $"Expected at least one row matching {check.ColumnAssertions.Count} assertion(s), got no rows. SQL: {Preview(check.Sql)}"));
-                    return;
-                }
-
-                // Phase 1 minimal evaluator — only Equals is wired here. Phase 3
-                // replaces this with ColumnAssertionEvaluator, which covers every
-                // operator + JSONPath + NULL fidelity. Keeping legacy behaviour
-                // intact until then so the back-compat shim has something to
-                // assert against on a freshly migrated test set.
-                var mismatches = new List<string>();
-                foreach (var assertion in check.ColumnAssertions)
-                {
-                    var ordinal = -1;
-                    try { ordinal = reader.GetOrdinal(assertion.Column); }
-                    catch (IndexOutOfRangeException)
-                    {
-                        mismatches.Add($"column '{assertion.Column}' missing from result set");
-                        continue;
-                    }
-
-                    var actual = reader.IsDBNull(ordinal) ? "" : reader.GetValue(ordinal)?.ToString() ?? "";
-
-                    if (assertion.Operator != AssertionOperator.Equals)
-                    {
-                        mismatches.Add(
-                            $"{assertion.Column}: operator '{assertion.Operator}' is not yet implemented (legacy path supports Equals only).");
-                        continue;
-                    }
-
-                    var comparison = assertion.IgnoreCase
-                        ? StringComparison.OrdinalIgnoreCase
-                        : StringComparison.Ordinal;
-                    if (!string.Equals(actual, assertion.Expected, comparison))
-                        mismatches.Add($"{assertion.Column}: expected '{assertion.Expected}', got '{actual}'");
-                }
-
-                if (mismatches.Count == 0)
-                {
-                    steps.Add(TestStep.Pass(action,
-                        $"All {check.ColumnAssertions.Count} expected column value(s) matched on first row. SQL: {Preview(check.Sql)}"));
-                }
-                else
-                {
-                    steps.Add(TestStep.Fail(action,
-                        $"Column value mismatch: {string.Join("; ", mismatches)}. SQL: {Preview(check.Sql)}"));
-                }
+                await RunColumnAssertionsModeAsync(check, action, cmd, steps, ct);
                 return;
             }
 
             steps.Add(TestStep.Err(action,
                 "DbCheck has neither ExpectedRowCount nor ColumnAssertions set — nothing to assert."));
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             steps.Add(TestStep.Err(action,
                 $"DB check threw: {ex.Message}. SQL: {Preview(check.Sql)}"));
         }
+    }
+
+    private static async Task RunRowCountModeAsync(
+        DbCheckStepDefinition check, string action, SqlCommand cmd,
+        int expectedCount, List<TestStep> steps, CancellationToken ct)
+    {
+        var actualCount = 0;
+        var sampleRows = new List<Dictionary<string, string?>>();
+        await using (var reader = await cmd.ExecuteReaderAsync(ct))
+        {
+            while (await reader.ReadAsync(ct))
+            {
+                if (sampleRows.Count < 3) sampleRows.Add(ReadRow(reader));
+                actualCount++;
+            }
+        }
+
+        if (actualCount == expectedCount)
+        {
+            steps.Add(TestStep.Pass(action,
+                $"Row count matched ({actualCount}). SQL: {Preview(check.Sql)}"));
+            return;
+        }
+
+        var failStep = new TestStep
+        {
+            Action = action,
+            Status = TestStatus.Failed,
+            Summary = $"Expected {expectedCount} row(s), got {actualCount}. SQL: {Preview(check.Sql)}",
+        };
+        if (sampleRows.Count > 0)
+        {
+            failStep.Metadata["dbCheckRow"] = sampleRows[0];
+            if (sampleRows.Count > 1) failStep.Metadata["dbCheckRows"] = sampleRows;
+        }
+        steps.Add(failStep);
+    }
+
+    private async Task RunColumnAssertionsModeAsync(
+        DbCheckStepDefinition check, string action, SqlCommand cmd,
+        List<TestStep> steps, CancellationToken ct)
+    {
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+        {
+            steps.Add(TestStep.Fail(action,
+                $"Expected at least one row matching {check.ColumnAssertions.Count} assertion(s), got no rows. SQL: {Preview(check.Sql)}"));
+            return;
+        }
+
+        // Capture the full first row up front so failures can attach it without re-reading.
+        var firstRow = ReadRow(reader);
+
+        // Build a column→ordinal lookup once so JsonPath / repeated lookups are fast.
+        var ordinals = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < reader.FieldCount; i++)
+            ordinals[reader.GetName(i)] = i;
+
+        var failureReasons = new List<string>();
+        foreach (var assertion in check.ColumnAssertions)
+        {
+            if (!ordinals.TryGetValue(assertion.Column, out var ordinal))
+            {
+                failureReasons.Add($"column '{assertion.Column}' missing from result set");
+                continue;
+            }
+
+            var isDbNull = reader.IsDBNull(ordinal);
+            var rawValue = isDbNull ? null : reader.GetValue(ordinal);
+
+            var result = ColumnAssertionEvaluator.Evaluate(assertion, rawValue, isDbNull);
+            if (!result.Passed)
+                failureReasons.Add(result.Reason ?? $"column '{assertion.Column}' assertion failed");
+        }
+
+        if (failureReasons.Count == 0)
+        {
+            // Captures only run on green assertions: a failing assertion means the
+            // row is wrong, so any captured value would be suspect. Documented in
+            // ColumnCapture's XML and on the agent for reviewer reference.
+            var passStep = new TestStep
+            {
+                Action = action,
+                Status = TestStatus.Passed,
+                Summary = $"All {check.ColumnAssertions.Count} assertion(s) passed on first row. SQL: {Preview(check.Sql)}",
+            };
+
+            if (check.Captures.Count > 0)
+            {
+                var capResult = EvaluateCaptures(check.Captures, reader, ordinals, action);
+                if (capResult.FailureReason is not null)
+                {
+                    var capFail = new TestStep
+                    {
+                        Action = action,
+                        Status = TestStatus.Failed,
+                        Summary = $"Capture failed: {capResult.FailureReason}. SQL: {Preview(check.Sql)}",
+                    };
+                    capFail.Metadata["dbCheckRow"] = firstRow;
+                    steps.Add(capFail);
+                    return;
+                }
+
+                if (capResult.Captured.Count > 0)
+                    passStep.Metadata["capturedTokens"] = capResult.Captured;
+            }
+
+            steps.Add(passStep);
+            return;
+        }
+
+        var failStep = new TestStep
+        {
+            Action = action,
+            Status = TestStatus.Failed,
+            Summary = $"Column value mismatch: {string.Join("; ", failureReasons)}. SQL: {Preview(check.Sql)}",
+        };
+        failStep.Metadata["dbCheckRow"] = firstRow;
+        steps.Add(failStep);
+    }
+
+    private CaptureResult EvaluateCaptures(
+        List<ColumnCapture> captures,
+        SqlDataReader reader,
+        IReadOnlyDictionary<string, int> ordinals,
+        string action)
+    {
+        var captured = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var cap in captures)
+        {
+            if (string.IsNullOrWhiteSpace(cap.As))
+            {
+                if (cap.Required)
+                    return new CaptureResult(captured,
+                        $"capture for column '{cap.Column}' has no 'As' token name");
+                continue;
+            }
+
+            if (!ordinals.TryGetValue(cap.Column, out var ordinal))
+            {
+                if (cap.Required)
+                    return new CaptureResult(captured,
+                        $"capture column '{cap.Column}' missing from result set");
+                Logger.LogWarning(
+                    "{Action}: optional capture column '{Col}' missing — token '{{{{{Tok}}}}}' left undefined",
+                    action, cap.Column, cap.As);
+                continue;
+            }
+
+            var isDbNull = reader.IsDBNull(ordinal);
+
+            if (!string.IsNullOrEmpty(cap.JsonPath))
+            {
+                if (isDbNull)
+                {
+                    if (cap.Required)
+                        return new CaptureResult(captured,
+                            $"capture column '{cap.Column}' is NULL — cannot extract JSON path '{cap.JsonPath}'");
+                    Logger.LogWarning(
+                        "{Action}: optional capture column '{Col}' is NULL — token '{{{{{Tok}}}}}' left undefined",
+                        action, cap.Column, cap.As);
+                    continue;
+                }
+
+                var rawText = Convert.ToString(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
+                var status = JsonValueExtractor.TryExtract(rawText, cap.JsonPath!, out var node, out var err);
+                if (status == JsonValueExtractor.ExtractionStatus.Found)
+                {
+                    captured[cap.As] = JsonValueExtractor.ToScalarString(node!);
+                    continue;
+                }
+
+                if (cap.Required)
+                    return new CaptureResult(captured,
+                        $"capture for column '{cap.Column}': {err ?? $"JSON path '{cap.JsonPath}' did not resolve"}");
+
+                Logger.LogWarning(
+                    "{Action}: optional capture for '{Col}.{Path}' did not resolve — token '{{{{{Tok}}}}}' left undefined",
+                    action, cap.Column, cap.JsonPath, cap.As);
+                continue;
+            }
+
+            if (isDbNull)
+            {
+                if (cap.Required)
+                    return new CaptureResult(captured,
+                        $"capture column '{cap.Column}' is NULL");
+                Logger.LogWarning(
+                    "{Action}: optional capture column '{Col}' is NULL — token '{{{{{Tok}}}}}' left undefined",
+                    action, cap.Column, cap.As);
+                continue;
+            }
+
+            captured[cap.As] = Convert.ToString(reader.GetValue(ordinal), CultureInfo.InvariantCulture) ?? "";
+        }
+
+        return new CaptureResult(captured, null);
+    }
+
+    private static Dictionary<string, string?> ReadRow(SqlDataReader reader)
+    {
+        var row = new Dictionary<string, string?>(reader.FieldCount, StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < reader.FieldCount; i++)
+        {
+            var name = reader.GetName(i);
+            if (reader.IsDBNull(i))
+            {
+                row[name] = null;
+                continue;
+            }
+            var raw = Convert.ToString(reader.GetValue(i), CultureInfo.InvariantCulture) ?? "";
+            row[name] = raw.Length <= RowCellTruncate ? raw : raw[..RowCellTruncate] + "…";
+        }
+        return row;
     }
 
     private static string Preview(string sql)
@@ -245,4 +403,6 @@ public class DbCheckAgent : BaseTestAgent
             Steps = steps,
             Duration = sw.Elapsed,
         };
+
+    private readonly record struct CaptureResult(Dictionary<string, string> Captured, string? FailureReason);
 }

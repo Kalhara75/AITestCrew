@@ -197,14 +197,18 @@ public class PostStepOrchestrator
 
         foreach (var childStep in childResult.Steps)
         {
-            stepSink.Add(new TestStep
+            var rebuilt = new TestStep
             {
                 Action = $"{action} {childStep.Action}",
                 Summary = childStep.Summary,
                 Status = childStep.Status,
                 Detail = childStep.Detail,
                 Duration = childStep.Duration,
-            });
+            };
+            // Forward any structured diagnostics (e.g. DbCheck's "dbCheckRow")
+            // through to the parent run-detail UI.
+            foreach (var (k, v) in childStep.Metadata) rebuilt.Metadata[k] = v;
+            stepSink.Add(rebuilt);
         }
 
         if (childResult.Status is TestStatus.Failed or TestStatus.Error

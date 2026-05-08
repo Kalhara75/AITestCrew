@@ -142,7 +142,10 @@ public class PersistedExecutionRun
                     Status = s.Status.ToString(),
                     Detail = s.Detail,
                     Duration = s.Duration,
-                    Timestamp = s.Timestamp
+                    Timestamp = s.Timestamp,
+                    Metadata = s.Metadata.Count > 0
+                        ? new Dictionary<string, object?>(s.Metadata)
+                        : null,
                 }).ToList(),
                 Deliveries = ExtractDeliveries(r.Metadata),
                 TeardownResults = ExtractTeardown(r.Metadata)
@@ -303,4 +306,14 @@ public class PersistedStepResult
     public string? Detail { get; set; }
     public TimeSpan Duration { get; set; }
     public DateTime Timestamp { get; set; }
+
+    /// <summary>
+    /// Persisted projection of <see cref="AiTestCrew.Core.Models.TestStep.Metadata"/>.
+    /// Currently used to round-trip DB-check failure diagnostics
+    /// (<c>"dbCheckRow"</c>, <c>"dbCheckRows"</c>) and captured tokens to the UI.
+    /// Values are kept as <see cref="object"/> so the JSON shape is preserved
+    /// across (de)serialisation; the UI inspects keys it knows about and ignores
+    /// the rest.
+    /// </summary>
+    public Dictionary<string, object?>? Metadata { get; set; }
 }
