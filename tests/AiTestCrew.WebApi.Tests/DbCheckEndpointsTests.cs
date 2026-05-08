@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using AiTestCrew.Agents.Environment;
 using AiTestCrew.Core.Configuration;
 using AiTestCrew.Core.Interfaces;
+using AiTestCrew.Core.Models;
 using AiTestCrew.WebApi.Endpoints;
 using AiTestCrew.WebApi.Services;
 using FluentAssertions;
@@ -159,7 +160,8 @@ public class DbCheckEndpointsTests
 
     private static async Task<IHost> BuildHostAsync(
         TestEnvironmentConfig cfg,
-        DbDryRunRateLimiter? limiter = null)
+        DbDryRunRateLimiter? limiter = null,
+        bool authenticated = true)
     {
         var hostBuilder = new HostBuilder()
             .ConfigureWebHost(webBuilder =>
@@ -177,6 +179,24 @@ public class DbCheckEndpointsTests
                     .Configure(app =>
                     {
                         app.UseRouting();
+                        // Stand-in for ApiKeyAuthMiddleware: drop a fake user into
+                        // HttpContext.Items["User"] so endpoint auth gates pass.
+                        // When `authenticated` is false, leave it null and the
+                        // endpoint should respond 401.
+                        if (authenticated)
+                        {
+                            app.Use(async (httpCtx, next) =>
+                            {
+                                httpCtx.Items["User"] = new User
+                                {
+                                    Id = "test-user",
+                                    Name = "Test User",
+                                    ApiKey = "test-key",
+                                    IsActive = true,
+                                };
+                                await next();
+                            });
+                        }
                         app.UseEndpoints(e =>
                         {
                             e.MapGroup("/api/db-check").MapDbCheckEndpoints();
@@ -185,6 +205,40 @@ public class DbCheckEndpointsTests
             });
         var host = await hostBuilder.StartAsync();
         return host;
+    }
+
+    [Fact]
+    public async Task DryRun_returns_401_when_unauthenticated()
+    {
+        var cfg = new TestEnvironmentConfig
+        {
+            DbConnections = { ["BravoDb"] = "Server=x;Database=y;" },
+        };
+        using var host = await BuildHostAsync(cfg, authenticated: false);
+        var client = host.GetTestClient();
+
+        var resp = await client.PostAsJsonAsync("/api/db-check/dry-run", new
+        {
+            envKey = (string?)null,
+            connectionKey = "BravoDb",
+            sql = "SELECT 1",
+            parameters = new Dictionary<string, string>(),
+        });
+        resp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task Connections_returns_401_when_unauthenticated()
+    {
+        var cfg = new TestEnvironmentConfig
+        {
+            DbConnections = { ["SdrReportingDb"] = "Server=x;" },
+        };
+        using var host = await BuildHostAsync(cfg, authenticated: false);
+        var client = host.GetTestClient();
+
+        var resp = await client.GetAsync("/api/db-check/connections?envKey=default");
+        resp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
     private record KeysResponse(IReadOnlyList<string> Keys);

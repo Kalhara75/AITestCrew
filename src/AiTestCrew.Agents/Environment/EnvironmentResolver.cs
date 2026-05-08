@@ -125,8 +125,11 @@ public class EnvironmentResolver : IEnvironmentResolver
 
     public bool ResolveAllowDbDryRun(string? envKey)
     {
-        // For envs not listed in Environments at all, default to true to match
-        // the positive-default of RunDataPacksOnStartup.
+        // Unknown env keys are conservative-deny — typos shouldn't accidentally permit.
+        if (!string.IsNullOrWhiteSpace(envKey)
+            && !_config.Environments.ContainsKey(envKey))
+            return false;
+
         var env = Resolve(envKey);
         return env.AllowDbDryRun;
     }

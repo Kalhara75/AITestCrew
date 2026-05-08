@@ -34,6 +34,11 @@ public static class DbCheckEndpoints
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
+            // Auth gate must run BEFORE the rate limiter so anonymous callers can't
+            // starve another user's bucket via the IP / "anonymous" fallback key.
+            var user = ctx.Items["User"] as User;
+            if (user is null) return Results.Unauthorized();
+
             if (body is null)
                 return Results.BadRequest(new { error = "request body is required" });
             if (string.IsNullOrWhiteSpace(body.Sql))
@@ -41,10 +46,8 @@ public static class DbCheckEndpoints
 
             var connectionKey = string.IsNullOrWhiteSpace(body.ConnectionKey) ? "BravoDb" : body.ConnectionKey!;
 
-            // Rate limit per user (or per IP if auth is disabled).
-            var rateKey = (ctx.Items["User"] as User)?.Id
-                ?? ctx.Connection.RemoteIpAddress?.ToString()
-                ?? "anonymous";
+            // Rate limit per authenticated user.
+            var rateKey = user.Id;
             if (!rateLimiter.TryAcquire(rateKey))
             {
                 return Results.Json(
@@ -138,8 +141,12 @@ public static class DbCheckEndpoints
 
         group.MapGet("/connections", (
             string? envKey,
+            HttpContext ctx,
             IEnvironmentResolver envResolver) =>
         {
+            var user = ctx.Items["User"] as User;
+            if (user is null) return Results.Unauthorized();
+
             var keys = envResolver.ListDbConnectionKeys(envKey);
             return Results.Ok(new { keys });
         });

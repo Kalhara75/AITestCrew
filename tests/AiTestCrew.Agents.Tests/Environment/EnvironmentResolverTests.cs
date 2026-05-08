@@ -138,12 +138,30 @@ public class EnvironmentResolverTests
     }
 
     [Fact]
-    public void Allow_dry_run_defaults_true_for_unknown_env()
+    public void Allow_dry_run_denies_unknown_non_null_env_key()
     {
+        // Unknown env keys are conservative-deny — typos shouldn't accidentally permit.
+        var cfg = new TestEnvironmentConfig
+        {
+            Environments =
+            {
+                ["dev"] = new EnvironmentConfig { AllowDbDryRun = true },
+            },
+        };
+        var resolver = new EnvironmentResolver(cfg);
+
+        resolver.ResolveAllowDbDryRun("production-typo").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Allow_dry_run_defaults_true_when_envs_dict_empty_and_key_null()
+    {
+        // No Environments configured at all + null key — fall through to the
+        // EnvironmentConfig default (true). Preserves legacy single-env behaviour.
         var cfg = new TestEnvironmentConfig();
         var resolver = new EnvironmentResolver(cfg);
 
-        resolver.ResolveAllowDbDryRun("nonexistent").Should().BeTrue();
+        resolver.ResolveAllowDbDryRun(null).Should().BeTrue();
     }
 
     [Fact]
