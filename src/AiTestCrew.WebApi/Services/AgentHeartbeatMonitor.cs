@@ -277,11 +277,21 @@ public sealed class AgentHeartbeatMonitor : BackgroundService
             if (now - _lastRateLimiterSweepAt < TimeSpan.FromMinutes(5)) return;
             _lastRateLimiterSweepAt = now;
 
-            var limiter = _sp.GetService<DbDryRunRateLimiter>();
-            if (limiter is null) return;
-            var dropped = limiter.Sweep(now);
-            if (dropped > 0)
-                _logger.LogDebug("DB dry-run rate limiter swept — {Count} expired bucket(s) released.", dropped);
+            var dbLimiter = _sp.GetService<DbDryRunRateLimiter>();
+            if (dbLimiter is not null)
+            {
+                var dropped = dbLimiter.Sweep(now);
+                if (dropped > 0)
+                    _logger.LogDebug("DB dry-run rate limiter swept — {Count} expired bucket(s) released.", dropped);
+            }
+
+            var eventLimiter = _sp.GetService<EventAssertPeekRateLimiter>();
+            if (eventLimiter is not null)
+            {
+                var dropped = eventLimiter.Sweep(now);
+                if (dropped > 0)
+                    _logger.LogDebug("Event-assert peek rate limiter swept — {Count} expired bucket(s) released.", dropped);
+            }
         }
         catch (Exception ex)
         {

@@ -240,6 +240,7 @@ builder.Services.AddSingleton<IChatIntentService, ChatIntentService>();
 
 // ── DB dry-run rate limiter (per-user token bucket; janitor sweep on the heartbeat tick) ──
 builder.Services.AddSingleton<DbDryRunRateLimiter>(_ => new DbDryRunRateLimiter());
+builder.Services.AddSingleton<EventAssertPeekRateLimiter>(_ => new EventAssertPeekRateLimiter());
 
 // ── CORS ──
 builder.Services.AddCors(options =>
@@ -311,6 +312,7 @@ app.MapGroup("/api/runs").MapRunEndpoints();
 app.MapGroup("/api/chat").MapChatEndpoints();
 app.MapGroup("/api/data-packs").MapDataPackEndpoints();
 app.MapGroup("/api/db-check").MapDbCheckEndpoints();
+app.MapGroup("/api/event-assert").MapEventAssertEndpoints();
 if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCase))
 {
     app.MapGroup("/api/users").MapUserEndpoints();
