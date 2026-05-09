@@ -246,6 +246,14 @@ public abstract class BaseWebUiTestAgent : BaseTestAgent
             {
                 ct.ThrowIfCancellationRequested();
                 var tc = testCases[tcIdx];
+
+                // REQ-004: pre-parent drain for any EventAssert post-step that
+                // requested it. No-op when nothing on this test case requested
+                // a drain.
+                if (!await TryPreParentDrainsAsync(
+                        tc.PostSteps, tcIdx + 1, steps, CurrentEnvironmentKey, envParams, ct))
+                    continue;
+
                 var tcSteps = await ExecuteUiTestCaseAsync(browser, tc, setupSteps, setupStartUrl, ct);
                 steps.AddRange(tcSteps);
 

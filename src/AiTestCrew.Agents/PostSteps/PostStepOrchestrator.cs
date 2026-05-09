@@ -917,6 +917,94 @@ public class PostStepOrchestrator
         _ = callingAgent;
         return _services.GetServices<ITestAgent>().ToList();
     }
+
+    // ─────────────────────────────────────────────────────
+    // Pre-parent drain hook (REQ-004 §4)
+    //
+    // Some event-assert post-steps need the queue / subscription drained of
+    // stale messages BEFORE the parent step runs — otherwise leftover
+    // messages from a prior failed run would contaminate match-mode counts
+    // (especially ExactlyOne / MaxCount). The orchestrator exposes this hook
+    // separately from RunInlineAsync because the parent agent's call site is
+    // its own; RunInlineAsync only runs AFTER the parent has produced its
+    // result.
+    //
+    // Strict-mode contract: an unhandled drain error fails fast — running the
+    // parent against a half-drained entity would yield misleading green/red
+    // verdicts. Callers append an Error step to the parent's step list using
+    // the returned reason and skip the parent invocation.
+    // ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns true when any post-step on this list has
+    /// <c>EventAssert.DrainBeforeParent == true</c>. Cheap pre-check so
+    /// parent agents can avoid the orchestrator dispatch entirely on the
+    /// common path (no event-assert post-step, or no drain requested).
+    /// </summary>
+    public static bool HasDrainBeforeParent(IReadOnlyList<VerificationStep> postSteps)
+    {
+        for (var i = 0; i < postSteps.Count; i++)
+        {
+            var ea = postSteps[i].EventAssert;
+            if (ea is not null && ea.DrainBeforeParent) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Drains every queue / subscription named by a
+    /// <see cref="EventAssertStepDefinition.DrainBeforeParent"/>=true
+    /// post-step. Runs sequentially. Token substitution is applied to the
+    /// entity name + correlation filter so post-steps targeting per-test
+    /// queues (<c>{{NMI}}.events</c>, …) drain the right entity.
+    ///
+    /// Throws when drain fails — caller surfaces the exception as an Error
+    /// step on the parent's step list and skips the parent invocation.
+    /// </summary>
+    public async Task RunPreParentDrainsAsync(
+        IReadOnlyList<VerificationStep> postSteps,
+        IReadOnlyDictionary<string, string> context,
+        string? environmentKey,
+        CancellationToken ct)
+    {
+        if (postSteps.Count == 0) return;
+
+        var agent = _services.GetService<EventAssertAgent.AzureServiceBusEventAgent>();
+        if (agent is null)
+        {
+            // Defensive — DI is wired in both Runner and WebApi. Fail fast so
+            // a configuration regression doesn't silently let drains no-op.
+            throw new InvalidOperationException(
+                "DrainBeforeParent requested but AzureServiceBusEventAgent isn't registered in DI.");
+        }
+
+        for (var i = 0; i < postSteps.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var ea = postSteps[i].EventAssert;
+            if (ea is null || !ea.DrainBeforeParent) continue;
+
+            var entity = new EventAssertAgent.ServiceBusEntity
+            {
+                Type = ea.Entity.Type,
+                Name = TokenSub(ea.Entity.Name, context) ?? "",
+                SubscriptionName = TokenSub(ea.Entity.SubscriptionName, context),
+            };
+
+            if (string.IsNullOrWhiteSpace(entity.Name))
+                throw new InvalidOperationException(
+                    $"DrainBeforeParent: post-step #{i + 1} has no entity name (after token substitution).");
+            if (entity.Type == EventAssertAgent.ServiceBusEntityType.Topic
+                && string.IsNullOrWhiteSpace(entity.SubscriptionName))
+                throw new InvalidOperationException(
+                    $"DrainBeforeParent: topic '{entity.Name}' on post-step #{i + 1} requires SubscriptionName.");
+
+            await agent.DrainAsync(ea.ConnectionKey, entity, environmentKey, ct);
+        }
+    }
+
+    private static string? TokenSub(string? input, IReadOnlyDictionary<string, string> context) =>
+        AiTestCrew.Core.Utilities.TokenSubstituter.Substitute(input, context, throwOnMissing: false);
 }
 
 /// <summary>

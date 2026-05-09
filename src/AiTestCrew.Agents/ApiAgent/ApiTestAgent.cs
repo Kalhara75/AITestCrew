@@ -163,6 +163,15 @@ public class ApiTestAgent : BaseTestAgent
                 var tc = envParams.Count > 0
                     ? StepParameterSubstituter.Apply(rawTc, envParams)
                     : rawTc;
+
+                // REQ-004: drain stale Service Bus messages before the parent
+                // runs when any post-step has EventAssert.DrainBeforeParent=true.
+                // Failure produces an Error step and skips the parent — running
+                // it against a half-drained entity yields misleading verdicts.
+                if (!await TryPreParentDrainsAsync(
+                        tc.PostSteps, tcIdx + 1, steps, envKey, envParams, ct))
+                    continue;
+
                 var stepResult = await ExecuteTestCaseAsync(tc, resolvedBaseUrl, stackKey, envKey, ct);
                 steps.Add(stepResult);
 

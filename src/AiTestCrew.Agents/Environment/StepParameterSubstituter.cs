@@ -2,6 +2,7 @@ using System.Text.Json;
 using AiTestCrew.Agents.ApiAgent;
 using AiTestCrew.Agents.AseXmlAgent;
 using AiTestCrew.Agents.DbAgent;
+using AiTestCrew.Agents.EventAssertAgent;
 using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Utilities;
 
@@ -329,7 +330,8 @@ public static class StepParameterSubstituter
             Api = source.Api is null ? null : Apply(source.Api, context, unknownTokens),
             AseXml = source.AseXml is null ? null : Apply(source.AseXml, context, unknownTokens),
             AseXmlDeliver = source.AseXmlDeliver is null ? null : Apply(source.AseXmlDeliver, context, unknownTokens),
-            DbCheck = source.DbCheck is null ? null : Apply(source.DbCheck, context, unknownTokens)
+            DbCheck = source.DbCheck is null ? null : Apply(source.DbCheck, context, unknownTokens),
+            EventAssert = source.EventAssert is null ? null : Apply(source.EventAssert, context, unknownTokens)
         };
     }
 
@@ -377,6 +379,60 @@ public static class StepParameterSubstituter
     }
 
     // ── Helpers ────────────────────────────────────────────────────
+
+    // ── EventAssertStepDefinition ───────────────────────────────────
+
+    public static EventAssertStepDefinition Apply(
+        EventAssertStepDefinition source,
+        IReadOnlyDictionary<string, string> context,
+        ICollection<string>? unknownTokens = null)
+    {
+        return new EventAssertStepDefinition
+        {
+            Name = source.Name,
+            ConnectionKey = source.ConnectionKey,
+            Entity = new ServiceBusEntity
+            {
+                Type = source.Entity.Type,
+                Name = Sub(source.Entity.Name, context, unknownTokens) ?? "",
+                SubscriptionName = Sub(source.Entity.SubscriptionName, context, unknownTokens),
+            },
+            BodyFormat = source.BodyFormat,
+            ReceiveMode = source.ReceiveMode,
+            MatchMode = source.MatchMode,
+            ExpectedCount = source.ExpectedCount,
+            MaxCount = source.MaxCount,
+            TimeoutSeconds = source.TimeoutSeconds,
+            MaxMessages = source.MaxMessages,
+            DrainBeforeParent = source.DrainBeforeParent,
+            CompleteOnPass = source.CompleteOnPass,
+            CorrelationFilter = Sub(source.CorrelationFilter, context, unknownTokens),
+            SessionId = Sub(source.SessionId, context, unknownTokens),
+            Criteria = source.Criteria
+                .Select(c => new EventCriterion
+                {
+                    Field = Sub(c.Field, context, unknownTokens) ?? "",
+                    Operator = c.Operator,
+                    Expected = Sub(c.Expected, context, unknownTokens) ?? "",
+                    Expected2 = Sub(c.Expected2, context, unknownTokens),
+                    IgnoreCase = c.IgnoreCase,
+                    ToleranceSeconds = c.ToleranceSeconds,
+                    ToleranceDelta = c.ToleranceDelta,
+                })
+                .ToList(),
+            Captures = source.Captures
+                .Select(c => new EventCapture
+                {
+                    Field = Sub(c.Field, context, unknownTokens) ?? "",
+                    // Captures.As is intentionally NOT substituted — same rule as
+                    // REQ-002's ColumnCapture.As. Substituting would let parent
+                    // context redirect captures unexpectedly.
+                    As = c.As,
+                    Required = c.Required,
+                })
+                .ToList(),
+        };
+    }
 
     private static List<VerificationStep> ApplyPostSteps(
         List<VerificationStep> source,

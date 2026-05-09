@@ -116,6 +116,14 @@ public class AseXmlGenerationAgent : BaseTestAgent
             {
                 ct.ThrowIfCancellationRequested();
                 var tc = testCases[caseIdx];
+
+                // REQ-004: pre-parent drain for any EventAssert post-step that
+                // requested it. Runs before the render so any stale messages on
+                // a target queue/sub are cleared.
+                if (!await TryPreParentDrainsAsync(
+                        tc.PostSteps, caseIdx + 1, steps, envKey, envParams, ct))
+                    continue;
+
                 var (renderStep, renderedContext) = RenderOneWithContext(tc, caseIdx + 1, runOutputDir);
                 steps.Add(renderStep);
 

@@ -697,6 +697,15 @@ public class AseXmlDeliveryAgent : BaseTestAgent
         string? environmentKey,
         CancellationToken ct)
     {
+        // REQ-004: pre-parent drain for any EventAssert post-step that
+        // requested it. Runs before the render+upload so any stale messages
+        // on a target queue/sub are cleared.
+        var envParamsForDrain = Environment.StepParameterSubstituter.ReadEnvironmentParameters(
+            _currentTask?.Parameters ?? new Dictionary<string, object>());
+        if (!await TryPreParentDrainsAsync(
+                tc.PostSteps, index, steps, environmentKey, envParamsForDrain, ct))
+            return;
+
         // 1) Render
         var renderAction = $"render[{index}] {tc.TemplateId}";
         var template = _templates.Get(tc.TemplateId);

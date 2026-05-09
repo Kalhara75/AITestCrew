@@ -208,6 +208,12 @@ public abstract class BaseDesktopUiTestAgent : BaseTestAgent
                     NormalizeAppWindow(app);
                 }
 
+                // REQ-004: pre-parent drain for any EventAssert post-step that
+                // requested it. No-op when nothing on this test case requested it.
+                if (!await TryPreParentDrainsAsync(
+                        tc.PostSteps, tcIdx + 1, steps, CurrentEnvironmentKey, envParams, ct))
+                    continue;
+
                 var tcSteps = ExecuteDesktopTestCase(app, mainWindow, automation, tc);
                 steps.AddRange(tcSteps);
 

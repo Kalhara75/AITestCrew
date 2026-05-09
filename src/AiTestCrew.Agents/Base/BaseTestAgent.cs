@@ -245,6 +245,49 @@ public abstract class BaseTestAgent : ITestAgent
         return task.Parameters.TryGetValue(key, out var v) && v is T typed ? typed : null;
     }
 
+    /// <summary>
+    /// Runs the pre-parent drain hook for any post-step on this test case
+    /// that has <c>EventAssert.DrainBeforeParent=true</c>. Returns
+    /// <c>true</c> when the drain succeeded (or was a no-op), <c>false</c>
+    /// when it failed — the caller should append the synthesised Error step
+    /// (already added to <paramref name="stepSink"/>) and skip the parent
+    /// invocation. Strict-mode contract: running the parent against a
+    /// half-drained entity yields misleading verdicts.
+    ///
+    /// No-op when (a) the orchestrator isn't wired, (b) the post-step list
+    /// is empty, or (c) no post-step requested DrainBeforeParent.
+    /// </summary>
+    protected async Task<bool> TryPreParentDrainsAsync(
+        IReadOnlyList<VerificationStep> postSteps,
+        int tcIndex,
+        List<TestStep> stepSink,
+        string? environmentKey,
+        IReadOnlyDictionary<string, string> environmentParameters,
+        CancellationToken ct)
+    {
+        if (postSteps.Count == 0 || PostStepOrchestrator is null) return true;
+        if (!PostStepOrchestrator.HasDrainBeforeParent(postSteps)) return true;
+
+        var context = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (k, v) in environmentParameters)
+            if (!string.IsNullOrEmpty(v)) context[k] = v;
+
+        try
+        {
+            await PostStepOrchestrator.RunPreParentDrainsAsync(
+                postSteps, context, environmentKey, ct);
+            return true;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            stepSink.Add(TestStep.Err(
+                $"pre-parent-drain[{tcIndex}]",
+                $"DrainBeforeParent failed: {ex.Message}"));
+            return false;
+        }
+    }
+
     // ─────────────────────────────────────────────────────
     // VerifyOnly path — generic helper used by non-delivery agents
     // (delivery agent has its own bespoke VerifyOnlyAsync because it needs to
