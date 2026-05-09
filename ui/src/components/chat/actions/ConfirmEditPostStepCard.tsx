@@ -7,6 +7,7 @@ import { CodeBlock } from '../CodeBlock';
 import { ActionCardHeader, actionCardStyle } from './shared';
 import { tokens } from '../tokens';
 import { primaryBtnStyle, errorLineStyle, successCardStyle } from '../styles';
+import { summariseEventAssert } from './eventAssertSummary';
 
 type EditPostStepPayload = {
   moduleId?: string;
@@ -111,42 +112,7 @@ export function ConfirmEditPostStepCard({
     rows.push(['connection', ps.dbCheck.connectionKey]);
   }
   if (ps?.eventAssert) {
-    const ea = ps.eventAssert;
-    const entityLabel = ea.entity.type === 'Topic'
-      ? `Topic ${ea.entity.name} / Sub ${ea.entity.subscriptionName ?? '?'}`
-      : `Queue ${ea.entity.name}`;
-    rows.push(['entity', entityLabel]);
-    let modeLabel: string = ea.matchMode;
-    if (ea.matchMode === 'ExactCount' || ea.matchMode === 'MinCount' || ea.matchMode === 'MaxCount') {
-      modeLabel = `${ea.matchMode}(${ea.expectedCount ?? '?'})`;
-    } else if (ea.matchMode === 'CountRange') {
-      modeLabel = `CountRange(${ea.expectedCount ?? '?'}, ${ea.maxCount ?? '?'})`;
-    }
-    rows.push(['match', modeLabel]);
-    if (ea.drainBeforeParent) rows.push(['drain', 'YES — pre-parent']);
-    if (ea.bodyFormat && ea.bodyFormat !== 'Auto') rows.push(['body format', ea.bodyFormat]);
-    if (ea.receiveMode && ea.receiveMode !== 'PeekLock') rows.push(['receive', ea.receiveMode]);
-    if (ea.correlationFilter) rows.push(['correlationId', ea.correlationFilter]);
-    if (ea.sessionId) rows.push(['sessionId', ea.sessionId]);
-    rows.push(['timeout (s)', ea.timeoutSeconds.toString()]);
-    if (ea.criteria.length > 0) {
-      rows.push([
-        'criteria',
-        ea.criteria.map(c => {
-          if (c.operator === 'IsNull' || c.operator === 'IsNotNull') return `${c.field} ${c.operator}`;
-          if (c.operator === 'Between') return `${c.field} ${c.operator} '${c.expected}' … '${c.expected2 ?? ''}'`;
-          return `${c.field} ${c.operator} '${c.expected}'`;
-        }).join('; '),
-      ]);
-    }
-    if (ea.captures.length > 0) {
-      rows.push([
-        'captures',
-        ea.captures.map(c =>
-          `{{${c.as}}} ← ${c.field}${c.required ? '' : ' (optional)'}`).join('; '),
-      ]);
-    }
-    rows.push(['connection', ea.connectionKey]);
+    summariseEventAssert(ps.eventAssert).forEach(r => rows.push(r));
   }
 
   return (

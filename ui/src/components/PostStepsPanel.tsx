@@ -381,18 +381,21 @@ function PayloadSummary({ p }: { p: PostStep }) {
   }
   if (p.eventAssert) {
     const ea = p.eventAssert;
-    const entity = ea.entity.type === 'Topic'
-      ? `topic ${ea.entity.name}/${ea.entity.subscriptionName ?? '?'}`
-      : `queue ${ea.entity.name}`;
-    let mode: string = ea.matchMode;
-    if (ea.matchMode === 'ExactCount' || ea.matchMode === 'MinCount' || ea.matchMode === 'MaxCount') {
-      mode = `${ea.matchMode}(${ea.expectedCount ?? '?'})`;
-    } else if (ea.matchMode === 'CountRange') {
+    const entity = ea.entity?.type === 'Topic'
+      ? `topic ${ea.entity?.name ?? '?'}/${ea.entity?.subscriptionName ?? '?'}`
+      : `queue ${ea.entity?.name ?? '?'}`;
+    const matchMode = ea.matchMode ?? 'AnyMessage';
+    let mode: string = matchMode;
+    if (matchMode === 'ExactCount' || matchMode === 'MinCount' || matchMode === 'MaxCount') {
+      mode = `${matchMode}(${ea.expectedCount ?? '?'})`;
+    } else if (matchMode === 'CountRange') {
       mode = `CountRange(${ea.expectedCount ?? '?'}, ${ea.maxCount ?? '?'})`;
     }
+    const criteriaCount = (ea.criteria ?? []).length;
+    const capturesCount = (ea.captures ?? []).length;
     const drain = ea.drainBeforeParent ? ' · drain' : '';
-    const cap = ea.captures.length > 0 ? ` / captures=${ea.captures.length}` : '';
-    return <>{entity} · {mode} · criteria={ea.criteria.length}{cap}{drain}</>;
+    const cap = capturesCount > 0 ? ` / captures=${capturesCount}` : '';
+    return <>{entity} · {mode} · criteria={criteriaCount}{cap}{drain}</>;
   }
   if (p.api) return <>{p.api.method} {p.api.endpoint}</>;
   if (p.aseXmlDeliver) return <>deliver {p.aseXmlDeliver.templateId} → {p.aseXmlDeliver.endpointCode}</>;
@@ -465,20 +468,27 @@ function DbCheckBlock({ dc }: { dc: NonNullable<PostStep['dbCheck']> }) {
 }
 
 function EventAssertBlock({ ea }: { ea: NonNullable<PostStep['eventAssert']> }) {
-  const entityLabel = ea.entity.type === 'Topic'
-    ? `Topic ${ea.entity.name} / Sub ${ea.entity.subscriptionName ?? '?'}`
-    : `Queue ${ea.entity.name}`;
-  let modeLabel: string = ea.matchMode;
-  if (ea.matchMode === 'ExactCount' || ea.matchMode === 'MinCount' || ea.matchMode === 'MaxCount') {
-    modeLabel = `${ea.matchMode}(${ea.expectedCount ?? '?'})`;
-  } else if (ea.matchMode === 'CountRange') {
+  // Defensive — every field can be missing if a stale persisted shape or a
+  // partial LLM emission lands here. A single malformed entry must not bring
+  // down the whole panel.
+  const entity = ea.entity;
+  const entityLabel = entity?.type === 'Topic'
+    ? `Topic ${entity.name ?? '?'} / Sub ${entity.subscriptionName ?? '?'}`
+    : `Queue ${entity?.name ?? '?'}`;
+  const matchMode = ea.matchMode ?? 'AnyMessage';
+  let modeLabel: string = matchMode;
+  if (matchMode === 'ExactCount' || matchMode === 'MinCount' || matchMode === 'MaxCount') {
+    modeLabel = `${matchMode}(${ea.expectedCount ?? '?'})`;
+  } else if (matchMode === 'CountRange') {
     modeLabel = `CountRange(${ea.expectedCount ?? '?'}, ${ea.maxCount ?? '?'})`;
   }
+  const criteria = ea.criteria ?? [];
+  const captures = ea.captures ?? [];
 
   return (
     <div style={{ marginTop: 6, fontSize: 12 }}>
       <div style={{ color: '#64748b', marginBottom: 4 }}>
-        <strong>connection:</strong> <code style={inlineCode}>{ea.connectionKey}</code>
+        <strong>connection:</strong> <code style={inlineCode}>{ea.connectionKey ?? '?'}</code>
         <span style={{ marginLeft: 10 }}>
           <strong>entity:</strong> {entityLabel}
         </span>
@@ -487,16 +497,16 @@ function EventAssertBlock({ ea }: { ea: NonNullable<PostStep['eventAssert']> }) 
         </span>
       </div>
       <div style={{ color: '#64748b', marginBottom: 4 }}>
-        <strong>timeout:</strong> {ea.timeoutSeconds}s
+        <strong>timeout:</strong> {ea.timeoutSeconds ?? '?'}s
         <span style={{ marginLeft: 10 }}>
-          <strong>max msgs:</strong> {ea.maxMessages}
+          <strong>max msgs:</strong> {ea.maxMessages ?? '?'}
         </span>
-        {ea.bodyFormat !== 'Auto' && (
+        {ea.bodyFormat && ea.bodyFormat !== 'Auto' && (
           <span style={{ marginLeft: 10 }}>
             <strong>body:</strong> {ea.bodyFormat}
           </span>
         )}
-        {ea.receiveMode !== 'PeekLock' && (
+        {ea.receiveMode && ea.receiveMode !== 'PeekLock' && (
           <span style={{ marginLeft: 10 }}>
             <strong>receive:</strong> {ea.receiveMode}
           </span>
@@ -506,7 +516,7 @@ function EventAssertBlock({ ea }: { ea: NonNullable<PostStep['eventAssert']> }) 
             <strong>drain before parent</strong>
           </span>
         )}
-        {!ea.completeOnPass && (
+        {ea.completeOnPass === false && (
           <span style={{ marginLeft: 10, color: '#475569' }}>
             <strong>completeOnPass:</strong> false
           </span>
@@ -526,32 +536,39 @@ function EventAssertBlock({ ea }: { ea: NonNullable<PostStep['eventAssert']> }) 
           )}
         </div>
       )}
-      {ea.criteria.length > 0 && (
+      {criteria.length > 0 && (
         <div style={{ color: '#64748b', marginTop: 4 }}>
           <strong>criteria:</strong>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
-            {ea.criteria.map((c, i) => (
-              <span key={i} style={pillStyle}>
-                <strong style={{ color: '#4f46e5' }}>{c.field}</strong>
-                {' '}{c.operator}{' '}
-                {c.operator !== 'IsNull' && c.operator !== 'IsNotNull' ? `'${c.expected}'` : ''}
-                {c.operator === 'Between' && c.expected2 ? ` … '${c.expected2}'` : ''}
-              </span>
-            ))}
+            {criteria.map((c, i) => {
+              if (!c) return null;
+              const op = c.operator ?? 'Equals';
+              return (
+                <span key={i} style={pillStyle}>
+                  <strong style={{ color: '#4f46e5' }}>{c.field ?? '?'}</strong>
+                  {' '}{op}{' '}
+                  {op !== 'IsNull' && op !== 'IsNotNull' ? `'${c.expected ?? ''}'` : ''}
+                  {op === 'Between' && c.expected2 ? ` … '${c.expected2}'` : ''}
+                </span>
+              );
+            })}
           </div>
         </div>
       )}
-      {ea.captures.length > 0 && (
+      {captures.length > 0 && (
         <div style={{ color: '#64748b', marginTop: 4 }}>
           <strong>captures:</strong>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
-            {ea.captures.map((c, i) => (
-              <span key={i} style={pillStyle}>
-                <strong style={{ color: '#0d9488' }}>{`{{${c.as}}}`}</strong>
-                {' ← '}{c.field}
-                {!c.required ? ' (optional)' : ''}
-              </span>
-            ))}
+            {captures.map((c, i) => {
+              if (!c) return null;
+              return (
+                <span key={i} style={pillStyle}>
+                  <strong style={{ color: '#0d9488' }}>{`{{${c.as ?? '?'}}}`}</strong>
+                  {' ← '}{c.field ?? '?'}
+                  {c.required === false ? ' (optional)' : ''}
+                </span>
+              );
+            })}
           </div>
         </div>
       )}
