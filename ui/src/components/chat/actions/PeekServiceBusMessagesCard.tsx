@@ -91,7 +91,7 @@ export function PeekServiceBusMessagesCard({
         <div style={{ marginTop: 8 }}>
           <div style={{
             fontSize: tokens.font.size.sm,
-            color: tokens.color.muted,
+            color: tokens.color.textMuted,
             marginBottom: 4,
           }}>
             {response.totalPeeked === 0
@@ -150,7 +150,7 @@ function PeekMessageRow({ idx, m }: { idx: number; m: PeekMessage }) {
             <div style={{ marginTop: 6 }}>
               <div style={{
                 fontSize: tokens.font.size.xs,
-                color: tokens.color.muted,
+                color: tokens.color.textMuted,
                 marginBottom: 2,
               }}>
                 ApplicationProperties
