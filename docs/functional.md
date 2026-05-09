@@ -635,6 +635,154 @@ When a column-value assertion fails, the run-detail page (`ExecutionDetailPage`)
 
 ---
 
+### Asserting Service Bus events
+
+An Event Assert post-step opens a receiver against an Azure Service Bus queue or topic+subscription after the parent step completes, evaluates per-message criteria over system properties, application properties, and JSON / XML / text bodies, and resolves a verdict via a configurable match-mode (`AnyMessage` / `AllMessages` / `ExactlyOne` / `ExactCount` / `MinCount` / `MaxCount` / `CountRange`). Like DB Assert, it is dialog/chat/skill-authored only — there is no recorder.
+
+**When to use an Event Assert (vs. a DB or UI verification).** Use an Event Assert when the only observable signal of a parent action is an enqueued message — fire-and-forget event publishers, downstream notifications, B2B inbound events. Use a DB Assert when the application's own database carries the signal (faster, more stable). Use a UI verification when the user-visible state is what matters.
+
+#### Authoring routes
+
+**Chat assistant.** Ask the assistant in natural language:
+
+```
+After the API publish step, confirm a MeterReadingCreated event was raised
+onto the meter-events topic on the test-runner subscription with a MeterId
+matching {{MeterId}}, and capture the EventId for use in the next step.
+```
+
+The assistant emits a `confirmCreatePostStep` card with target `Event_AzureServiceBus`, `entity = { type: Topic, name: meter-events, subscriptionName: test-runner }`, criteria for `ApplicationProperties.EventType Equals "MeterReadingCreated"` and `Body.MeterId Equals "{{MeterId}}"`, and a capture `{ field: Body.EventId, as: EventId }`. Click **Add post-step** to save. The LLM picks `connectionKey` from the catalog's `serviceBusConnectionsByEnv` list — it never invents a key.
+
+**Negative assertions** ("verify NO X event was raised") map to `MatchMode: MaxCount` with `expectedCount: 0`. The receive loop runs the FULL timeout to actually verify zero arrived rather than short-circuiting on no-match-yet. The chat prompt rules treat phrases like "verify no rejection event arrived", "ensure no error event was raised" as the trigger.
+
+**NL peek-then-author** (REQ-004 §9a). When you don't know the exact field paths or property names, ask the assistant to look first:
+
+```
+Show me the last 5 messages on the meter-events topic, test-runner sub,
+on sumo-retail.
+```
+
+The assistant emits a `peekServiceBusMessages` card. Click **Peek messages** to render the actual messages currently on the entity (read-only — never consumes). Each message exposes `+ Add as criterion` and `+ Add as capture` buttons that fire a follow-up `confirmCreatePostStep` card with values pre-filled from the actual message. Useful when the producer's `ApplicationProperties` keys are unfamiliar.
+
+**NL-driven edits** (REQ-004 §9b). The assistant can modify an existing post-step:
+
+```
+Change the criterion on the event-assert post-step after the API call to use
+Contains instead of Equals.
+```
+
+The assistant emits a `confirmEditPostStep` card with the FULL updated payload (replacement, not patch). The card is generic across every post-step type — DB asserts and UI verifications gain NL-edit support too as a side benefit.
+
+**`/add-event-assert` skill.**
+
+```
+/add-event-assert aemo-b2b mfn-delivery-tests deliver-mfn AseXmlDeliver 0 \
+  "after the delivery, confirm a MeterReadingCreated event arrived on the meter-events topic, test-runner sub, MeterId={{NMI}}, capture EventId"
+```
+
+The skill reads the parent step, drafts entity + criteria + captures, validates the connection works via the peek endpoint (`GET /api/event-assert/connections` + `POST /api/event-assert/peek`), and PUTs the post-step. On a peek failure (auth / unknown queue / unreachable namespace) it prints a typed remediation snippet showing how to add the connection to `appsettings.json` — it never writes the config itself.
+
+**Edit pencil.** Click the pencil ✎ icon on any existing `eventAssert` post-step row in the `PostStepsPanel` to open `EditEventAssertStepDialog` with all fields pre-populated.
+
+#### Editor walkthrough
+
+`EditEventAssertStepDialog` opens when you click the edit pencil on an Event Assert post-step row:
+
+1. **Name** — label for the step.
+2. **Connection** — dropdown sourced from `GET /api/event-assert/connections?envKey=<key>`. Lists every key configured under `Environments.<env>.ServiceBusConnections` plus the top-level fallback dict. An entry that's not in the dropdown stays selectable as "(not configured)" so a stale post-step from a prior env doesn't lose its key on save.
+3. **Timeout (s)** / **Max messages** — number inputs; defaults 30 and 50.
+4. **Entity type** — radio: Queue or Topic. Selecting Topic reveals **Subscription name**.
+5. **Entity name** — text. `{{Token}}`-substituted at runtime.
+6. **Body format** — dropdown: Auto / JSON / XML / Text / Binary. Auto sniffs `ContentType` then falls back to first non-whitespace byte.
+7. **Receive mode** — dropdown: PeekLock (default — safe for shared subs) or ReceiveAndDelete.
+8. **Match mode** — dropdown: AnyMessage / AllMessages / ExactlyOne / ExactCount / MinCount / MaxCount / CountRange. Selecting a count-bounded mode reveals an Expected Count input; CountRange additionally reveals a Max input.
+9. **Drain before parent** — checkbox (off by default). When on, the orchestrator drains the entity in `ReceiveAndDelete` mode BEFORE the parent step runs (2s idle window OR 10s ceiling). Use for `ExactlyOne` / `MaxCount` on shared subs to avoid stale-message contamination. The tooltip warns about destructive mode.
+10. **Complete on pass** — checkbox (on by default). On `PeekLock` + green: complete passing messages, abandon failing ones. Off → abandon all (debug-friendly — leaves messages in place).
+11. **CorrelationId filter** — optional text with `{{Token}}` autocomplete. Messages whose `CorrelationId` doesn't equal this value are skipped without evaluating criteria; in `PeekLock` mode they're abandoned so other consumers can pick them up.
+12. **Session ID** — optional text for session-aware receivers (single-session only in v1).
+13. **Criteria table** — one row per criterion:
+    - `Field` — path syntax: `MessageId`, `CorrelationId`, etc. (system properties); `ApplicationProperties.<name>`; `Body.<jsonpath>` (when body is JSON); `BodyXml.<xpath>` (when body is XML); `BodyText`; `BodyLength`.
+    - `Operator` — same 14-operator surface as DB Assert (see DB Assert cheat-sheet above).
+    - `Expected` — `{{Token}}`-substituted. Hidden for `IsNull` / `IsNotNull`.
+    - `Expected2` — upper bound; only for `Between`.
+    - `Tolerance` — visible for `EqualsDate` (seconds) / `EqualsNumeric` (delta).
+    - `IgnoreCase` — checkbox; defaults on.
+    - `×` — delete. `+ Add criterion` appends a blank row.
+14. **Captures table** — `Field`, `As`, `Required`, `×`. Same shape as DB capture; sibling post-steps reference the bound token as `{{As}}`.
+15. **Peek messages** — calls `POST /api/event-assert/peek` and renders an expandable preview panel. Each peeked message exposes its system properties + ApplicationProperties + a body preview (truncated to 2 KB). Per-row `+ criterion` and `+ capture` buttons inject a pre-filled row into the editor's tables. The token name for a capture defaults to the field's tail (e.g. `MessageId` → `As: MessageId`; `ApplicationProperties.EventType` → `As: EventType`).
+
+Save calls `PUT` through the existing `updatePostStep` endpoint (no new save endpoint). Delete calls `deletePostStep`. Mode-specific bound clean-up runs on save: count fields are cleared on modes that don't use them so the persisted JSON matches the runtime contract.
+
+#### Match-mode cheat-sheet
+
+| Match mode | Verdict |
+|---|---|
+| `AnyMessage` | Pass if at least one received message passes every criterion. Default. |
+| `AllMessages` | Pass if every received message passes every criterion AND at least one message arrived. Empty entity → fail. |
+| `ExactlyOne` | Pass if exactly one received message passes. Two passing → fail; zero → fail. |
+| `ExactCount(N)` | Pass if exactly `N` messages passed. |
+| `MinCount(N)` | Pass if at least `N` messages passed. |
+| `MaxCount(N)` | Pass if at most `N` messages passed. `MaxCount(0)` is the negative-assertion shape ("verify NO X event was raised") — receive loop runs the FULL timeout. |
+| `CountRange(lo, hi)` | Pass if pass-count ∈ `[lo, hi]` inclusive. |
+
+#### Capture-and-reuse example
+
+An Event Assert step captures the message id from a published event:
+
+```json
+{
+  "target": "Event_AzureServiceBus",
+  "eventAssert": {
+    "connectionKey": "DefaultBus",
+    "entity": { "type": "Topic", "name": "order-events", "subscriptionName": "test-runner" },
+    "matchMode": "AnyMessage",
+    "criteria": [
+      { "field": "ApplicationProperties.EventType", "operator": "Equals", "expected": "OrderCreated" },
+      { "field": "Body.OrderId", "operator": "Equals", "expected": "{{OrderId}}" }
+    ],
+    "captures": [
+      { "field": "MessageId", "as": "OrderEventMessageId", "required": true }
+    ]
+  }
+}
+```
+
+A sibling DB-check post-step that runs after it can use `{{OrderEventMessageId}}` in its `WHERE` clause:
+
+```json
+{
+  "target": "Db_SqlServer",
+  "dbCheck": {
+    "sql": "SELECT TOP 1 Status FROM EventLog WHERE MessageId = '{{OrderEventMessageId}}'",
+    "columnAssertions": [
+      { "column": "Status", "operator": "Equals", "expected": "Acknowledged" }
+    ]
+  }
+}
+```
+
+Captures run only when the verdict resolves to pass AND every required capture's field resolves. A failed required capture produces a Failed step with `Capture failed: …`. Optional captures (`required: false`) on a missing field leave the token undefined; downstream `{{Token}}` references survive as literals (logged as WARN).
+
+Captured tokens round-trip through `DeferredVerificationRequest.CapturedTokens` so deferred siblings (those with `WaitBeforeSeconds` above the deferral threshold) also receive them when they fire later.
+
+#### Settlement matrix (PeekLock)
+
+`PeekLock` mode locks each received message until settlement. The matrix:
+
+| Verdict | `CompleteOnPass` | Settlement |
+|---|---|---|
+| Pass | true (default) | Complete passing messages, abandon failing. |
+| Pass | false | Abandon all (debug — leaves messages in place). |
+| Fail | (any) | Abandon all (next debug attempt sees the same population). |
+
+`ReceiveAndDelete` mode skips settlement entirely — messages are gone as soon as they're received. The drain hook always uses `ReceiveAndDelete`; that's the point.
+
+#### Failure diagnostics
+
+When the verdict resolves to fail, the run-detail page renders an expandable "Service Bus messages received" panel under the failure reason. Each row shows the message id, correlation id, content type, enqueued time, application properties, body preview (truncated), and per-criterion pass/fail with the failure reason on red. Pass/fail tinting (green check / red cross) on each row makes it easy to spot which message was the closest non-match. This rendering is done by `EventAssertDiagnosticsTable` inside `StepList.tsx` and is triggered by the `serviceBusReceived` key in `step.metadata`. The same panel is rendered (collapsed by default) on green so the run detail can show what was received even on success.
+
+---
+
 ### Record (Web UI only)
 
 Record a Web UI test case by interacting with a real browser. The CLI opens a non-headless Chromium window and captures every form fill and button click as exact `WebUiTestDefinition` steps with verified DOM selectors.

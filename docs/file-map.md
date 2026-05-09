@@ -177,3 +177,50 @@ The top-level `CLAUDE.md` keeps only the entry-point files needed to navigate th
 | `ui/src/components/PostStepsPanel.tsx` | Wires `EditDbCheckStepDialog` into the edit-pencil branch; updated `DbCheckBlock` renders assertions + captures pills; updated `PayloadSummary` shows assertion/capture counts |
 | `ui/src/components/StepList.tsx` | `extractDbDiagnostics` reads `dbCheckRow`/`dbCheckRows` from step metadata; `DbDiagnosticsTable` renders the failing row as a column→value table under the failure reason |
 | `.claude/commands/add-db-assert.md` | `/add-db-assert` skill — validates parent step, calls dry-run, PUTs the post-step; mirrors `/add-asexml-verification` for DB assertions |
+
+## Event Assertion step (Azure Service Bus)
+
+| File | What it does |
+|---|---|
+| `src/AiTestCrew.Storage/EventAssertAgent/EventAssertStepDefinition.cs` | Persistence model — `ConnectionKey`, `Entity`, `BodyFormat`, `ReceiveMode`, `MatchMode`, `ExpectedCount`, `MaxCount`, `TimeoutSeconds`, `MaxMessages`, `DrainBeforeParent`, `CompleteOnPass`, `CorrelationFilter`, `SessionId`, `Criteria`, `Captures` |
+| `src/AiTestCrew.Storage/EventAssertAgent/EventCriterion.cs` | Per-message criterion — `Field` (system prop / `ApplicationProperties.X` / `Body.X` / `BodyXml.X` / `BodyText` / `BodyLength`), `Operator`, `Expected`, `Expected2`, `IgnoreCase`, `ToleranceSeconds`, `ToleranceDelta` |
+| `src/AiTestCrew.Storage/EventAssertAgent/EventCapture.cs` | Post-verdict token capture — `Field`, `As` (token name, NOT substituted), `Required` |
+| `src/AiTestCrew.Storage/EventAssertAgent/ServiceBusEntity.cs` | Queue or Topic+Subscription target (+ `ServiceBusEntityType` enum) |
+| `src/AiTestCrew.Storage/EventAssertAgent/MatchMode.cs` | 7-value enum: `AnyMessage` / `AllMessages` / `ExactlyOne` / `ExactCount` / `MinCount` / `MaxCount` / `CountRange` |
+| `src/AiTestCrew.Storage/EventAssertAgent/BodyFormat.cs` | 5-value enum: `Auto` / `Json` / `Xml` / `Text` / `Binary` |
+| `src/AiTestCrew.Storage/EventAssertAgent/ReceiveMode.cs` | 2-value enum: `PeekLock` (safe for shared subs) / `ReceiveAndDelete` (used by drain) |
+| `src/AiTestCrew.Storage/AseXmlAgent/VerificationStep.cs` | Added optional `EventAssert: EventAssertStepDefinition?` carrier next to `DbCheck` |
+| `src/AiTestCrew.Core/Models/Enums.cs` | Added `TestTargetType.Event_AzureServiceBus` |
+| `src/AiTestCrew.Core/Configuration/ServiceBusConnectionConfig.cs` | Service Bus namespace registration — `AuthMode` (ConnectionString / AzureAd), `ConnectionString`, `FullyQualifiedNamespace`, optional `ManagedIdentityClientId` |
+| `src/AiTestCrew.Core/Configuration/EnvironmentConfig.cs` | Added `ServiceBusConnections: Dictionary<string,ServiceBusConnectionConfig>` and `AllowEventAssertPeek: bool` (default true) per env |
+| `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` | Added top-level `ServiceBusConnections: Dictionary<string,ServiceBusConnectionConfig>` fallback |
+| `src/AiTestCrew.Core/Interfaces/IEnvironmentResolver.cs` | Added `ResolveServiceBusConnection`, `ResolveAllowEventAssertPeek`, `ListServiceBusConnectionKeys` |
+| `src/AiTestCrew.Agents/EventAssertAgent/AzureServiceBusEventAgent.cs` | Post-step-only agent — receive loop, criteria evaluation, match-mode verdict, captures, settlement, diagnostics; public `DrainAsync` powers the pre-parent drain hook |
+| `src/AiTestCrew.Agents/EventAssertAgent/IServiceBusReceiverFactory.cs` | Abstraction over the SDK's sealed receiver types — `OpenAsync` returns `IServiceBusReceiverHandle` (`ReceiveBatchAsync` / `PeekBatchAsync` / `CompleteAsync` / `AbandonAsync` / `IAsyncDisposable`) |
+| `src/AiTestCrew.Agents/EventAssertAgent/ServiceBusReceiverFactory.cs` | Azure-backed implementation — caches one `ServiceBusClient` per `(namespace, authMode, MI client id)` tuple; routes Queue / Topic+Sub / session receivers; disposes on shutdown |
+| `src/AiTestCrew.Agents/EventAssertAgent/ReceivedMessageView.cs` | POCO projection of `ServiceBusReceivedMessage` so test fakes don't need to construct sealed SDK types |
+| `src/AiTestCrew.Agents/EventAssertAgent/MatchModeEvaluator.cs` | Pure helper folding `(matchMode, totalReceived, passCount, expectedCount, maxCount)` → `(Passed, Reason)`; includes `CanShortCircuit` for receive-loop early-exit (NEVER short-circuits `MaxCount(0)` "still at zero") |
+| `src/AiTestCrew.Agents/EventAssertAgent/MessageFieldResolver.cs` | Single dispatch entry resolving any field path against a `ReceivedMessageView` to a tri-state `ExtractResult` (Found / FoundNull / Failed); knows the full path-prefix table (system props, `ApplicationProperties.*`, `Body.*`, `BodyXml.*`, `BodyText`, `BodyLength`) |
+| `src/AiTestCrew.Agents/EventAssertAgent/Body/BodyFormatDetector.cs` | Auto-sniff of `ContentType` then first non-whitespace byte; honours non-Auto configured values verbatim |
+| `src/AiTestCrew.Agents/EventAssertAgent/Body/JsonBodyExtractor.cs` | `Body.<jsonpath>` — wraps REQ-002's `JsonValueExtractor` (`JsonPath.Net`) |
+| `src/AiTestCrew.Agents/EventAssertAgent/Body/XmlBodyExtractor.cs` | `BodyXml.<xpath>` — `System.Xml.XPath`-based; DTD processing disabled; default-namespace handling via user-supplied `local-name()` filters |
+| `src/AiTestCrew.Agents/EventAssertAgent/Body/ExtractResult.cs` | Tri-state `(ExtractStatus, Value, Error)` mirroring REQ-002's `ExtractionStatus` distinction |
+| `src/AiTestCrew.Agents/Common/ScalarOperatorEvaluator.cs` | Lifted operator-dispatch helper — REQ-002's `ColumnAssertionEvaluator` now front-loads its column-specific JSONPath and delegates here; the new event-assert agent calls it directly |
+| `src/AiTestCrew.Agents/Environment/StepParameterSubstituter.cs` | Added `Apply(EventAssertStepDefinition, ...)` overload — substitutes Entity.Name / SubscriptionName / CorrelationFilter / SessionId / Criteria fields / Captures.Field; `Captures.As` stays literal |
+| `src/AiTestCrew.Agents/PostSteps/PostStepOrchestrator.cs` | Added `RunPreParentDrainsAsync` + `HasDrainBeforeParent` + `Event_AzureServiceBus` case in `TryPreloadPayload` |
+| `src/AiTestCrew.Agents/Base/BaseTestAgent.cs` | Added `TryPreParentDrainsAsync` helper — wraps the orchestrator call, catches drain failures into an Error step, returns false so the caller skips the parent |
+| `src/AiTestCrew.Agents/{ApiAgent/ApiTestAgent,WebUiBase/BaseWebUiTestAgent,DesktopUiBase/BaseDesktopUiTestAgent,AseXmlAgent/AseXmlGenerationAgent,AseXmlAgent/AseXmlDeliveryAgent}.cs` | One-line drain-hook call inserted at the top of each per-test-case body, after env-substitution and before the parent action |
+| `src/AiTestCrew.WebApi/Endpoints/EventAssertEndpoints.cs` | `POST /api/event-assert/peek` (read-only — uses SDK's `PeekMessagesAsync`, never consumes; auth + per-env opt-in + rate-limit) and `GET /api/event-assert/connections` (connection-key list for the editor dropdown) |
+| `src/AiTestCrew.WebApi/Services/EventAssertPeekRateLimiter.cs` | In-memory fixed-window token bucket — 10 requests/minute/user; `Sweep(nowUtc)` called by `AgentHeartbeatMonitor` on the same 5-minute cadence as `DbDryRunRateLimiter` |
+| `src/AiTestCrew.WebApi/Services/AgentHeartbeatMonitor.cs` | Extended `SweepRateLimiterIfDue` to sweep both DB + event-assert limiters independently |
+| `src/AiTestCrew.WebApi/Services/ChatIntentService.cs` | Catalog enrichments (`serviceBusConnectionsByEnv`, per-`parentSteps` `postSteps[*]` summaries); system prompt extensions (eventAssert payload schema + 3 worked examples + post-step authoring rules + new `peekServiceBusMessages` and `confirmEditPostStep` action kinds + EDIT-vs-CREATE rules) |
+| `src/AiTestCrew.Runner/appsettings.example.json` | Worked `ServiceBusConnections` block — top-level connection-string namespace + per-env Azure AD override on `sumo-retail` |
+| `ui/src/components/EditEventAssertStepDialog.tsx` | Full editor dialog — connection dropdown, entity (Queue/Topic + sub), body / receive / match mode dropdowns, drain + complete checkboxes, optional correlation filter / session id, criteria table, captures table, "Peek messages" panel with per-message `+ criterion` / `+ capture` buttons |
+| `ui/src/api/eventAssert.ts` | `peekServiceBusMessages(req)` + `getServiceBusConnections(envKey)` API clients |
+| `ui/src/components/PostStepsPanel.tsx` | `EditEventAssertStepDialog` wired into the edit-pencil branch; new `EventAssertBlock` read-only renderer; `PayloadSummary` shows `entity · matchMode · criteria/captures · drain` for event-assert post-steps |
+| `ui/src/components/StepList.tsx` | `extractEventAssertDiagnostics` reads `serviceBusReceived` from step metadata; `EventAssertDiagnosticsTable` renders an expandable per-message panel with pass/fail tinting, system + application properties, body preview, per-criterion pass/fail with reasons |
+| `ui/src/components/chat/actions/PeekServiceBusMessagesCard.tsx` | NL peek-then-author chat card — calls the peek endpoint, renders message list, `+ criterion` / `+ capture` per row |
+| `ui/src/components/chat/actions/ConfirmEditPostStepCard.tsx` | NL-driven edit chat card — generic across every post-step type (back-port benefit for REQ-002's DB asserts and earlier UI post-steps) |
+| `ui/src/components/chat/actions/ConfirmCreatePostStepCard.tsx` | Extended with eventAssert branch alongside the dbCheck branch |
+| `ui/src/types/index.ts` | TS types: `EventAssertStepDefinition`, `EventCriterion`, `EventCapture`, `ServiceBusEntity`, `BodyFormat`, `ReceiveMode`, `MatchMode`, `ServiceBusEntityType`; added `eventAssert?: EventAssertStepDefinition` to `PostStep` |
+| `.claude/commands/add-event-assert.md` | `/add-event-assert` skill — validates parent step, calls peek to confirm connection works, drafts entity + criteria + captures, PUTs the post-step; mirrors `/add-db-assert` for event assertions |

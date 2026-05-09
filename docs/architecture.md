@@ -1870,8 +1870,13 @@ The Assistant is a right-edge drawer in the React UI that translates natural-lan
 | `confirmRun` | `{ summary, data: RunRequest }` | Client — Execute button calls `POST /api/runs`, then pushes the returned `runId` into `ActiveRunContext` so the existing run banner + polling pick up the run |
 | `confirmCreate` | `{ summary, data: { target: "module"\|"testSet", name, moduleId?, description? } }` | Client — `POST /api/modules` or `POST /api/modules/{id}/testsets` then auto-navigate to the new entity |
 | `confirmRecord` | `{ summary, data: { recordingKind, target, moduleId?, testSetId?, caseName?, objectiveId?, verificationName?, waitBeforeSeconds?, deliveryStepIndex?, environmentKey? } }` | Client — dropdown of online agents with matching capability → `POST /api/recordings` → card morphs into a live progress view polling `/api/queue` |
+| `confirmCreatePostStep` | `{ summary, data: { moduleId, testSetId, objectiveId, parentKind, parentStepIndex, postStep: VerificationStep } }` | Client — `addPostStep` POSTs through the generic post-step CRUD endpoint. The `postStep` discriminates on its non-null carrier field (`dbCheck`, `eventAssert`, `webUi`, `desktopUi`, `api`, `aseXml`, `aseXmlDeliver`); the card renders a flat summary with the right per-payload fields per kind. |
+| `confirmEditPostStep` (REQ-004 §9b) | `{ summary, data: { moduleId, testSetId, objectiveId, parentKind, parentStepIndex, postStepIndex, postStep: VerificationStep } }` | Client — `updatePostStep` PUTs through the same CRUD endpoint with the FULL replacement payload (LLM emits the entire updated `VerificationStep`, not a patch — keeps the runtime simple and the diff visible). Generic across every payload kind, so REQ-002's DB asserts gain NL-edit support for free. |
+| `peekServiceBusMessages` (REQ-004 §9a) | `{ summary, data: { envKey?, connectionKey, entity, max?, correlationFilter? } }` | Client — `peekServiceBusMessages` POSTs to the read-only `/api/event-assert/peek` endpoint and renders the result as an expandable per-message panel. Each peeked message exposes "+ Add as criterion" / "+ Add as capture" buttons that fire follow-up `confirmCreatePostStep` (or `confirmEditPostStep`) actions with values pre-filled from the actual message. |
 
-Discovery/read-only intents are resolved server-side during intent parsing (the catalog already has everything), so the action is `showData` with the pre-computed payload. Mutations never auto-execute; every create/run/record requires a card click.
+Discovery/read-only intents are resolved server-side during intent parsing (the catalog already has everything), so the action is `showData` with the pre-computed payload. Mutations never auto-execute; every create/run/record/edit requires a card click.
+
+The catalog REQ-004 added two enrichments the LLM relies on for these actions: `serviceBusConnectionsByEnv` (per-env map of configured connection keys; the LLM picks `connectionKey` only from this list) and `parentSteps[*].postSteps` (per-post-step `{ postStepIndex, description, target, role, payload }` summaries; the LLM resolves `postStepIndex` against this list when emitting `confirmEditPostStep`).
 
 ### Why the LLM doesn't call the DB/APIs directly
 
@@ -2145,6 +2150,124 @@ CTEs (`WITH x AS (SELECT ...)`) are allowed at the top level; the keyword scan s
 - **Rate limit.** `DbDryRunRateLimiter` (`src/AiTestCrew.WebApi/Services/DbDryRunRateLimiter.cs`) — an in-memory fixed-window token bucket, 10 requests/minute/user (keyed by `User.Id` from `HttpContext.Items["User"]`, or by remote IP when auth is disabled). The 11th request in a window returns HTTP 429. `AgentHeartbeatMonitor` runs a `Sweep(nowUtc)` on a 5-minute cadence (a sub-tick of its 30 s base tick) to drop expired buckets and bound memory growth.
 
 Cell values in the dry-run response are truncated to 500 characters; the SQL Server type name is included per column so the UI can render hints for JSON-typed columns.
+
+---
+
+## Event Assertion Step (Azure Service Bus)
+
+An Event Assert is a post-step that opens a receiver against an Azure Service Bus queue or topic+subscription, evaluates per-message criteria, and resolves a verdict via a configurable match-mode. It is post-step-only by design — the same shape rule REQ-002 locked in for `DbCheckAgent`: an event assertion without a preceding action that should have caused the event has no signal. The agent (`AzureServiceBusEventAgent`) documents this constraint and `TestOrchestrator` does not expose it as a standalone objective type.
+
+REQ-004 piggybacks aggressively on REQ-002's plumbing: the `VerificationStep` carrier, the operator surface (`AssertionOperator`), `ScalarOperatorEvaluator` (lifted from REQ-002's `ColumnAssertionEvaluator`), `PostStepOrchestrator`'s capture-token merge, and `DeferredVerificationRequest.CapturedTokens`. The capture semantics + deferred path are identical — see DB Assert above. This section focuses on what's specific to Service Bus: the data model, body-format dispatch, settlement, the pre-parent drain hook, and connection resolution.
+
+### Data model
+
+`EventAssertStepDefinition` (`src/AiTestCrew.Storage/EventAssertAgent/EventAssertStepDefinition.cs`) carries:
+
+- `ConnectionKey` — logical Service Bus namespace key (e.g. `"DefaultBus"`, `"MeterEvents"`). Resolved at execution time via `IEnvironmentResolver.ResolveServiceBusConnection`.
+- `Entity: ServiceBusEntity` — `Type` (Queue or Topic), `Name`, optional `SubscriptionName` (required for Topic). Both `Name` and `SubscriptionName` are `{{Token}}`-substituted.
+- `BodyFormat` — `Auto` (default) / `Json` / `Xml` / `Text` / `Binary`. `Auto` sniffs `ContentType` first (case-insensitive contains check on `json`/`xml`/`octet-stream`), then falls back to the first non-whitespace byte.
+- `ReceiveMode` — `PeekLock` (default, safe for shared subs) or `ReceiveAndDelete` (destructive — used by the drain hook).
+- `MatchMode` — `AnyMessage` (default) / `AllMessages` / `ExactlyOne` / `ExactCount` / `MinCount` / `MaxCount` / `CountRange`. Folds the per-message pass/fail vector into a final verdict.
+- `ExpectedCount` / `MaxCount` — count thresholds for count-bound modes. `MaxCount(0)` is the negative-assertion shape ("verify NO matching event was raised"); the receive loop runs the FULL timeout to actually verify zero arrived.
+- `TimeoutSeconds` (default 30) — total receive window after the parent step completes.
+- `MaxMessages` (default 50) — hard cap on messages drained for evaluation; protects against runaway loops on busy queues.
+- `DrainBeforeParent` (default false) — when true, the orchestrator drains the entity in `ReceiveAndDelete` mode BEFORE the parent step runs (see "Pre-Parent Drain Hook" below).
+- `CompleteOnPass` (default true) — on `PeekLock` + green: complete passing messages, abandon failing ones. When false, abandon all (debug mode — leaves messages in place).
+- `CorrelationFilter` (optional) — pre-filter on `CorrelationId`; messages whose CorrelationId doesn't equal this value (after token substitution) are skipped without evaluating criteria. Useful for narrowing a busy shared queue down to a specific test run.
+- `SessionId` (optional) — for session-aware receivers; single-session only in v1.
+- `Criteria: List<EventCriterion>` — per-message rules. Each entry carries `Field`, `Operator`, `Expected`, optional `Expected2`, `IgnoreCase`, `ToleranceSeconds`, `ToleranceDelta`. The operator surface is REQ-002's `AssertionOperator` verbatim.
+- `Captures: List<EventCapture>` — values to bind into the run context after the verdict resolves to pass. `Field` is the same path syntax as criteria; `As` is the bare token name (NOT substituted); `Required` defaults true.
+
+**Field path syntax** (used by both `EventCriterion.Field` and `EventCapture.Field`):
+
+| Prefix | Meaning | Example |
+|---|---|---|
+| System property | `MessageId`, `CorrelationId`, `Subject`, `ContentType`, `ReplyTo`, `To`, `SessionId`, `EnqueuedTimeUtc`, `DeliveryCount`, `PartitionKey` | `MessageId` |
+| Application property | `ApplicationProperties.<name>` | `ApplicationProperties.EventType` |
+| JSON body | `Body.<jsonpath>` (when `BodyFormat` resolves to `Json`) | `Body.Order.Id`, `Body.Items[0].Sku` |
+| XML body | `BodyXml.<xpath>` (when `BodyFormat` resolves to `Xml`) | `BodyXml.//Order/@Id` |
+| Raw body | `BodyText` | `BodyText` |
+| Body length | `BodyLength` | `BodyLength` |
+
+Resolution is uniform — `MessageFieldResolver.Resolve(message, fieldPath, effectiveBodyFormat)` returns a tri-state `ExtractResult(Status, Value, Error)` where `Status` is `Found` / `FoundNull` / `Failed`. `Failed` carries a typed reason (`"binary body — only system / application properties and BodyLength are matchable"`, `"Body.* requires JSON body format; resolved format is Xml"`, etc.). The field label is propagated into operator-failure messages so a failing criterion surfaces "Body.MeterId: expected '12345', got '67890'" rather than a generic column reference.
+
+### Runtime path
+
+`AzureServiceBusEventAgent.ExecuteAsync` (`src/AiTestCrew.Agents/EventAssertAgent/AzureServiceBusEventAgent.cs`):
+
+1. Reads `task.Parameters["PreloadedTestCases"]` as `List<EventAssertStepDefinition>` (set up by `PostStepOrchestrator.TryPreloadPayload` from the post-step's `EventAssert` carrier).
+2. For each definition, resolves the connection via `IEnvironmentResolver.ResolveServiceBusConnection`; an unknown key returns null → `TestStatus.Error` (config issue, not data).
+3. Validates the entity (non-empty `Name`; `SubscriptionName` required for Topic).
+4. Opens a receiver via `IServiceBusReceiverFactory.OpenAsync` (passing the configured `ReceiveMode` and optional session id) — see "Receiver factory" below.
+5. **Receive loop**: pulls in batches of size `MaxMessages - allMessages.Count` with a 1s per-call timeout. Each batch's messages are filtered by `CorrelationFilter` (skipped messages are abandoned in PeekLock mode so other consumers can pick them up; not counted against `MaxMessages`). Each retained message is evaluated against every criterion via `MessageFieldResolver` + `ScalarOperatorEvaluator`, then added to `perMessageResults`. The loop exits when `MaxMessages` is reached, `TimeoutSeconds` elapses, or `MatchModeEvaluator.CanShortCircuit(...)` returns true.
+6. **Verdict**: `MatchModeEvaluator.Evaluate(matchMode, totalReceived, passCount, expectedCount, maxCount)` returns `(Passed, Reason)`.
+7. **Captures** (only on green): the FIRST passing message's values bind into `Metadata["capturedTokens"]` as `Dictionary<string,string>` — same shape REQ-002 uses, so `PostStepOrchestrator.MergeCaptured` plumbs them into siblings unchanged.
+8. **Settlement** (PeekLock only): when the verdict is green AND `CompleteOnPass=true`, every passing message is completed and every failing message is abandoned (so non-matching production traffic flows back). On `CompleteOnPass=false` OR red, every message is abandoned. Errors during settlement are swallowed — the receiver's `DisposeAsync` will abandon any remaining locks.
+9. **Diagnostics**: `Metadata["serviceBusReceived"]` is populated with up to 10 received-message summaries (`messageId`, `correlationId`, `contentType`, `enqueuedTimeUtc`, `applicationProperties`, truncated `bodyPreview`, `bodyFormat`, `bodyLength`, per-message `passed`, per-criterion `(field, op, passed, reason)`). The run-detail UI (`StepList.tsx`) extracts this via `extractEventAssertDiagnostics` and renders it as an expandable per-message panel under the failure reason.
+
+`MatchModeEvaluator.CanShortCircuit` is deliberately conservative — `MaxCount(0)` "still at zero" does NOT short-circuit, because the negative-assertion shape demands the full timeout to actually verify zero arrived. `AnyMessage` short-circuits on the first pass; `AllMessages` on the first failure; `ExactlyOne` only on overshoot (≥ 2); count-bounded modes when the upper bound is exceeded.
+
+### Body-format dispatch
+
+`BodyFormatDetector.Resolve(configured, contentType, body)` runs once per message before any criterion / capture references the body. Configured non-`Auto` values are honoured verbatim (the user knows their producer better than we do). `Auto` sniffs:
+
+1. `ContentType` first — case-insensitive contains check on `json`, `xml`, `octet-stream`.
+2. First non-whitespace byte — `{`/`[` → JSON, `<` → XML, else Text.
+3. Empty body → Text (so subsequent `Body.*` paths fail with a typed reason at extraction time).
+
+JSON extraction reuses REQ-002's `JsonValueExtractor` (`JsonPath.Net`); XML extraction is `System.Xml.XPath`-based with DTD processing disabled. Default-namespace handling in v1 expects users to wrap prefixed paths in `local-name()` filters (`//*[local-name()='Order']/@Id`); a first-class namespace registry is flagged as a future extension. Binary bodies fail every `Body.*` / `BodyXml.*` / `BodyText` path with a typed reason, but `BodyLength` always works.
+
+### Pre-Parent Drain Hook
+
+Some event-assert post-steps need the queue / subscription drained of stale messages BEFORE the parent step runs — otherwise leftovers from a prior failed run would contaminate `ExactlyOne` / `MaxCount` verdicts. REQ-002's `PostStepOrchestrator` has no pre-parent slot (post-steps run strictly after the parent), so REQ-004 adds one:
+
+- `PostStepOrchestrator.HasDrainBeforeParent(postSteps)` — cheap pre-check returning true when any post-step has `EventAssert.DrainBeforeParent=true`. Parent agents can avoid the orchestrator dispatch entirely on the common path.
+- `PostStepOrchestrator.RunPreParentDrainsAsync(postSteps, context, environmentKey, ct)` — iterates the post-step list, applies env-token substitution to the entity name + subscription, and dispatches `AzureServiceBusEventAgent.DrainAsync` for each `DrainBeforeParent=true` entry. Drain runs in `ReceiveAndDelete` mode with a 2s idle window OR a 10s hard ceiling, whichever comes first. Strict-mode contract: an unhandled drain failure throws — running the parent against a half-drained entity yields misleading verdicts.
+- `BaseTestAgent.TryPreParentDrainsAsync(postSteps, tcIndex, stepSink, envKey, envParams, ct)` — the wrapper each parent agent calls. Builds the env-params context, swallows drain failures into a synthesised `pre-parent-drain[idx]` Error step on the parent's step list, returns `false` so the caller can `continue;`-skip that test case.
+
+The hook touches every parent agent that owns a post-step list — `ApiTestAgent`, `BaseWebUiTestAgent`, `BaseDesktopUiTestAgent`, `AseXmlGenerationAgent`, `AseXmlDeliveryAgent`. Each calls `TryPreParentDrainsAsync` immediately after env-substitution and before the parent action; the call is a no-op (cheap) when no post-step requested a drain. `AseXmlDeliveryAgent` calls it at the very top of `DeliverOneAsync` so the drain runs before render + endpoint resolution + upload (the parent's "action" is the delivery, not just the upload step).
+
+### Connection resolution and auth modes
+
+`IEnvironmentResolver.ResolveServiceBusConnection(connectionKey, envKey)` mirrors `ResolveDbConnectionString`'s precedence: per-env `EnvironmentConfig.ServiceBusConnections[connectionKey]` → top-level `TestEnvironmentConfig.ServiceBusConnections[connectionKey]` → null. Whitespace-only / blank-namespace entries fall through to the next tier rather than masking it.
+
+`ServiceBusConnectionConfig` (`src/AiTestCrew.Core/Configuration/ServiceBusConnectionConfig.cs`) carries:
+
+- `AuthMode` — `ConnectionString` (default) or `AzureAd`.
+- `ConnectionString` — required when `AuthMode=ConnectionString`. Standard SAS connection string.
+- `FullyQualifiedNamespace` — required when `AuthMode=AzureAd` (e.g. `"my-namespace.servicebus.windows.net"`).
+- `ManagedIdentityClientId` (optional) — pin a user-assigned managed identity for `DefaultAzureCredential`.
+
+`ServiceBusReceiverFactory` (`src/AiTestCrew.Agents/EventAssertAgent/ServiceBusReceiverFactory.cs`) is the only Azure SDK consumer. It caches one `ServiceBusClient` per `(namespace, authMode, MI client id)` tuple — keyed via `BuildCacheKey` to keep `ConnectionString` instances sharing identity even when wrapped in different DTOs. Clients are `IAsyncDisposable` and disposed when the factory itself is disposed (driven by host shutdown). For `AzureAd` mode, `BuildAzureAdClient` constructs `DefaultAzureCredential` (Azure CLI locally → managed identity in prod with no code change); the optional `ManagedIdentityClientId` is set on `DefaultAzureCredentialOptions` when present.
+
+### Receiver factory abstraction
+
+`IServiceBusReceiverFactory` is the testability gate. The Azure SDK's `ServiceBusReceiver` / `ServiceBusReceivedMessage` / `ServiceBusSessionReceiver` are sealed and notoriously hard to fake; without an abstraction, the only path to unit-testing the agent is integration against a real namespace.
+
+The interface exposes `OpenAsync` returning an `IServiceBusReceiverHandle` with four methods: `ReceiveBatchAsync`, `PeekBatchAsync`, `CompleteAsync`, `AbandonAsync`. Messages are projected through `ReceivedMessageView` (`src/AiTestCrew.Agents/EventAssertAgent/ReceivedMessageView.cs`) — a plain POCO carrying every system + application property + body bytes. `RawMessage` is an opaque `object?` slot used by the Azure-backed implementation to remember the SDK-side reference for settlement; it's null for fakes and for peek-mode messages (which can't be settled).
+
+The fake (`tests/AiTestCrew.Agents.Tests/EventAssertAgent/FakeServiceBusReceiverFactory.cs`) keeps a programmable queue and records Complete/Abandon settlement calls for assertion. The Azure-backed and fake implementations are interchangeable from the agent's perspective — same handle interface, same projection.
+
+### Capture round-trip
+
+Captures emit into `TestStep.Metadata["capturedTokens"]` exactly as REQ-002 does, so `PostStepOrchestrator.MergeCaptured` and `DeferredVerificationRequest.CapturedTokens` plumb them into siblings — inline OR deferred — unchanged. There is no event-assert-specific code in the orchestrator's capture path; only `TryPreloadPayload`'s switch had to grow a new `Event_AzureServiceBus` case (mirrors `Db_SqlServer`).
+
+Acceptance criteria #6 (inline) and #7 (deferred) are both proven: #6 by `tests/AiTestCrew.Agents.Tests/PostSteps/EventCaptureRoundTripTests.cs` (two event-assert post-steps, second references `{{MessageId}}` from the first's capture), #7 by `DeferredVerificationRequest.CapturedTokens` being shape-agnostic (it round-trips a `Dictionary<string,string>` through JSON, regardless of which agent populated it).
+
+### Security envelope
+
+There is **no SQL-style guardrail equivalent** for Service Bus. The peek endpoint physically can't drain (it uses the SDK's `PeekMessagesAsync` which never locks or consumes), and the agent's settlement is gated behind `CompleteOnPass`. Document explicitly: there is no read-vs-write check to apply.
+
+The two surfaces that DO need gating:
+
+- **Peek endpoint.** `POST /api/event-assert/peek` (`src/AiTestCrew.WebApi/Endpoints/EventAssertEndpoints.cs`) is gated three ways — auth (`HttpContext.Items["User"]` populated), per-env opt-in (`EnvironmentConfig.AllowEventAssertPeek`, default true), and a per-user rate limit (`EventAssertPeekRateLimiter`, 10 requests/minute/user, swept by `AgentHeartbeatMonitor` on the same 5-minute cadence as `DbDryRunRateLimiter`). The endpoint always passes `ReceiveMode.PeekLock` to the SDK and uses `PeekBatchAsync` rather than `ReceiveMessagesAsync`, so it cannot drain even by accident. Body previews are truncated to 2 KB; format is auto-sniffed.
+- **Drain hook.** Drain runs in `ReceiveAndDelete` mode, which IS destructive — the messages are gone. Mitigation is opt-in per step (`DrainBeforeParent: false` by default) and the editor's "Drain before parent" checkbox carries an explanatory tooltip. Operator culture is the gate: don't enable drain on a queue that carries production traffic.
+
+`appsettings.example.json` shows both a top-level entry (connection-string auth) and a per-env override (Azure AD auth on the `sumo-retail` env).
+
+### Distributed execution
+
+Capability routing is purely string-based — see [Capability strings](#capability-strings) above. `Event_AzureServiceBus` is the new `TestTargetType` value the agent advertises via `CanHandleAsync`. A remote agent advertising it via `--capabilities` picks up deferred event-assert post-steps from the run queue, executes them, and the captured tokens round-trip back to the originating run via the existing `DeferredVerificationRequest.CapturedTokens` plumbing. Two scenarios drive this dispatch in practice: (1) the local runner has no outbound network reach to the customer's Service Bus namespace, (2) the env's Service Bus uses Azure AD auth backed by a managed identity that lives only on a centralised agent host.
 
 ---
 

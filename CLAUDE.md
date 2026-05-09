@@ -19,7 +19,7 @@ Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → C
 
 ## Key files
 
-These are entry points — start here when navigating the codebase. For the full file map (~95 entries: aseXML delivery, deferred verification, auth recovery, distributed agents, data packs, DB Assert step, UI components), see `docs/file-map.md`.
+These are entry points — start here when navigating the codebase. For the full file map (~125 entries: aseXML delivery, deferred verification, auth recovery, distributed agents, data packs, DB Assert step, Event Assertion step (Service Bus), UI components), see `docs/file-map.md`.
 
 | File | What it does |
 |---|---|
@@ -37,6 +37,8 @@ These are entry points — start here when navigating the codebase. For the full
 | `src/AiTestCrew.Storage/Sqlite/DatabaseMigrator.cs` | Schema migrations — current head includes deferred-verification + auth-refresh tables |
 | `src/AiTestCrew.WebApi/Services/AgentHeartbeatMonitor.cs` | `BackgroundService` — 30s sweeps: stale agents, stale claims, expired pending verifications, stale auth refreshes |
 | `src/AiTestCrew.Agents/AseXmlAgent/AseXmlDeliveryAgent.cs` | aseXML delivery + deferred post-delivery verifications (sibling-agent dispatch with `{{Token}}` substitution) |
+| `src/AiTestCrew.Agents/EventAssertAgent/AzureServiceBusEventAgent.cs` | Service Bus event-assert post-step agent — receive loop + criteria + match-mode verdict + captures + settlement + diagnostics; public `DrainAsync` powers the pre-parent drain hook |
+| `src/AiTestCrew.Agents/EventAssertAgent/IServiceBusReceiverFactory.cs` | Abstraction over the Azure SDK's sealed receiver types (Receive / Peek / Complete / Abandon); cached `ServiceBusClient` per `(namespace, authMode, MI)` tuple in the Azure-backed implementation |
 | `src/AiTestCrew.Runner/AgentMode/JobExecutor.cs` | Agent-mode dequeue → `TestOrchestrator.RunAsync` bridge; deferred-verification + auth-refresh routing |
 | `ui/src/contexts/ActiveRunContext.tsx` | Frontend run state: module + individual run tracking, polling, page-refresh recovery |
 | `src/AiTestCrew.Core/Models/` | `TestTask`, `TestStep`, `TestResult`, `TestSuiteResult`, `RunMode` |
@@ -114,6 +116,7 @@ All agents extend `BaseTestAgent` and implement `ITestAgent`:
 | `/add-asexml-template <TransactionType> <templateId> "<desc>"` | Scaffold a new aseXML template + manifest pair (content-only — no agent changes) |
 | `/add-asexml-verification` | Scaffold a post-delivery UI verification attached to an existing delivery objective (recorder + auto-parameterisation) |
 | `/add-db-assert <moduleId> <testSetId> <objectiveId> <parentKind> <parentStepIndex> "<NL description>"` | Scaffold a DB Assert post-step attached to an existing parent test step |
+| `/add-event-assert <moduleId> <testSetId> <objectiveId> <parentKind> <parentStepIndex> "<NL description>"` | Scaffold an Azure Service Bus event-assertion post-step attached to an existing parent test step |
 | `/add-data-pack-script` | Scaffold a startup-time SQL data-pack script (stored proc install, data prep, or cleanup) in the right folder with idempotency template |
 | `/add-delivery-protocol <scheme> "<desc>"` | Scaffold a new `IXmlDropTarget` implementation (AS2, HTTP POST, SMB, etc.) |
 | `/tune-deferred-verification` | Tune or debug deferred post-delivery verification (retry cadence, deadline, timeouts) + stuck-Awaiting diagnosis |
@@ -162,12 +165,15 @@ Adding a ___ is → ___
 | Debugging "auth state saved but tests still fail" | Inspect the saved file — empty `{"cookies":[],"origins":[]}` means `RecordingService.AuthSetupAsync` saved without real auth | Blazor flow needs `sawSsoRedirect` to flip true (URL visited login.microsoftonline.com) AND non-empty cookies before saving. If your customer URL doesn't trigger Azure SSO at the root, point `BraveCloudUiUrl` at a path that does. |
 | A new DB connection (e.g. SDR Reporting DB) | Manual — config-only | `Environments.<key>.DbConnections.<connectionKey>` (or top-level `TestEnvironment.DbConnections.<connectionKey>` fallback). Zero code changes. |
 | A new column-assertion operator | Manual — enum + evaluator branch | Add to `src/AiTestCrew.Storage/DbAgent/AssertionOperator.cs`; branch in `src/AiTestCrew.Agents/DbAgent/ColumnAssertionEvaluator.cs`. Update editor dropdown in `EditDbCheckStepDialog.tsx` + chat prompt examples in `ChatIntentService.cs`. |
+| A new Azure Service Bus namespace | Manual — config-only | `Environments.<key>.ServiceBusConnections.<connectionKey>` (or top-level `TestEnvironment.ServiceBusConnections.<connectionKey>` fallback). Choose `AuthMode: ConnectionString` or `AuthMode: AzureAd` (DefaultAzureCredential — Azure CLI locally, managed identity in prod). Zero code changes. |
+| A new event match mode (beyond Any/All/ExactlyOne/count-bounded) | Manual — enum + evaluator branch | Add to `src/AiTestCrew.Storage/EventAssertAgent/MatchMode.cs`; branch in `src/AiTestCrew.Agents/EventAssertAgent/MatchModeEvaluator.cs` (both `Evaluate` and `CanShortCircuit`). Update editor dropdown in `EditEventAssertStepDialog.tsx` + chat prompt examples in `ChatIntentService.cs`. |
+| A new event-body format (e.g. Avro, Protobuf) | Manual — enum + extractor + sniff | Add to `src/AiTestCrew.Storage/EventAssertAgent/BodyFormat.cs`; new `<Format>BodyExtractor.cs` under `Body/`; route in `MessageFieldResolver.cs`; extend `BodyFormatDetector.cs`'s sniff logic. Update editor dropdown + chat prompt body-format guidance. |
 
 ## Documentation
 
 - `docs/file-map.md` — full file-by-file map (subsystems: aseXML, deferred verification, auth recovery, distributed agents, data packs, UI). The `Key files` table above only lists entry points
 - `docs/functional.md` — user-facing feature reference and CLI runbook
-- `docs/architecture.md` — component structure, data flow, design decisions, extension patterns. Includes deep-dive sections for **Distributed Execution (Phase 4)**, **Deferred Post-Delivery Verification**, **Seamless Authentication Recovery** (silent retry → AwaitingAuth pause-and-resume → pre-flight AuthHealthPanel, schemas v8 + v9), **Chat Assistant**, **Startup Data Packs**, and **DB Assert Step** (data model, JSONPath evaluator, capture semantics, multi-DB resolution, security envelope).
+- `docs/architecture.md` — component structure, data flow, design decisions, extension patterns. Includes deep-dive sections for **Distributed Execution (Phase 4)**, **Deferred Post-Delivery Verification**, **Seamless Authentication Recovery** (silent retry → AwaitingAuth pause-and-resume → pre-flight AuthHealthPanel, schemas v8 + v9), **Chat Assistant**, **Startup Data Packs**, **DB Assert Step** (data model, JSONPath evaluator, capture semantics, multi-DB resolution, security envelope), and **Event Assertion Step (Azure Service Bus)** (data model + field-path table, body-format dispatch, pre-parent drain hook, connection resolution + auth modes, receiver-factory abstraction, security envelope).
 - `docs/data-packs.md` — startup-time SQL data-pack guide (folder layout, opt-in config, authoring rules, dashboard troubleshooting)
 - `docs/agentic-development-team.md` — five-agent pipeline (`feature-coordinator` → `implementation-planner` → `implementer` → `doc-writer` → `code-reviewer`) that turns a `requirements/REQ-*.md` file into a review-ready feature branch. Hand a requirement to `feature-coordinator` for hands-off implementation.
 - Phase 3 decision: the aseXML feature is feature-complete through **Generate → Deliver → Wait → Verify**. Future work is extension (new transaction types, new protocols, richer wait strategies, desktop edit dialog, Phase 1.5 UI edit for non-verification aseXML steps) rather than new phases.
