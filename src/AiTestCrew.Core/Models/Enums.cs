@@ -55,7 +55,15 @@ public enum TestTargetType
     /// result against an expected row count or column-value dictionary. Used
     /// as a post-step on any parent step type (UI, API, aseXML delivery).
     /// </summary>
-    Db_SqlServer
+    Db_SqlServer,
+    /// <summary>
+    /// Azure Service Bus event assertion — receives messages from a queue or
+    /// topic+subscription and asserts that messages matching the configured
+    /// criteria were enqueued by the parent action. Used as a post-step on
+    /// any parent step type. Distinct from the legacy <see cref="MessageBus"/>
+    /// value (which has no agent backing it).
+    /// </summary>
+    Event_AzureServiceBus
 }
 
 public enum TestPriority

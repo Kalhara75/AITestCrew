@@ -1,5 +1,6 @@
 using AiTestCrew.Agents.ApiAgent;
 using AiTestCrew.Agents.DbAgent;
+using AiTestCrew.Agents.EventAssertAgent;
 using AiTestCrew.Agents.Shared;
 
 namespace AiTestCrew.Agents.AseXmlAgent;
@@ -29,7 +30,8 @@ public class VerificationStep
     /// <summary>
     /// Target type string matching <see cref="Core.Models.TestTargetType"/>:
     /// <c>UI_Web_MVC</c>, <c>UI_Web_Blazor</c>, <c>UI_Desktop_WinForms</c>,
-    /// <c>API_REST</c>, <c>AseXml_Generate</c>, <c>AseXml_Deliver</c>, <c>Db_SqlServer</c>.
+    /// <c>API_REST</c>, <c>AseXml_Generate</c>, <c>AseXml_Deliver</c>,
+    /// <c>Db_SqlServer</c>, <c>Event_AzureServiceBus</c>.
     /// </summary>
     public string Target { get; set; } = "UI_Web_Blazor";
 
@@ -65,4 +67,7 @@ public class VerificationStep
 
     /// <summary>DB check payload — populated when <see cref="Target"/> is <c>Db_SqlServer</c>. Null otherwise. (Runtime agent arrives in Slice 2.)</summary>
     public DbCheckStepDefinition? DbCheck { get; set; }
+
+    /// <summary>Azure Service Bus event-assert payload — populated when <see cref="Target"/> is <c>Event_AzureServiceBus</c>. Null otherwise.</summary>
+    public EventAssertStepDefinition? EventAssert { get; set; }
 }
