@@ -102,7 +102,11 @@ public static class EventAssertEndpoints
                 var messages = new List<PeekMessage>(raw.Count);
                 foreach (var msg in raw)
                 {
-                    var fmt = BodyFormatDetector.Resolve(BodyFormat.Auto, msg.ContentType, msg.Body);
+                    // Decompress framework-applied compression (Rebus / NServiceBus
+                    // gzip via rbs2-content-encoding) so the editor's preview and
+                    // the chat's peek card both show readable JSON / XML.
+                    var dec = BodyDecompressor.MaybeDecompress(msg.Body, msg.ApplicationProperties);
+                    var fmt = BodyFormatDetector.Resolve(BodyFormat.Auto, msg.ContentType, dec.Body);
                     messages.Add(new PeekMessage(
                         MessageId: msg.MessageId,
                         CorrelationId: msg.CorrelationId,
@@ -112,7 +116,7 @@ public static class EventAssertEndpoints
                         DeliveryCount: msg.DeliveryCount,
                         ApplicationProperties: msg.ApplicationProperties.ToDictionary(
                             kv => kv.Key, kv => kv.Value?.ToString() ?? ""),
-                        Body: new PeekBody(fmt.ToString(), TruncatePreview(msg.Body, fmt), msg.Body.Length)));
+                        Body: new PeekBody(fmt.ToString(), TruncatePreview(dec.Body, fmt), dec.Body.Length)));
                 }
 
                 // Optional client-side correlation filter — applied AFTER the peek

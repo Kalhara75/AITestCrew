@@ -267,7 +267,10 @@ public class AzureServiceBusEventAgent : BaseTestAgent
             if (firstPassIdx >= 0)
             {
                 var capResult = EvaluateCaptures(
-                    def.Captures, allMessages[firstPassIdx], perMessageResults[firstPassIdx].EffectiveBodyFormat, action);
+                    def.Captures, allMessages[firstPassIdx],
+                    perMessageResults[firstPassIdx].EffectiveBodyFormat,
+                    perMessageResults[firstPassIdx].EffectiveBody,
+                    action);
                 if (capResult.Failure is not null)
                 {
                     captureFailure = capResult.Failure;
@@ -329,13 +332,21 @@ public class AzureServiceBusEventAgent : BaseTestAgent
 
     private static MessageEvaluation EvaluateMessage(ReceivedMessageView msg, EventAssertStepDefinition def)
     {
-        var effectiveFormat = BodyFormatDetector.Resolve(def.BodyFormat, msg.ContentType, msg.Body);
+        // Unwrap framework-applied compression (Rebus / NServiceBus / MassTransit
+        // gzip-compress bodies above a size threshold; the producer signals it via
+        // rbs2-content-encoding / Content-Encoding). When the body is gzipped JSON,
+        // Body.<jsonpath> would otherwise see compressed garbage and fail with
+        // "body is not JSON". Decompress once per message; reuse for criteria,
+        // captures, format detection, and diagnostics.
+        var decompression = BodyDecompressor.MaybeDecompress(msg.Body, msg.ApplicationProperties);
+        var effectiveBody = decompression.Body;
+        var effectiveFormat = BodyFormatDetector.Resolve(def.BodyFormat, msg.ContentType, effectiveBody);
         var perCriterion = new List<CriterionResult>(def.Criteria.Count);
         var passed = true;
 
         foreach (var c in def.Criteria)
         {
-            var extract = MessageFieldResolver.Resolve(msg, c.Field, effectiveFormat);
+            var extract = MessageFieldResolver.Resolve(msg, c.Field, effectiveFormat, effectiveBody);
             if (extract.Status == ExtractStatus.Failed)
             {
                 perCriterion.Add(new CriterionResult(c.Field, c.Operator.ToString(), false, extract.Error ?? "extraction failed"));
@@ -356,13 +367,15 @@ public class AzureServiceBusEventAgent : BaseTestAgent
             if (!op.Passed) passed = false;
         }
 
-        return new MessageEvaluation(passed, effectiveFormat, perCriterion);
+        return new MessageEvaluation(passed, effectiveFormat, perCriterion,
+            effectiveBody, decompression.WasDecompressed, decompression.AppliedEncoding);
     }
 
     private CaptureEvaluation EvaluateCaptures(
         List<EventCapture> captures,
         ReceivedMessageView message,
         BodyFormat effectiveFormat,
+        byte[] effectiveBody,
         string action)
     {
         var captured = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -376,7 +389,7 @@ public class AzureServiceBusEventAgent : BaseTestAgent
                 continue;
             }
 
-            var result = MessageFieldResolver.Resolve(message, cap.Field, effectiveFormat);
+            var result = MessageFieldResolver.Resolve(message, cap.Field, effectiveFormat, effectiveBody);
             if (result.Status == ExtractStatus.Found)
             {
                 captured[cap.As] = result.Value ?? "";
@@ -450,6 +463,11 @@ public class AzureServiceBusEventAgent : BaseTestAgent
         {
             var msg = messages[i];
             var eval = i < perMessage.Count ? perMessage[i] : null;
+            // Prefer the decompressed (effective) body for the preview so the
+            // run-detail panel shows readable JSON / XML on Rebus / NServiceBus
+            // wrapped messages. Fall back to the raw body when the agent didn't
+            // run (e.g. a peek path that didn't go through EvaluateMessage).
+            var previewBody = eval?.EffectiveBody ?? msg.Body;
             summaries.Add(new
             {
                 index = i,
@@ -459,9 +477,12 @@ public class AzureServiceBusEventAgent : BaseTestAgent
                 enqueuedTimeUtc = msg.EnqueuedTimeUtc,
                 applicationProperties = msg.ApplicationProperties.ToDictionary(
                     kv => kv.Key, kv => kv.Value?.ToString() ?? ""),
-                bodyPreview = TruncateBody(msg.Body, eval?.EffectiveBodyFormat ?? def.BodyFormat),
+                bodyPreview = TruncateBody(previewBody, eval?.EffectiveBodyFormat ?? def.BodyFormat),
                 bodyFormat = (eval?.EffectiveBodyFormat ?? def.BodyFormat).ToString(),
-                bodyLength = msg.Body.Length,
+                bodyLength = previewBody.Length,
+                bodyEncoding = eval?.AppliedEncoding,        // "gzip" / "deflate" / null
+                wasDecompressed = eval?.WasDecompressed ?? false,
+                rawBodyLength = msg.Body.Length,             // pre-decompression
                 passed = eval?.Passed,
                 criteria = eval?.PerCriterion.Select(c => new
                 {
@@ -524,7 +545,10 @@ public class AzureServiceBusEventAgent : BaseTestAgent
     private sealed record MessageEvaluation(
         bool Passed,
         BodyFormat EffectiveBodyFormat,
-        IReadOnlyList<CriterionResult> PerCriterion);
+        IReadOnlyList<CriterionResult> PerCriterion,
+        byte[] EffectiveBody,
+        bool WasDecompressed,
+        string? AppliedEncoding);
 
     private sealed record CriterionResult(
         string Field, string Operator, bool Passed, string? Reason);

@@ -24,14 +24,28 @@ public static class MessageFieldResolver
     /// <paramref name="effectiveBodyFormat"/> is the result of
     /// <c>BodyFormatDetector.Resolve</c>; pass it once per message rather than
     /// re-sniffing per criterion.
+    ///
+    /// <paramref name="bodyOverride"/> lets the caller supply an alternate
+    /// body buffer for <c>Body.*</c> / <c>BodyXml.*</c> / <c>BodyText</c> /
+    /// <c>BodyLength</c> resolution — typically the result of
+    /// <c>BodyDecompressor.MaybeDecompress</c> on a Rebus / NServiceBus /
+    /// MassTransit-wrapped message. When null, falls back to
+    /// <see cref="ReceivedMessageView.Body"/> (back-compat with existing
+    /// callers).
     /// </summary>
     public static ExtractResult Resolve(
         ReceivedMessageView message,
         string fieldPath,
-        BodyFormat effectiveBodyFormat)
+        BodyFormat effectiveBodyFormat,
+        byte[]? bodyOverride = null)
     {
         if (string.IsNullOrWhiteSpace(fieldPath))
             return ExtractResult.Failed("field path is empty");
+
+        // Most body-extraction paths use the override when supplied. System
+        // properties + ApplicationProperties never look at the body, so they
+        // ignore it.
+        var effectiveBody = bodyOverride ?? message.Body;
 
         // ── ApplicationProperties.<name> ──
         if (fieldPath.StartsWith("ApplicationProperties.", StringComparison.OrdinalIgnoreCase))
@@ -57,7 +71,7 @@ public static class MessageFieldResolver
                 return ExtractResult.Failed(
                     $"Body.* requires JSON body format; resolved format is {effectiveBodyFormat}. Use BodyXml.* for XML or BodyText for raw text.");
             var path = fieldPath["Body.".Length..];
-            return JsonBodyExtractor.Extract(message.Body, path);
+            return JsonBodyExtractor.Extract(effectiveBody, path);
         }
 
         // ── BodyXml.<xpath> ──
@@ -70,7 +84,7 @@ public static class MessageFieldResolver
                 return ExtractResult.Failed(
                     $"BodyXml.* requires XML body format; resolved format is {effectiveBodyFormat}. Use Body.* for JSON or BodyText for raw text.");
             var xpath = fieldPath["BodyXml.".Length..];
-            return XmlBodyExtractor.Extract(message.Body, xpath);
+            return XmlBodyExtractor.Extract(effectiveBody, xpath);
         }
 
         // ── BodyText / BodyLength (always available, even on binary bodies for length) ──
@@ -79,12 +93,12 @@ public static class MessageFieldResolver
             if (effectiveBodyFormat == BodyFormat.Binary)
                 return ExtractResult.Failed(
                     "binary body — BodyText is unsafe; use BodyLength or system / application properties");
-            if (message.Body.Length == 0)
+            if (effectiveBody.Length == 0)
                 return ExtractResult.FoundValue("");
             try
             {
                 return ExtractResult.FoundValue(
-                    System.Text.Encoding.UTF8.GetString(message.Body));
+                    System.Text.Encoding.UTF8.GetString(effectiveBody));
             }
             catch (Exception ex)
             {
@@ -94,7 +108,7 @@ public static class MessageFieldResolver
 
         if (string.Equals(fieldPath, "BodyLength", StringComparison.OrdinalIgnoreCase))
             return ExtractResult.FoundValue(
-                message.Body.Length.ToString(CultureInfo.InvariantCulture));
+                effectiveBody.Length.ToString(CultureInfo.InvariantCulture));
 
         // ── System properties — exact (case-insensitive) match against the view's fields. ──
         return ResolveSystemProperty(message, fieldPath);
