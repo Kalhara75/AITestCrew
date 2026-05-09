@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
+using AiTestCrew.Agents.AseXmlAgent;
 using AiTestCrew.Agents.Base;
 using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Core.Configuration;
@@ -302,6 +303,24 @@ public class ChatIntentService : IChatIntentService
             graceSeconds = _cfg.AseXml.VerificationGraceSeconds,
         };
 
+        // REQ-004: per-env Service Bus connection keys so the LLM doesn't
+        // invent connection names. Same shape as the existing endpointsByEnv
+        // dict — null entries (resolver failed) propagate as null.
+        var serviceBusConnectionsByEnv = new Dictionary<string, string[]?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var key in _envResolver.ListKeys())
+        {
+            try
+            {
+                var keys = _envResolver.ListServiceBusConnectionKeys(key);
+                serviceBusConnectionsByEnv[key] = keys.ToArray();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Service Bus connection list unavailable for env '{Env}'.", key);
+                serviceBusConnectionsByEnv[key] = null;
+            }
+        }
+
         return new
         {
             modules = moduleList,
@@ -311,6 +330,7 @@ public class ChatIntentService : IChatIntentService
             defaultStack = _cfg.DefaultApiStack,
             defaultModule = _cfg.DefaultApiModule,
             endpointsByEnv,
+            serviceBusConnectionsByEnv,
             agents,
             currentTestSet,
             postStepConfig
@@ -336,7 +356,11 @@ public class ChatIntentService : IChatIntentService
                 parentStepIndex = i,
                 description = $"{s.Method} {s.Endpoint}".Trim(),
                 postStepCount = s.PostSteps.Count,
-                postStepWaits = s.PostSteps.Select(ps => ps.WaitBeforeSeconds).ToArray()
+                postStepWaits = s.PostSteps.Select(ps => ps.WaitBeforeSeconds).ToArray(),
+                // REQ-004: each post-step's target + description so the LLM can
+                // resolve "the event-assert step after the API call" to a concrete
+                // postStepIndex for confirmEditPostStep.
+                postSteps = SummarisePostSteps(s.PostSteps)
             });
         }
         for (var i = 0; i < o.WebUiSteps.Count; i++)
@@ -350,7 +374,11 @@ public class ChatIntentService : IChatIntentService
                     ? (string.IsNullOrWhiteSpace(s.StartUrl) ? $"web ui case {i}" : s.StartUrl)
                     : s.Description,
                 postStepCount = s.PostSteps.Count,
-                postStepWaits = s.PostSteps.Select(ps => ps.WaitBeforeSeconds).ToArray()
+                postStepWaits = s.PostSteps.Select(ps => ps.WaitBeforeSeconds).ToArray(),
+                // REQ-004: each post-step's target + description so the LLM can
+                // resolve "the event-assert step after the API call" to a concrete
+                // postStepIndex for confirmEditPostStep.
+                postSteps = SummarisePostSteps(s.PostSteps)
             });
         }
         for (var i = 0; i < o.DesktopUiSteps.Count; i++)
@@ -362,7 +390,11 @@ public class ChatIntentService : IChatIntentService
                 parentStepIndex = i,
                 description = string.IsNullOrWhiteSpace(s.Description) ? $"desktop ui case {i}" : s.Description,
                 postStepCount = s.PostSteps.Count,
-                postStepWaits = s.PostSteps.Select(ps => ps.WaitBeforeSeconds).ToArray()
+                postStepWaits = s.PostSteps.Select(ps => ps.WaitBeforeSeconds).ToArray(),
+                // REQ-004: each post-step's target + description so the LLM can
+                // resolve "the event-assert step after the API call" to a concrete
+                // postStepIndex for confirmEditPostStep.
+                postSteps = SummarisePostSteps(s.PostSteps)
             });
         }
         for (var i = 0; i < o.AseXmlSteps.Count; i++)
@@ -376,7 +408,11 @@ public class ChatIntentService : IChatIntentService
                     ? $"aseXml generate {s.TemplateId}".Trim()
                     : s.Description,
                 postStepCount = s.PostSteps.Count,
-                postStepWaits = s.PostSteps.Select(ps => ps.WaitBeforeSeconds).ToArray()
+                postStepWaits = s.PostSteps.Select(ps => ps.WaitBeforeSeconds).ToArray(),
+                // REQ-004: each post-step's target + description so the LLM can
+                // resolve "the event-assert step after the API call" to a concrete
+                // postStepIndex for confirmEditPostStep.
+                postSteps = SummarisePostSteps(s.PostSteps)
             });
         }
         for (var i = 0; i < o.AseXmlDeliverySteps.Count; i++)
@@ -390,7 +426,44 @@ public class ChatIntentService : IChatIntentService
                     ? $"aseXml deliver {s.TemplateId} → {s.EndpointCode}".Trim()
                     : s.Description,
                 postStepCount = s.PostSteps.Count,
-                postStepWaits = s.PostSteps.Select(ps => ps.WaitBeforeSeconds).ToArray()
+                postStepWaits = s.PostSteps.Select(ps => ps.WaitBeforeSeconds).ToArray(),
+                // REQ-004: each post-step's target + description so the LLM can
+                // resolve "the event-assert step after the API call" to a concrete
+                // postStepIndex for confirmEditPostStep.
+                postSteps = SummarisePostSteps(s.PostSteps)
+            });
+        }
+        return rows.ToArray();
+    }
+
+    /// <summary>
+    /// Lightweight per-post-step summary fed to the LLM as part of the parent-
+    /// step breakdown. Carries enough info to identify which post-step a user
+    /// reference ("the DB check after the API call", "post-step 2") points at;
+    /// keeps the catalog small by NOT inlining full payloads.
+    /// </summary>
+    private static object[] SummarisePostSteps(IList<VerificationStep> postSteps)
+    {
+        var rows = new List<object>(postSteps.Count);
+        for (var i = 0; i < postSteps.Count; i++)
+        {
+            var ps = postSteps[i];
+            rows.Add(new
+            {
+                postStepIndex = i,
+                description = ps.Description,
+                target = ps.Target,
+                role = ps.Role,
+                waitBeforeSeconds = ps.WaitBeforeSeconds,
+                payload =
+                    ps.EventAssert is not null ? "eventAssert"
+                    : ps.DbCheck is not null ? "dbCheck"
+                    : ps.WebUi is not null ? "webUi"
+                    : ps.DesktopUi is not null ? "desktopUi"
+                    : ps.Api is not null ? "api"
+                    : ps.AseXml is not null ? "aseXml"
+                    : ps.AseXmlDeliver is not null ? "aseXmlDeliver"
+                    : "unknown",
             });
         }
         return rows.ToArray();
@@ -453,7 +526,7 @@ public class ChatIntentService : IChatIntentService
                 }
               }
 
-              Post-step authoring without a recorder — the user asked to add a DB check, API call, aseXML generation, or aseXML delivery AS a post-step of an existing parent. These carry a JSON payload directly rather than firing up a UI recorder:
+              Post-step authoring without a recorder — the user asked to add a DB check, API call, aseXML generation, aseXML delivery, OR an Azure Service Bus event assertion AS a post-step of an existing parent. These carry a JSON payload directly rather than firing up a UI recorder:
               { "kind": "confirmCreatePostStep", "summary": "Add DB check 'Job row exists' after WebUi[1] 'Search'", "data": {
                   "moduleId": "<from catalog>",
                   "testSetId": "<from catalog>",
@@ -462,7 +535,7 @@ public class ChatIntentService : IChatIntentService
                   "parentStepIndex": <0-based index from the objective's parentSteps list>,
                   "postStep": {
                     "description": "<short human label>",
-                    "target": "Db_SqlServer" | "API_REST" | "AseXml_Generate" | "AseXml_Deliver",
+                    "target": "Db_SqlServer" | "API_REST" | "AseXml_Generate" | "AseXml_Deliver" | "Event_AzureServiceBus",
                     "waitBeforeSeconds": <integer, default 0 for DbCheck when user didn't specify>,
                     "role": "Verification" | "Action",   // Verification unless the user described an action (drop aseXML, call API to mutate, etc.)
                     "dbCheck": {                         // present only when target is Db_SqlServer
@@ -507,8 +580,112 @@ public class ChatIntentService : IChatIntentService
                     //        "timeoutSeconds": 15 }
                     "api": { <ApiTestDefinition shape> },            // present only when target is API_REST
                     "aseXml": { <AseXmlTestDefinition shape> },      // present only when target is AseXml_Generate
-                    "aseXmlDeliver": { <AseXmlDeliveryTestDefinition shape> }  // present only when target is AseXml_Deliver
+                    "aseXmlDeliver": { <AseXmlDeliveryTestDefinition shape> },  // present only when target is AseXml_Deliver
+                    "eventAssert": {                                  // present only when target is Event_AzureServiceBus
+                      "name": "<human label>",
+                      "connectionKey": "<from catalog.serviceBusConnectionsByEnv[envKey] — never invent>",
+                      "entity": {
+                        "type": "Queue" | "Topic",
+                        "name": "<queue name or topic name; {{Token}}-substituted at runtime>",
+                        "subscriptionName": "<required when type is Topic>"
+                      },
+                      "bodyFormat": "Auto" | "Json" | "Xml" | "Text" | "Binary",  // default Auto — sniffs ContentType then leading byte
+                      "receiveMode": "PeekLock" | "ReceiveAndDelete",  // default PeekLock (safe for shared subs)
+                      "matchMode": "AnyMessage" | "AllMessages" | "ExactlyOne" | "ExactCount" | "MinCount" | "MaxCount" | "CountRange",
+                      "expectedCount": <integer, when matchMode is count-based; for MaxCount=0 the shape is "verify NO matching event">,
+                      "maxCount": <integer, only for CountRange — upper bound>,
+                      "timeoutSeconds": <integer, default 30 — total receive window>,
+                      "maxMessages": <integer, default 50 — hard cap on messages drained for evaluation>,
+                      "drainBeforeParent": <bool, default false — drains the entity in ReceiveAndDelete mode BEFORE the parent runs; use for ExactlyOne/MaxCount on shared subs to avoid stale-message contamination>,
+                      "completeOnPass": <bool, default true — on PeekLock+pass, completes passing messages and abandons others; false leaves all in place for debug>,
+                      "correlationFilter": "<optional; messages whose CorrelationId doesn't equal this are skipped (after {{Token}} substitution)>",
+                      "sessionId": "<optional; for session-aware receivers>",
+                      "criteria": [
+                        {
+                          "field": "<see field-path syntax below>",
+                          "operator": "Equals",                       // same operator surface as DB asserts
+                          "expected": "<value or {{Token}}>",
+                          "expected2": "<upper bound — only for Between>",
+                          "ignoreCase": true,                          // string ops only
+                          "toleranceSeconds": 5,                       // EqualsDate only
+                          "toleranceDelta": 0.01                       // EqualsNumeric only
+                        }
+                      ],
+                      "captures": [                                    // first PASSING message's values bind into {{Token}} for sibling post-steps
+                        { "field": "MessageId", "as": "MessageId", "required": true },
+                        { "field": "Body.OrderId", "as": "OrderId", "required": false }
+                      ]
+                    }
+                    // eventAssert FIELD path syntax (used for criteria.field and captures.field):
+                    //   System property:           MessageId | CorrelationId | Subject | ContentType | ReplyTo | To | SessionId | EnqueuedTimeUtc | DeliveryCount | PartitionKey
+                    //   Application property:      ApplicationProperties.<name>
+                    //   JSON body (when bodyFormat resolves to Json):  Body.<jsonpath>             — e.g. Body.Order.Id, Body.Items[0].Sku
+                    //   XML body (when bodyFormat resolves to Xml):    BodyXml.<xpath>             — e.g. BodyXml.//Order/@Id; for default-namespace docs use //*[local-name()='Order']/@Id
+                    //   Raw body string:           BodyText
+                    //   Body byte length:          BodyLength
+                    //
+                    // eventAssert examples (verbatim shape):
+                    //   1) Topic + sub, ApplicationProperties + Body criteria + capture:
+                    //      User: "after the API publish step, confirm a MeterReadingCreated event was raised onto the meter-events topic, test-runner sub, MeterId={{MeterId}}, capture EventId"
+                    //      { "name": "MeterReadingCreated raised",
+                    //        "connectionKey": "DefaultBus",
+                    //        "entity": { "type": "Topic", "name": "meter-events", "subscriptionName": "test-runner" },
+                    //        "matchMode": "AnyMessage",
+                    //        "criteria": [
+                    //          { "field": "ApplicationProperties.EventType", "operator": "Equals", "expected": "MeterReadingCreated" },
+                    //          { "field": "Body.MeterId", "operator": "Equals", "expected": "{{MeterId}}" }
+                    //        ],
+                    //        "captures": [ { "field": "Body.EventId", "as": "EventId", "required": true } ],
+                    //        "timeoutSeconds": 30 }
+                    //   2) Negative assertion ("verify NO X event was raised") — MaxCount=0 runs the FULL timeout to verify zero arrived:
+                    //      User: "verify NO rejection event was raised for that order"
+                    //      { "name": "No rejection event",
+                    //        "connectionKey": "DefaultBus",
+                    //        "entity": { "type": "Queue", "name": "order-events" },
+                    //        "matchMode": "MaxCount",
+                    //        "expectedCount": 0,
+                    //        "criteria": [
+                    //          { "field": "ApplicationProperties.EventType", "operator": "Equals", "expected": "OrderRejected" }
+                    //        ],
+                    //        "timeoutSeconds": 15 }
+                    //   3) Drain-before-parent + ExactlyOne — for shared subs where stale messages from prior failed runs would contaminate the count:
+                    //      User: "drain the queue first, then confirm exactly one shipment-confirmed event arrives after the API call"
+                    //      { "name": "Exactly one shipment confirmed",
+                    //        "connectionKey": "DefaultBus",
+                    //        "entity": { "type": "Queue", "name": "shipment-events" },
+                    //        "matchMode": "ExactlyOne",
+                    //        "drainBeforeParent": true,
+                    //        "criteria": [
+                    //          { "field": "ApplicationProperties.EventType", "operator": "Equals", "expected": "ShipmentConfirmed" }
+                    //        ],
+                    //        "timeoutSeconds": 30 }
                   }
+                }
+              }
+
+              Service Bus peek (NL peek-then-author) — the user asked to look at messages currently sitting on a queue / subscription, typically before authoring a criterion. Read-only — never consumes. Trigger phrasing: "show me messages on …", "what's on the meter-events topic right now", "peek the queue", "are there any pending events for {{X}}":
+              { "kind": "peekServiceBusMessages", "summary": "Peek meter-events topic on sumo-retail", "data": {
+                  "envKey": "<from catalog.environments[*].key>",
+                  "connectionKey": "<from catalog.serviceBusConnectionsByEnv[envKey] — never invent>",
+                  "entity": {
+                    "type": "Queue" | "Topic",
+                    "name": "<queue or topic name>",
+                    "subscriptionName": "<required when type is Topic>"
+                  },
+                  "max": <integer, default 10, max 50>,
+                  "correlationFilter": "<optional substring match on CorrelationId, applied client-side after the peek>"
+                }
+              }
+
+              Post-step EDIT — the user asked to MUTATE an existing post-step (change a criterion, add a capture, tighten the timeout, switch the matchMode). Resolve postStepIndex from currentTestSet.objectives[*].parentSteps[*].postSteps[*] — match by description / target / payload kind. Always emit the FULL updated postStep payload (replacement, not patch) — keeps the runtime simple and the diff visible to the user:
+              { "kind": "confirmEditPostStep", "summary": "Update event-assert post-step #2", "data": {
+                  "moduleId": "<from catalog>",
+                  "testSetId": "<from catalog>",
+                  "objectiveId": "<from currentTestSet.objectives>",
+                  "parentKind": "Api" | "WebUi" | "DesktopUi" | "AseXml" | "AseXmlDeliver",
+                  "parentStepIndex": <0-based index from parentSteps>,
+                  "postStepIndex": <0-based index from parentSteps[*].postSteps>,
+                  "postStep": { /* full updated VerificationStep shape — same schema as confirmCreatePostStep.postStep */ }
                 }
               }
 
@@ -567,7 +744,7 @@ public class ChatIntentService : IChatIntentService
             - When the user asks for deferred execution but no Online agent in catalog.agents advertises the post-step's target capability, warn them the deferred step will sit in the queue until such an agent connects. Still emit the card — the queue entry is valid — but make the reply honest about the gap.
 
             Post-step authoring rules (confirmCreatePostStep):
-            - Use this when the user wants to ADD a DB check, API call, aseXML generate, or aseXML deliver as a post-step of an existing parent. Typical phrases: "add a DB check that …", "confirm Jobs has a row for …", "after the WinForms test drop an MFN aseXML file".
+            - Use this when the user wants to ADD a DB check, API call, aseXML generate, aseXML deliver, or Service Bus event-assertion as a post-step of an existing parent. Typical phrases: "add a DB check that …", "confirm Jobs has a row for …", "after the WinForms test drop an MFN aseXML file", "after the API call confirm a MeterReadingCreated event was raised".
             - Resolve parentKind + parentStepIndex from currentTestSet.objectives[*].parentSteps — exact match where possible; ask if ambiguous.
             - For Db_SqlServer: write the SQL yourself from the user's description using {{Token}} placeholders (double curly braces in the actual JSON) for values they mentioned that look like parent context (NMI, MessageID, TransactionID, StartUrl). The SQL MUST be a single SELECT — no semicolons, no INSERT/UPDATE/DELETE/DDL. Prefer expectedRowCount for "confirm at least one row" checks; prefer columnAssertions when the user specified column values. Never invent values that weren't in the user's message or the parent context.
             - When the user mentions a column ending in `Payload`, `RawPayload`, `Document`, or anything explicitly described as JSON, prefer a `jsonPath` assertion (e.g. `"$.OrderId"`) over a substring match on the whole column. If you don't know which JSON field the user meant, ask rather than guessing.
@@ -575,7 +752,24 @@ public class ChatIntentService : IChatIntentService
             - For comparators richer than equality, use the appropriate operator: `Contains` / `StartsWith` / `EndsWith` for substring matches; `Regex` for patterns; `GreaterThan` / `LessThan` / `Between` for thresholds (numbers OR dates work — pick the most natural shape); `EqualsNumeric` with `toleranceDelta` for decimal-formatted columns; `EqualsDate` with `toleranceSeconds` for timestamps; `IsNull` / `IsNotNull` for null-aware checks.
             - The legacy `expectedColumnValues` dict is accepted on input but you should NEVER emit it — always use `columnAssertions`. The deserialiser shim handles old persisted JSON, but new actions must use the new shape so the chat history stays consistent.
             - For API_REST/AseXml_Generate/AseXml_Deliver post-steps, only emit if the user gave enough info to fully populate the respective definition. If not, ask for the missing fields rather than guessing.
+            - For Event_AzureServiceBus: only use a connectionKey that appears literally in catalog.serviceBusConnectionsByEnv[envKey] — NEVER invent a connection key. Resolve the env from the test set or current page; if unset, default to catalog.defaultEnvironment.
+            - For event assertions, prefer `Body.<jsonpath>` criteria over `BodyText` substring matches when the body is JSON; prefer `BodyXml.<xpath>` when the body is XML. Use `ApplicationProperties.<name>` for AEMO-style metadata fields (EventType, Source, etc.). When the user wants the message id (or correlation id, or any field value) for a later step, emit a `captures` entry — `field` is the same path syntax (e.g. `MessageId`, `Body.OrderId`); `as` is the bare token name (no braces); siblings reference it as `{{OrderId}}`.
+            - Use `MaxCount(0)` for negative-assertion phrasing ("verify NO X event was raised", "ensure no rejection arrived") — the receive loop runs the FULL timeout to actually verify zero arrived. Use `ExactlyOne` when the user said "exactly one" or "a single". Use `AnyMessage` (default) for "an event was raised" / "at least one matched". Use `AllMessages` only when the user said every / all messages must match.
+            - When the user says "drain stale messages first" / "the queue might have leftovers from a prior failed run" / "make sure the queue is empty before the test runs", set `drainBeforeParent: true`. The orchestrator drains in ReceiveAndDelete mode BEFORE the parent step runs.
             - Pick waitBeforeSeconds per the "Deferred vs inline post-steps" rules above — don't duplicate that logic here.
+
+            Edit rules (confirmEditPostStep):
+            - Use this when the user wants to MUTATE an existing post-step rather than add a new one. Typical phrases: "change the criterion on …", "tighten the timeout to N seconds", "switch matchMode to ExactlyOne", "add a capture for X on the event-assert step after the API call", "make the SQL look at JobsArchive instead".
+            - You MUST resolve postStepIndex from currentTestSet.objectives[*].parentSteps[*].postSteps[*]. Match by description first, then by target / payload kind. If the user reference is ambiguous (two event-assert post-steps on the same parent), ask rather than guess.
+            - Always emit the FULL updated postStep payload (the same shape as confirmCreatePostStep.postStep), not a patch. Carry every field through and apply only the change the user requested. Reading the current post-step from currentTestSet is the way you know what the OTHER fields are — never invent a value the user didn't mention.
+            - confirmEditPostStep is generic across targets. The same flow works for dbCheck, eventAssert, webUi, desktopUi, api, aseXml, aseXmlDeliver. Pick the right inner payload based on the existing post-step's `payload` field in the catalog.
+            - For NEW post-steps emit `confirmCreatePostStep`. For MUTATIONS to existing post-steps emit `confirmEditPostStep`. Don't conflate them — they go to different endpoints.
+
+            Service Bus peek rules (peekServiceBusMessages):
+            - Use this when the user wants to LOOK at messages currently on a queue / sub without authoring an assertion. The card calls POST /api/event-assert/peek which is read-only — never consumes.
+            - connectionKey MUST come from catalog.serviceBusConnectionsByEnv[envKey]. envKey defaults to catalog.defaultEnvironment when the user doesn't specify.
+            - For Topic entities, subscriptionName is required.
+            - The user can follow up by clicking "Use this field as a criterion / capture" on any peeked message — that fires a follow-up confirmCreatePostStep (or confirmEditPostStep if the contextual parent already has an event-assert post-step). You don't need to chain those yourself; just emit the peek action.
 
             Create rules:
             - For "testSet" target, moduleId is required and must be present in the catalog.
@@ -586,6 +780,7 @@ public class ChatIntentService : IChatIntentService
             - When the user asks "what endpoints are in <env>?", read endpointsByEnv["<envKey>"] and list those codes; never tell the user endpoints are global or environment-agnostic.
             - If endpointsByEnv["<envKey>"] is null, that environment's Bravo DB is unreachable or unconfigured — say so plainly rather than falling back to another env's list.
             - When picking an endpointCode for a confirmRun / confirmRecord / confirmCreatePostStep against a specific env, only use codes that appear in endpointsByEnv for that env.
+            - catalog.serviceBusConnectionsByEnv is the Service Bus equivalent — same per-env map shape, listing logical connection keys configured under TestEnvironment.Environments.<env>.ServiceBusConnections (or top-level fallback). Same rules: only use keys that appear literally; null means unconfigured for that env.
 
             Universal rules:
             - Only use ids/keys/codes that appear literally in the catalog. Never invent values.

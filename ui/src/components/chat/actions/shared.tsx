@@ -42,6 +42,16 @@ export const ACTION_META: Record<string, ActionMeta> = {
     tint: tokens.color.postTint,
     label: 'Add post-step',
   },
+  confirmEditPostStep: {
+    icon: <ClipboardListIcon />,
+    tint: tokens.color.postTint,
+    label: 'Update post-step',
+  },
+  peekServiceBusMessages: {
+    icon: <TableIcon />,
+    tint: tokens.color.dataTint,
+    label: 'Peek Service Bus',
+  },
 };
 
 export function actionCardStyle(tint: string): CSSProperties {

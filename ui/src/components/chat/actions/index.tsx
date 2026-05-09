@@ -4,6 +4,8 @@ import { ConfirmRunCard } from './ConfirmRunCard';
 import { ConfirmCreateCard } from './ConfirmCreateCard';
 import { ConfirmRecordCard } from './ConfirmRecordCard';
 import { ConfirmCreatePostStepCard } from './ConfirmCreatePostStepCard';
+import { ConfirmEditPostStepCard } from './ConfirmEditPostStepCard';
+import { PeekServiceBusMessagesCard } from './PeekServiceBusMessagesCard';
 import { DataCard } from '../DataView';
 
 export function ActionCard({ action }: { action: ChatAction }) {
@@ -19,5 +21,9 @@ export function ActionCard({ action }: { action: ChatAction }) {
     return <ConfirmRecordCard summary={action.summary} data={action.data} />;
   if (action.kind === 'confirmCreatePostStep')
     return <ConfirmCreatePostStepCard summary={action.summary} data={action.data} />;
+  if (action.kind === 'confirmEditPostStep')
+    return <ConfirmEditPostStepCard summary={action.summary} data={action.data} />;
+  if (action.kind === 'peekServiceBusMessages')
+    return <PeekServiceBusMessagesCard summary={action.summary} data={action.data} />;
   return null;
 }

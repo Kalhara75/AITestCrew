@@ -137,6 +137,73 @@ export interface ColumnCapture {
   required: boolean;
 }
 
+// ── REQ-004 Azure Service Bus event-assert post-step ──────────────────
+
+export type ServiceBusEntityType = 'Queue' | 'Topic';
+export type BodyFormat = 'Auto' | 'Json' | 'Xml' | 'Text' | 'Binary';
+export type ReceiveMode = 'PeekLock' | 'ReceiveAndDelete';
+export type MatchMode =
+  | 'AnyMessage'
+  | 'AllMessages'
+  | 'ExactlyOne'
+  | 'ExactCount'
+  | 'MinCount'
+  | 'MaxCount'
+  | 'CountRange';
+
+export interface ServiceBusEntity {
+  type: ServiceBusEntityType;
+  name: string;                 // queue OR topic name; {{Token}} substituted
+  subscriptionName?: string;    // required when type=Topic; {{Token}} substituted
+}
+
+export interface EventCriterion {
+  /**
+   * Field path. Either a system property (MessageId, CorrelationId,
+   * Subject, ContentType, ReplyTo, To, SessionId, EnqueuedTimeUtc,
+   * DeliveryCount, PartitionKey), an `ApplicationProperties.<name>`
+   * lookup, `Body.<jsonpath>`, `BodyXml.<xpath>`, `BodyText`, or
+   * `BodyLength`. {{Token}} substituted.
+   */
+  field: string;
+  operator: AssertionOperator;
+  /** Expected value (string projection). {{Token}} substituted. */
+  expected: string;
+  /** Upper bound for `Between`. {{Token}} substituted. */
+  expected2?: string;
+  ignoreCase: boolean;
+  toleranceSeconds?: number;
+  toleranceDelta?: number;
+}
+
+export interface EventCapture {
+  /** Field path — same syntax as `EventCriterion.field`. {{Token}} substituted. */
+  field: string;
+  /** Token name to bind, e.g. "MessageId" (no braces). NOT {{Token}} substituted. */
+  as: string;
+  /** When false, missing/null does NOT fail the step — token left undefined. */
+  required: boolean;
+}
+
+export interface EventAssertStepDefinition {
+  name: string;
+  connectionKey: string;
+  entity: ServiceBusEntity;
+  bodyFormat: BodyFormat;
+  receiveMode: ReceiveMode;
+  matchMode: MatchMode;
+  expectedCount?: number;
+  maxCount?: number;
+  timeoutSeconds: number;
+  maxMessages: number;
+  drainBeforeParent: boolean;
+  completeOnPass: boolean;
+  correlationFilter?: string;
+  sessionId?: string;
+  criteria: EventCriterion[];
+  captures: EventCapture[];
+}
+
 export interface DbCheckStepDefinition {
   name: string;
   /** Logical connection key (e.g. "BravoDb", "SdrReportingDb"). */
@@ -170,7 +237,7 @@ export interface DbCheckStepDefinition {
  */
 export interface PostStep {
   description: string;
-  target: string;            // UI_Web_MVC | UI_Web_Blazor | UI_Desktop_WinForms | API_REST | AseXml_Generate | AseXml_Deliver | Db_SqlServer
+  target: string;            // UI_Web_MVC | UI_Web_Blazor | UI_Desktop_WinForms | API_REST | AseXml_Generate | AseXml_Deliver | Db_SqlServer | Event_AzureServiceBus
   waitBeforeSeconds: number;
   role?: string;             // "Verification" (default) | "Action"
   webUi?: WebUiTestDefinition;
@@ -179,6 +246,7 @@ export interface PostStep {
   aseXml?: AseXmlTestDefinition;
   aseXmlDeliver?: AseXmlDeliveryTestDefinition;
   dbCheck?: DbCheckStepDefinition;
+  eventAssert?: EventAssertStepDefinition;
 }
 
 /** @deprecated Use PostStep. Kept as an alias so existing imports keep working. */
