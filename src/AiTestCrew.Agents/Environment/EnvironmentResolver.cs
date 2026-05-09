@@ -143,6 +143,53 @@ public class EnvironmentResolver : IEnvironmentResolver
         return keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
+    public ServiceBusConnectionConfig? ResolveServiceBusConnection(string connectionKey, string? envKey)
+    {
+        if (string.IsNullOrWhiteSpace(connectionKey)) return null;
+
+        var env = Resolve(envKey);
+        if (env.ServiceBusConnections.TryGetValue(connectionKey, out var perEnv)
+            && IsUsableConnection(perEnv))
+            return perEnv;
+
+        if (_config.ServiceBusConnections.TryGetValue(connectionKey, out var topLevel)
+            && IsUsableConnection(topLevel))
+            return topLevel;
+
+        return null;
+    }
+
+    public bool ResolveAllowEventAssertPeek(string? envKey)
+    {
+        // Mirrors ResolveAllowDbDryRun: unknown env keys are conservative-deny.
+        if (!string.IsNullOrWhiteSpace(envKey)
+            && !_config.Environments.ContainsKey(envKey))
+            return false;
+
+        var env = Resolve(envKey);
+        return env.AllowEventAssertPeek;
+    }
+
+    public IReadOnlyList<string> ListServiceBusConnectionKeys(string? envKey)
+    {
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var env = Resolve(envKey);
+        foreach (var k in env.ServiceBusConnections.Keys) keys.Add(k);
+        foreach (var k in _config.ServiceBusConnections.Keys) keys.Add(k);
+        return keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private static bool IsUsableConnection(ServiceBusConnectionConfig? c)
+    {
+        if (c is null) return false;
+        return c.AuthMode switch
+        {
+            ServiceBusAuthMode.ConnectionString => !string.IsNullOrWhiteSpace(c.ConnectionString),
+            ServiceBusAuthMode.AzureAd => !string.IsNullOrWhiteSpace(c.FullyQualifiedNamespace),
+            _ => false,
+        };
+    }
+
     public bool ResolveDataTeardownEnabled(string? key)
     {
         var env = Resolve(key);

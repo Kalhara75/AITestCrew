@@ -155,6 +155,14 @@ public class TestEnvironmentConfig
     public Dictionary<string, string> DbConnections { get; set; } = new();
 
     /// <summary>
+    /// Top-level Azure Service Bus namespace registry — fallback when a
+    /// per-env block (<see cref="EnvironmentConfig.ServiceBusConnections"/>)
+    /// doesn't define the key. Used by
+    /// <see cref="AiTestCrew.Core.Interfaces.IEnvironmentResolver.ResolveServiceBusConnection"/>.
+    /// </summary>
+    public Dictionary<string, ServiceBusConnectionConfig> ServiceBusConnections { get; set; } = new();
+
+    /// <summary>
     /// Stored-procedure name prefixes that teardown SQL is allowed to invoke
     /// via <c>EXEC</c>. Procs whose name does not start with one of these
     /// prefixes (case-insensitive) are rejected by <c>SqlGuardrails</c>.

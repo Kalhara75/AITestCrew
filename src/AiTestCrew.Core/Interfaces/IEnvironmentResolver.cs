@@ -74,6 +74,34 @@ public interface IEnvironmentResolver
     IReadOnlyList<string> ListDbConnectionKeys(string? envKey);
 
     /// <summary>
+    /// Resolves an Azure Service Bus namespace registration for a logical
+    /// connection key (<c>"DefaultBus"</c>, <c>"MeterEvents"</c>, etc.).
+    /// Precedence: per-env <see cref="EnvironmentConfig.ServiceBusConnections"/>
+    /// → top-level <see cref="TestEnvironmentConfig.ServiceBusConnections"/>.
+    /// Returns <c>null</c> when nothing is configured for the key — callers
+    /// surface this as a config error (<c>TestStatus.Error</c>), not a data
+    /// failure.
+    /// </summary>
+    ServiceBusConnectionConfig? ResolveServiceBusConnection(string connectionKey, string? envKey);
+
+    /// <summary>
+    /// Whether the <c>POST /api/event-assert/peek</c> endpoint is enabled for
+    /// this env. Defaults to <c>true</c>; envs can opt out by setting
+    /// <see cref="EnvironmentConfig.AllowEventAssertPeek"/> to <c>false</c>.
+    /// Mirrors the <see cref="ResolveAllowDbDryRun"/> contract — unknown env
+    /// keys are conservative-deny.
+    /// </summary>
+    bool ResolveAllowEventAssertPeek(string? envKey);
+
+    /// <summary>
+    /// Lists every Service Bus connection key configured for this env — the
+    /// union of per-env <see cref="EnvironmentConfig.ServiceBusConnections"/>
+    /// keys and top-level <see cref="TestEnvironmentConfig.ServiceBusConnections"/>
+    /// keys. No implicit defaults (unlike DB's <c>"BravoDb"</c>).
+    /// </summary>
+    IReadOnlyList<string> ListServiceBusConnectionKeys(string? envKey);
+
+    /// <summary>
     /// Returns whether SQL data teardown is opted-in for the given environment.
     /// Falls back to <see cref="TestEnvironmentConfig.DataTeardownEnabled"/>
     /// (default false) when the env block leaves it unset.

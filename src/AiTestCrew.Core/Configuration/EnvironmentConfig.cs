@@ -55,6 +55,26 @@ public class EnvironmentConfig
     public bool AllowDbDryRun { get; set; } = true;
 
     /// <summary>
+    /// Per-customer-environment Azure Service Bus namespace registry, keyed by
+    /// logical connection name (e.g. <c>"DefaultBus"</c>, <c>"MeterEvents"</c>).
+    /// Looked up by
+    /// <see cref="AiTestCrew.Core.Interfaces.IEnvironmentResolver.ResolveServiceBusConnection"/>;
+    /// falls back to <see cref="TestEnvironmentConfig.ServiceBusConnections"/>
+    /// when an env doesn't override the key. Unknown key surfaces as a config
+    /// error at runtime (<c>TestStatus.Error</c>), not a data failure.
+    /// </summary>
+    public Dictionary<string, ServiceBusConnectionConfig> ServiceBusConnections { get; set; } = new();
+
+    /// <summary>
+    /// Per-env opt-out for the <c>POST /api/event-assert/peek</c> endpoint.
+    /// Default <c>true</c> — set to <c>false</c> on production-style envs to
+    /// disable the editor's "Peek messages" UI button while still allowing
+    /// scheduled event-assert post-steps to run as normal. Mirrors the
+    /// <see cref="AllowDbDryRun"/> precedent.
+    /// </summary>
+    public bool AllowEventAssertPeek { get; set; } = true;
+
+    /// <summary>
     /// Opt-in flag for SQL data teardown in this environment. When false
     /// (the default), test-set teardown steps are rejected before any SQL
     /// runs. Set to true only on environments where DELETE statements are safe
