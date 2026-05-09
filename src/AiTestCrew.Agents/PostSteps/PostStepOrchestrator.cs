@@ -890,6 +890,22 @@ public class PostStepOrchestrator
                     return true;
                 }
 
+            case TestTargetType.Event_AzureServiceBus:
+                if (postStep.EventAssert is null)
+                {
+                    stepSink.Add(TestStep.Fail(action,
+                        $"Target is '{postStep.Target}' but EventAssert payload is missing on the post-step."));
+                    return false;
+                }
+                {
+                    var clone = StepParameterSubstituter.Apply(postStep.EventAssert, context);
+                    // Same preloaded-list shape as the other agents — AzureServiceBusEventAgent
+                    // reads `PreloadedTestCases` as a `List<EventAssertStepDefinition>`.
+                    syntheticTask.Parameters["PreloadedTestCases"] =
+                        new List<AiTestCrew.Agents.EventAssertAgent.EventAssertStepDefinition> { clone };
+                    return true;
+                }
+
             default:
                 stepSink.Add(TestStep.Fail(action,
                     $"Post-step target '{postStep.Target}' is not supported."));
