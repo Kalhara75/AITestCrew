@@ -150,6 +150,20 @@ builder.Services.AddSingleton<AiTestCrew.Agents.DbAgent.DbCheckAgent>(sp => new 
 ));
 builder.Services.AddSingleton<ITestAgent>(sp => sp.GetRequiredService<AiTestCrew.Agents.DbAgent.DbCheckAgent>());
 
+// Azure Service Bus event-assert agent — only invoked as an Event_AzureServiceBus post-step.
+builder.Services.AddSingleton<AiTestCrew.Agents.EventAssertAgent.IServiceBusReceiverFactory,
+    AiTestCrew.Agents.EventAssertAgent.ServiceBusReceiverFactory>();
+builder.Services.AddSingleton<AiTestCrew.Agents.EventAssertAgent.AzureServiceBusEventAgent>(sp =>
+    new AiTestCrew.Agents.EventAssertAgent.AzureServiceBusEventAgent(
+        sp.GetRequiredService<Kernel>(),
+        sp.GetRequiredService<ILogger<AiTestCrew.Agents.EventAssertAgent.AzureServiceBusEventAgent>>(),
+        sp.GetRequiredService<IEnvironmentResolver>(),
+        sp.GetRequiredService<AiTestCrew.Agents.EventAssertAgent.IServiceBusReceiverFactory>(),
+        sp.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>()
+    ));
+builder.Services.AddSingleton<ITestAgent>(sp =>
+    sp.GetRequiredService<AiTestCrew.Agents.EventAssertAgent.AzureServiceBusEventAgent>());
+
 // ── Persistence — share the same data directory as the Runner ──
 var runnerBinDir = Path.GetFullPath(Path.Combine(runnerDir, "bin", "Debug", "net8.0-windows"));
 var dataDir = Directory.Exists(Path.Combine(runnerBinDir, "testsets"))
