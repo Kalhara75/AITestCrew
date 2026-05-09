@@ -111,7 +111,8 @@ function StepRow({ step, isLast }: { step: StepResult; isLast: boolean }) {
   const isAwaiting = step.status === 'AwaitingVerification';
   const { text: detailText, screenshotFile } = parseScreenshot(step.detail);
   const dbDiagnostics = extractDbDiagnostics(step);
-  const hasDetail = !!(step.detail) || dbDiagnostics !== null;
+  const eventAssertDiagnostics = extractEventAssertDiagnostics(step);
+  const hasDetail = !!(step.detail) || dbDiagnostics !== null || eventAssertDiagnostics !== null;
   const dueTime = isAwaiting ? extractDueTime(step.summary, step.detail) : null;
 
   return (
@@ -166,6 +167,7 @@ function StepRow({ step, isLast }: { step: StepResult; isLast: boolean }) {
             </pre>
           )}
           {dbDiagnostics && <DbDiagnosticsTable diag={dbDiagnostics} />}
+          {eventAssertDiagnostics && <EventAssertDiagnosticsTable diag={eventAssertDiagnostics} />}
           {screenshotFile && (
             <div style={{ marginTop: 12 }}>
               <a
@@ -276,6 +278,191 @@ function DbDiagnosticsTable({ diag }: { diag: DbCheckDiagnostics }) {
             <div key={i} style={{ overflowX: 'auto' }}>{renderRow(r, i + 1)}</div>
           ))}
         </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Pulls Service Bus event-assert diagnostics out of step.metadata. Returns
+ * null when the step isn't an event-assert (or carries no diagnostics).
+ *
+ * REQ-004 attaches `serviceBusReceived`:
+ *   {
+ *     totalReceived, passCount, matchMode, expectedCount, maxCount,
+ *     messages: [
+ *       { index, messageId, correlationId, contentType, enqueuedTimeUtc,
+ *         applicationProperties, bodyPreview, bodyFormat, bodyLength,
+ *         passed, criteria: [{ field, op, passed, reason }] }
+ *     ]
+ *   }
+ */
+type EventAssertDiagnostics = {
+  totalReceived: number;
+  passCount: number;
+  matchMode?: string;
+  expectedCount?: number | null;
+  maxCount?: number | null;
+  messages: Array<EventAssertMessage>;
+};
+
+type EventAssertMessage = {
+  index: number;
+  messageId: string | null;
+  correlationId: string | null;
+  contentType: string | null;
+  enqueuedTimeUtc: string;
+  applicationProperties: Record<string, string>;
+  bodyPreview: string;
+  bodyFormat: string;
+  bodyLength: number;
+  passed: boolean | null;
+  criteria: Array<{ field: string; op: string; passed: boolean; reason: string | null }>;
+};
+
+function extractEventAssertDiagnostics(step: StepResult): EventAssertDiagnostics | null {
+  const meta = step.metadata;
+  if (!meta || typeof meta !== 'object') return null;
+  const raw = (meta as Record<string, unknown>)['serviceBusReceived'];
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const messagesRaw = Array.isArray(r['messages']) ? (r['messages'] as unknown[]) : [];
+  const messages: EventAssertMessage[] = messagesRaw
+    .filter(m => m && typeof m === 'object')
+    .map((mu, i) => {
+      const m = mu as Record<string, unknown>;
+      const criteriaRaw = Array.isArray(m['criteria']) ? (m['criteria'] as unknown[]) : [];
+      const apps = m['applicationProperties'] && typeof m['applicationProperties'] === 'object'
+        ? m['applicationProperties'] as Record<string, string>
+        : {};
+      return {
+        index: typeof m['index'] === 'number' ? (m['index'] as number) : i,
+        messageId: typeof m['messageId'] === 'string' ? (m['messageId'] as string) : null,
+        correlationId: typeof m['correlationId'] === 'string' ? (m['correlationId'] as string) : null,
+        contentType: typeof m['contentType'] === 'string' ? (m['contentType'] as string) : null,
+        enqueuedTimeUtc: typeof m['enqueuedTimeUtc'] === 'string' ? (m['enqueuedTimeUtc'] as string) : '',
+        applicationProperties: apps,
+        bodyPreview: typeof m['bodyPreview'] === 'string' ? (m['bodyPreview'] as string) : '',
+        bodyFormat: typeof m['bodyFormat'] === 'string' ? (m['bodyFormat'] as string) : '',
+        bodyLength: typeof m['bodyLength'] === 'number' ? (m['bodyLength'] as number) : 0,
+        passed: typeof m['passed'] === 'boolean' ? (m['passed'] as boolean) : null,
+        criteria: criteriaRaw
+          .filter(c => c && typeof c === 'object')
+          .map(cu => {
+            const c = cu as Record<string, unknown>;
+            return {
+              field: typeof c['field'] === 'string' ? (c['field'] as string) : '',
+              op: typeof c['op'] === 'string' ? (c['op'] as string) : '',
+              passed: typeof c['passed'] === 'boolean' ? (c['passed'] as boolean) : false,
+              reason: typeof c['reason'] === 'string' ? (c['reason'] as string) : null,
+            };
+          }),
+      };
+    });
+  return {
+    totalReceived: typeof r['totalReceived'] === 'number' ? (r['totalReceived'] as number) : messages.length,
+    passCount: typeof r['passCount'] === 'number' ? (r['passCount'] as number) : 0,
+    matchMode: typeof r['matchMode'] === 'string' ? (r['matchMode'] as string) : undefined,
+    expectedCount: r['expectedCount'] === null || typeof r['expectedCount'] === 'number'
+      ? (r['expectedCount'] as number | null) : undefined,
+    maxCount: r['maxCount'] === null || typeof r['maxCount'] === 'number'
+      ? (r['maxCount'] as number | null) : undefined,
+    messages,
+  };
+}
+
+function EventAssertDiagnosticsTable({ diag }: { diag: EventAssertDiagnostics }) {
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+        Service Bus messages received
+      </div>
+      <div style={{ fontSize: 11, color: '#64748b', marginTop: 4, marginBottom: 6 }}>
+        {diag.totalReceived} received · {diag.passCount} matched
+        {diag.matchMode && ` · mode ${diag.matchMode}`}
+        {(diag.expectedCount !== null && diag.expectedCount !== undefined)
+          && ` · expected ${diag.expectedCount}`}
+        {(diag.maxCount !== null && diag.maxCount !== undefined)
+          && ` · max ${diag.maxCount}`}
+      </div>
+      {diag.messages.length === 0 && (
+        <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>
+          No messages received within the timeout window.
+        </div>
+      )}
+      {diag.messages.map(m => (
+        <EventAssertMessageRow key={m.index} m={m} />
+      ))}
+    </div>
+  );
+}
+
+function EventAssertMessageRow({ m }: { m: EventAssertMessage }) {
+  const [expanded, setExpanded] = useState(false);
+  const tint = m.passed === true ? '#16a34a' : m.passed === false ? '#dc2626' : '#475569';
+  const summary =
+    `[${m.index}] ${m.messageId ?? '(no id)'}`
+    + (m.correlationId ? ` · corr=${m.correlationId}` : '')
+    + (m.contentType ? ` · ${m.contentType}` : '');
+
+  return (
+    <div style={{
+      border: '1px solid #e2e8f0', borderRadius: 4, padding: 6,
+      marginBottom: 4, background: '#fff',
+    }}>
+      <button
+        onClick={() => setExpanded(v => !v)}
+        style={{
+          background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
+          textAlign: 'left', color: tint, fontSize: 12,
+          fontFamily: 'ui-monospace,Consolas,monospace', fontWeight: 600,
+        }}
+      >
+        {expanded ? '▾' : '▸'} {m.passed === true ? '✓' : m.passed === false ? '✗' : '·'} {summary}
+      </button>
+      {expanded && (
+        <div style={{ marginTop: 6, fontSize: 11, color: '#475569' }}>
+          <div>
+            <strong>enqueued:</strong> {m.enqueuedTimeUtc}
+            <span style={{ marginLeft: 10 }}>
+              <strong>body:</strong> {m.bodyFormat} ({m.bodyLength} bytes)
+            </span>
+          </div>
+          {Object.keys(m.applicationProperties).length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              <strong>ApplicationProperties:</strong>{' '}
+              {Object.entries(m.applicationProperties).map(([k, v], i, arr) => (
+                <span key={k} style={{ fontFamily: 'ui-monospace,Consolas,monospace', color: '#0f172a' }}>
+                  {k}={v}{i < arr.length - 1 ? ', ' : ''}
+                </span>
+              ))}
+            </div>
+          )}
+          {m.criteria.length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              <strong>criteria:</strong>
+              <ul style={{ margin: '2px 0 0 16px', padding: 0 }}>
+                {m.criteria.map((c, i) => (
+                  <li key={i} style={{
+                    fontFamily: 'ui-monospace,Consolas,monospace',
+                    color: c.passed ? '#16a34a' : '#dc2626',
+                  }}>
+                    {c.passed ? '✓' : '✗'} {c.field} {c.op}
+                    {c.reason && !c.passed ? ` — ${c.reason}` : ''}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {m.bodyPreview && (
+            <pre style={{
+              margin: '6px 0 0', padding: '4px 6px', background: '#f8fafc',
+              border: '1px solid #e2e8f0', borderRadius: 3, fontSize: 11,
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+              maxHeight: 200, overflow: 'auto',
+            }}>{m.bodyPreview}</pre>
+          )}
+        </div>
       )}
     </div>
   );

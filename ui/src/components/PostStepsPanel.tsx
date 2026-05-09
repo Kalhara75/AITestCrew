@@ -9,6 +9,7 @@ import { useActiveRun } from '../contexts/ActiveRunContext';
 import { EditWebUiTestCaseDialog } from './EditWebUiTestCaseDialog';
 import { EditDesktopUiTestCaseDialog } from './EditDesktopUiTestCaseDialog';
 import { EditDbCheckStepDialog } from './EditDbCheckStepDialog';
+import { EditEventAssertStepDialog } from './EditEventAssertStepDialog';
 import { ExecutionModeBadge } from './execution/ExecutionModeBadge';
 import { TargetBadge } from './execution/TargetBadge';
 
@@ -135,7 +136,7 @@ export function PostStepsPanel({
         </thead>
         <tbody>
           {postSteps.map((p, i) => {
-            const expandable = !!(p.webUi || p.desktopUi || p.dbCheck);
+            const expandable = !!(p.webUi || p.desktopUi || p.dbCheck || p.eventAssert);
             const isExpanded = expanded.has(i);
             return (
               <Fragment key={i}>
@@ -200,13 +201,17 @@ export function PostStepsPanel({
                               Run
                             </button>
                           )}
-                          {(p.webUi || p.desktopUi || p.dbCheck) && canEdit && (
+                          {(p.webUi || p.desktopUi || p.dbCheck || p.eventAssert) && canEdit && (
                             <span
                               onClick={() => setEditingIdx(i)}
                               style={{ fontSize: 13, color: '#1d4ed8', cursor: 'pointer', opacity: 0.7, marginRight: 8 }}
                               title={p.desktopUi
                                 ? 'Edit Desktop UI steps'
-                                : p.dbCheck ? 'Edit DB check' : 'Edit Web UI steps'}
+                                : p.dbCheck
+                                  ? 'Edit DB check'
+                                  : p.eventAssert
+                                    ? 'Edit event assertion'
+                                    : 'Edit Web UI steps'}
                             >
                               &#9998;
                             </span>
@@ -234,6 +239,7 @@ export function PostStepsPanel({
                       {p.webUi && <WebUiStepsTable steps={p.webUi.steps} startUrl={p.webUi.startUrl} />}
                       {p.desktopUi && <DesktopUiStepsTable steps={p.desktopUi.steps} />}
                       {p.dbCheck && <DbCheckBlock dc={p.dbCheck} />}
+                      {p.eventAssert && <EventAssertBlock ea={p.eventAssert} />}
                     </td>
                   </tr>
                 )}
@@ -277,6 +283,34 @@ export function PostStepsPanel({
           onClose={() => setEditingIdx(null)}
           onSave={async ({ name, definition }) => {
             const updated: PostStep = { ...postSteps[editingIdx], description: name, desktopUi: definition };
+            await updatePostStep(moduleId, testSetId, objectiveId, parentKind, parentIndex, editingIdx, updated);
+            setEditingIdx(null);
+            onChanged?.();
+          }}
+          onDelete={async () => {
+            await deletePostStep(moduleId, testSetId, objectiveId, parentKind, parentIndex, editingIdx);
+            setEditingIdx(null);
+            onChanged?.();
+          }}
+        />
+      )}
+
+      {editingIdx !== null && moduleId && testSetId
+        && postSteps[editingIdx].eventAssert
+        && !postSteps[editingIdx].webUi
+        && !postSteps[editingIdx].desktopUi
+        && !postSteps[editingIdx].dbCheck && (
+        <EditEventAssertStepDialog
+          open
+          title="Edit Post-Step — Event Assertion"
+          definition={postSteps[editingIdx].eventAssert!}
+          caseName={postSteps[editingIdx].description}
+          envKey={environmentKey ?? null}
+          deleteLabel="Delete Post-Step"
+          deleteConfirmMessage="Delete this post-step?"
+          onClose={() => setEditingIdx(null)}
+          onSave={async ({ name, definition }) => {
+            const updated: PostStep = { ...postSteps[editingIdx], description: name, eventAssert: definition };
             await updatePostStep(moduleId, testSetId, objectiveId, parentKind, parentIndex, editingIdx, updated);
             setEditingIdx(null);
             onChanged?.();
@@ -345,6 +379,21 @@ function PayloadSummary({ p }: { p: PostStep }) {
     const cap = captureCount > 0 ? ` / captures=${captureCount}` : '';
     return <>SQL / {expect}{cap}</>;
   }
+  if (p.eventAssert) {
+    const ea = p.eventAssert;
+    const entity = ea.entity.type === 'Topic'
+      ? `topic ${ea.entity.name}/${ea.entity.subscriptionName ?? '?'}`
+      : `queue ${ea.entity.name}`;
+    let mode: string = ea.matchMode;
+    if (ea.matchMode === 'ExactCount' || ea.matchMode === 'MinCount' || ea.matchMode === 'MaxCount') {
+      mode = `${ea.matchMode}(${ea.expectedCount ?? '?'})`;
+    } else if (ea.matchMode === 'CountRange') {
+      mode = `CountRange(${ea.expectedCount ?? '?'}, ${ea.maxCount ?? '?'})`;
+    }
+    const drain = ea.drainBeforeParent ? ' · drain' : '';
+    const cap = ea.captures.length > 0 ? ` / captures=${ea.captures.length}` : '';
+    return <>{entity} · {mode} · criteria={ea.criteria.length}{cap}{drain}</>;
+  }
   if (p.api) return <>{p.api.method} {p.api.endpoint}</>;
   if (p.aseXmlDeliver) return <>deliver {p.aseXmlDeliver.templateId} → {p.aseXmlDeliver.endpointCode}</>;
   if (p.aseXml) return <>render {p.aseXml.templateId}</>;
@@ -409,6 +458,101 @@ function DbCheckBlock({ dc }: { dc: NonNullable<PostStep['dbCheck']> }) {
       {assertions.length === 0 && Object.keys(legacy).length > 0 && (
         <div style={{ color: '#92400e', marginTop: 4, fontStyle: 'italic' }}>
           (legacy expectedColumnValues — will normalise on next save)
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EventAssertBlock({ ea }: { ea: NonNullable<PostStep['eventAssert']> }) {
+  const entityLabel = ea.entity.type === 'Topic'
+    ? `Topic ${ea.entity.name} / Sub ${ea.entity.subscriptionName ?? '?'}`
+    : `Queue ${ea.entity.name}`;
+  let modeLabel: string = ea.matchMode;
+  if (ea.matchMode === 'ExactCount' || ea.matchMode === 'MinCount' || ea.matchMode === 'MaxCount') {
+    modeLabel = `${ea.matchMode}(${ea.expectedCount ?? '?'})`;
+  } else if (ea.matchMode === 'CountRange') {
+    modeLabel = `CountRange(${ea.expectedCount ?? '?'}, ${ea.maxCount ?? '?'})`;
+  }
+
+  return (
+    <div style={{ marginTop: 6, fontSize: 12 }}>
+      <div style={{ color: '#64748b', marginBottom: 4 }}>
+        <strong>connection:</strong> <code style={inlineCode}>{ea.connectionKey}</code>
+        <span style={{ marginLeft: 10 }}>
+          <strong>entity:</strong> {entityLabel}
+        </span>
+        <span style={{ marginLeft: 10 }}>
+          <strong>match:</strong> {modeLabel}
+        </span>
+      </div>
+      <div style={{ color: '#64748b', marginBottom: 4 }}>
+        <strong>timeout:</strong> {ea.timeoutSeconds}s
+        <span style={{ marginLeft: 10 }}>
+          <strong>max msgs:</strong> {ea.maxMessages}
+        </span>
+        {ea.bodyFormat !== 'Auto' && (
+          <span style={{ marginLeft: 10 }}>
+            <strong>body:</strong> {ea.bodyFormat}
+          </span>
+        )}
+        {ea.receiveMode !== 'PeekLock' && (
+          <span style={{ marginLeft: 10 }}>
+            <strong>receive:</strong> {ea.receiveMode}
+          </span>
+        )}
+        {ea.drainBeforeParent && (
+          <span style={{ marginLeft: 10, color: '#b45309' }}>
+            <strong>drain before parent</strong>
+          </span>
+        )}
+        {!ea.completeOnPass && (
+          <span style={{ marginLeft: 10, color: '#475569' }}>
+            <strong>completeOnPass:</strong> false
+          </span>
+        )}
+      </div>
+      {(ea.correlationFilter || ea.sessionId) && (
+        <div style={{ color: '#64748b', marginBottom: 4 }}>
+          {ea.correlationFilter && (
+            <span>
+              <strong>correlationId:</strong> <code style={inlineCode}>{ea.correlationFilter}</code>
+            </span>
+          )}
+          {ea.sessionId && (
+            <span style={{ marginLeft: 10 }}>
+              <strong>sessionId:</strong> <code style={inlineCode}>{ea.sessionId}</code>
+            </span>
+          )}
+        </div>
+      )}
+      {ea.criteria.length > 0 && (
+        <div style={{ color: '#64748b', marginTop: 4 }}>
+          <strong>criteria:</strong>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+            {ea.criteria.map((c, i) => (
+              <span key={i} style={pillStyle}>
+                <strong style={{ color: '#4f46e5' }}>{c.field}</strong>
+                {' '}{c.operator}{' '}
+                {c.operator !== 'IsNull' && c.operator !== 'IsNotNull' ? `'${c.expected}'` : ''}
+                {c.operator === 'Between' && c.expected2 ? ` … '${c.expected2}'` : ''}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {ea.captures.length > 0 && (
+        <div style={{ color: '#64748b', marginTop: 4 }}>
+          <strong>captures:</strong>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+            {ea.captures.map((c, i) => (
+              <span key={i} style={pillStyle}>
+                <strong style={{ color: '#0d9488' }}>{`{{${c.as}}}`}</strong>
+                {' ← '}{c.field}
+                {!c.required ? ' (optional)' : ''}
+              </span>
+            ))}
+          </div>
         </div>
       )}
     </div>
