@@ -1326,6 +1326,34 @@ When an agent captures a Playwright or FlaUI failure screenshot, the file lives 
 
 The endpoint strips directory components from the uploaded filename (`Path.GetFileName`) and rejects paths containing `..` to prevent traversal.
 
+### Capability strings
+
+Capabilities are free-form strings — there is no enum. An agent advertises the strings it can handle via `--capabilities <comma-separated>` (or `TestEnvironmentConfig.AgentCapabilities`); the queue's claim query matches them against `run_queue.target_type` with a literal `IN (...)` predicate. Strings are the `TestTargetType.ToString()` values; mismatching the case or hyphenation silently shifts a job out of the agent's reach.
+
+| Capability string | Source | Notes |
+|---|---|---|
+| `UI_Web_MVC` | Web UI tests on the legacy ASP.NET MVC stack | Default cap on every UI agent |
+| `UI_Web_Blazor` | Web UI tests on the Brave Cloud Blazor stack | Default cap on every UI agent |
+| `UI_Desktop_WinForms` | Desktop UI tests via FlaUI | Default cap on every UI agent |
+| `API_REST` / `API_GraphQL` | API agents | Pure API runs execute in the server process; not normally queued |
+| `AseXml_Generate` / `AseXml_Deliver` | aseXML generation and delivery | Delivery is queued when post-step deferral kicks in |
+| `Db_SqlServer` | DB-check post-steps (REQ-002) | Add when the agent's host has network reach to the customer's SQL Server |
+| `Event_AzureServiceBus` | Service Bus event-assert post-steps (REQ-004) | Add when the agent's host has outbound reach to the customer's Service Bus namespace and the right Azure AD identity (or connection string) |
+
+The omission default — `--capabilities` not set — is `UI_Web_Blazor,UI_Web_MVC,UI_Desktop_WinForms`. To enable a remote agent for event-assert post-steps, advertise it explicitly:
+
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --agent --name "<host>" \
+  --capabilities UI_Web_Blazor,UI_Web_MVC,UI_Desktop_WinForms,Event_AzureServiceBus
+```
+
+Two scenarios drive remote dispatch of event-assert post-steps:
+
+1. The local test runner has no outbound access to the customer's Service Bus namespace (firewall) but a centralised agent does.
+2. The env's Service Bus uses Azure AD auth backed by a managed identity that lives only on the centralised agent host.
+
+In both cases the WebApi enqueues the deferred post-step with `target_type = 'Event_AzureServiceBus'`; the centralised agent's claim query picks it up; results round-trip back to the originating run via the existing `DeferredVerificationRequest.CapturedTokens` plumbing (REQ-002). No new wire shape; no new endpoint; just the new capability string on the agent's `--capabilities` list.
+
 ### Recording dispatch
 
 Interactive recording (`--record`, `--record-setup`, `--record-verification`, `--auth-setup`) can't run on the server for the same reason Web/Desktop tests can't — it needs a live desktop session. The queue extends naturally: `RunQueueEntry.JobKind` distinguishes `"Run"` (existing path through `TestOrchestrator`) from `"Record"`, `"RecordSetup"`, `"RecordVerification"`, and `"AuthSetup"`. The WebApi's `POST /api/recordings` builds the matching request DTO, serializes it into `RequestJson`, and enqueues with `TargetType` set to a capability the agent already advertises — recording reuses the replay capability set (`UI_Web_MVC`, `UI_Web_Blazor`, `UI_Desktop_WinForms`), so no new capability strings were added.
