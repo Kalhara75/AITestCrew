@@ -1294,9 +1294,87 @@ The discovery call includes the full endpoint path and query parameters from the
 
 ---
 
+## API Step Assertions and Captures (REQ-007)
+
+### Structured assertions
+
+Each API step (top-level or post-step) can carry a list of typed assertions on the HTTP response. When `apiAssertions` is non-empty, the LLM validation step is **skipped entirely** — structured assertions are authoritative.
+
+**Sources:**
+
+| Source | What it checks |
+|---|---|
+| `Status` | The HTTP status code as a string (e.g. `"200"`, `"201"`) |
+| `Header` | A named response header value (case-insensitive header name) |
+| `Body` | A JSONPath expression against the parsed JSON response body (e.g. `$.data.id`) |
+| `BodyText` | The raw response body as a single string |
+
+**Operators:** the same 14 operators as DB Assert — `Equals`, `NotEquals`, `Contains`, `NotContains`, `StartsWith`, `EndsWith`, `Regex`, `GreaterThan`, `LessThan`, `Between`, `IsNull`, `IsNotNull`, `EqualsNumeric`, `EqualsDate`.
+
+**Example assertions:**
+
+```json
+"apiAssertions": [
+  { "source": "Status", "operator": "Equals", "expected": "201" },
+  { "source": "Body", "jsonPath": "$.data.code", "operator": "Equals", "expected": "ACME", "ignoreCase": true },
+  { "source": "Header", "headerName": "location", "operator": "StartsWith", "expected": "/api/accounts/" }
+]
+```
+
+### Response captures
+
+Captures bind a scalar value from the HTTP response to a `{{Token}}` for use in sibling post-steps.
+
+```json
+"captures": [
+  { "source": "Body", "jsonPath": "$.data.id", "as": "AccountId", "required": true },
+  { "source": "Header", "headerName": "location", "as": "LocationUrl", "required": false }
+]
+```
+
+`as` is the token name (no braces). `required: true` fails the step if the path is absent.
+
+The captured tokens are available to all subsequent post-steps in the same objective as `{{AccountId}}`, `{{LocationUrl}}`, etc.
+
+### Automatic context tokens
+
+Every API parent step automatically publishes these tokens for its immediate post-steps (no `captures` entry needed):
+
+- `{{ResponseStatus}}` — HTTP status code.
+- `{{ResponseBody}}` — raw response body (truncated at 16 KB).
+- `{{ResponseHeader.content-type}}` — per-header, lower-cased key.
+
+### Legacy fields
+
+The legacy `expectedStatus`, `expectedBodyContains`, and `expectedBodyNotContains` fields are preserved for back-compat. At load time they are promoted into typed `apiAssertions` entries. On save the new shape is written; the legacy fields are cleared.
+
+### NL authoring — `/add-api-step` skill
+
+```
+/add-api-step <moduleId> <testSetId> <objectiveId> <parentKind> <parentStepIndex> "<NL description>"
+```
+
+Examples:
+- `/add-api-step bravo-smoke jobs-tests check-jobs Api 0 "GET /api/jobs/{{JobId}}, assert status 200 and $.status equals 'Submitted', capture $.completedAt as CompletedAt"`
+- `/add-api-step aemo-b2b mfn-tests deliver-mfn AseXmlDeliver 0 "POST /api/verifications with the MessageId, capture the returned id as VerificationId"`
+
+The skill reads the parent step, drafts the API step, validates via `POST /api/api-step/dry-run`, and PUTs the post-step.
+
+If `<parentKind>` is empty (`""`), the skill appends a new top-level API step to the objective's `ApiSteps` list — useful for injecting an individual API call into an existing objective without using chat.
+
+### In-UI editor
+
+The "Edit" dialog for an API step (`EditTestCaseDialog`) includes:
+
+- Assertions table — add/edit/remove assertions with source, path, operator, and expected value fields.
+- Captures table — add/edit/remove captures with source, path, and token name fields.
+- "Try Call" button — sends the current step configuration to `POST /api/api-step/dry-run` and displays status + headers + body. A **write-method warning banner** appears for POST/PUT/PATCH/DELETE calls.
+
+---
+
 ## Validation
 
-Each response goes through two stages:
+Each API response (for steps without `apiAssertions`) goes through two stages:
 
 1. **Rule-based checks** (fast, no LLM cost)
    - Status code match
@@ -1309,7 +1387,7 @@ Each response goes through two stages:
    - Sensitive data exposure (passwords, tokens, internal paths)
    - Security headers (advisory notes only — not a failure condition)
 
-If rule checks fail, the LLM validation is skipped to save tokens.
+If rule checks fail, the LLM validation is skipped to save tokens. When `apiAssertions` is non-empty, both stages are skipped entirely.
 
 ---
 

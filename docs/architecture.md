@@ -2271,6 +2271,96 @@ Capability routing is purely string-based — see [Capability strings](#capabili
 
 ---
 
+## API Step (Captures & Assertions)
+
+REQ-007 brings the REST API step to feature parity with DB Assert (REQ-002) and Event Assert (REQ-004): structured operator-driven assertions on the HTTP response and typed value captures into the run context.
+
+### Data model
+
+`ApiTestDefinition` (`src/AiTestCrew.Storage/ApiAgent/ApiTestDefinition.cs`) now carries:
+
+- **`ApiAssertions: List<ApiAssertion>`** — operator-driven assertions on the response. Each assertion has:
+  - `Source` — `ApiAssertionSource` enum: `Status` (HTTP status code), `Header` (named header value), `Body` (JSONPath into parsed JSON body), `BodyText` (raw body string).
+  - `HeaderName` (used when `Source = Header`).
+  - `JsonPath` (used when `Source = Body`) — e.g. `$.data.id`, `$.items[0].status`. `{{Token}}`-substituted before evaluation.
+  - `Operator` — reuses the shared `AssertionOperator` enum (same 14 operators as DB Assert and Event Assert).
+  - `Expected`, `Expected2` (for `Between`), `IgnoreCase`, `ToleranceSeconds`, `ToleranceDelta` — same semantics as `ColumnAssertion`.
+- **`Captures: List<ApiCapture>`** — each capture binds a scalar from the response to a `{{Token}}` name. Same source enum as assertions. `As` (the token name) is NOT `{{Token}}`-substituted. `Required: true` fails the step when the path is absent.
+- **Legacy back-compat.** The legacy `ExpectedStatus` / `ExpectedBodyContains` / `ExpectedBodyNotContains` fields are preserved. `NormaliseLegacyFields()` (called by the agent at load time) promotes non-default legacy values into typed `ApiAssertions` entries — idempotent, one-way. Existing test sets produce identical pass/fail results after loading.
+
+`ApiTestCase` mirrors these fields and includes a `ToDefinition()` helper. `StepParameterSubstituter.Apply(ApiTestDefinition)` substitutes `{{Tokens}}` in assertion `JsonPath`, `HeaderName`, `Expected`, `Expected2`, and capture `JsonPath` / `HeaderName`; it does NOT substitute `Captures[*].As` (token names are authored identifiers, not template values).
+
+### Assertion evaluation
+
+`ApiAssertionEvaluator.Evaluate` (`src/AiTestCrew.Agents/ApiAgent/ApiAssertionEvaluator.cs`) is a pure static evaluator:
+
+1. Resolves the source value: status code string, header value (case-insensitive lookup), JSONPath extraction via `JsonValueExtractor`, or raw body string.
+2. Delegates operator evaluation to `ScalarOperatorEvaluator` — the same evaluator used by `ColumnAssertionEvaluator` (REQ-002) and `EventCriterionEvaluator` (REQ-004). No operator logic is duplicated.
+3. Returns `EvaluateResult(Passed, Reason, Actual)`. Never throws — source/path failures surface as `Passed = false` with a typed reason.
+
+**JSONPath edge cases:**
+- `$.missing` → fail with `"JSON path '$.missing' not found in response body"`.
+- Non-JSON body + `Source = Body` → fail with `"response body is not JSON"`.
+- `Source = Body` + `Operator = IsNull` → only JSON `null` (not missing path) passes.
+
+### LLM validation precedence
+
+- `ApiAssertions.Count > 0` and all pass → `TestStatus.Passed`. LLM validation is **skipped** (cost saving).
+- `ApiAssertions.Count > 0` and any fail → `TestStatus.Failed`. LLM validation is **skipped**. Structured failures are authoritative.
+- `ApiAssertions.Count == 0` and legacy fields are defaults → **LLM hybrid validation runs** (Normal-mode behaviour preserved).
+- `ApiAssertions.Count == 0` but legacy fields are non-default → shim should have promoted them; a defensive `LogWarning` fires on this branch to catch regressions.
+
+### Capture semantics
+
+After a successful HTTP call, `ApiTestAgent.RunCaptures` extracts each capture from status / headers / JSONPath / body text and merges the resulting `Dictionary<string, string>` into the per-objective post-step run context via `BaseTestAgent.RunPostStepsAsync(capturedTokens:)`. Sibling post-steps see captured values as `{{TokenName}}` via `StepParameterSubstituter`. Captures are also threaded through `DeferredVerificationRequest.CapturedTokens` for the deferred path.
+
+### Automatic context tokens
+
+`ApiTestAgent.BuildPostStepContext` publishes:
+
+- `{{ResponseStatus}}` — HTTP status code as string.
+- `{{ResponseBody}}` — raw response body, truncated to `DefaultPostStepBodyTruncationBytes` (16 384 bytes). Truncation applies to the context token only; captures and assertions see the full body.
+- `{{ResponseHeader.<name>}}` — per response header, lower-case key (e.g. `{{ResponseHeader.content-type}}`).
+
+These are automatic context tokens for immediate post-step use, separate from explicit `Captures`.
+
+### Diagnostic metadata
+
+When `ApiAssertions` are evaluated, the step populates:
+
+- `TestStep.Metadata["apiAssertions"]` — `List<ApiAssertionResult>`: per-assertion `Source`, `Operator`, `Expected`, `Actual`, `Passed`, `Reason`. The run-detail UI can render this as an assertion table.
+- `TestStep.Metadata["apiResponse"]` — `ApiResponseSnapshot`: status code, response headers (first 50), body (first 4 096 bytes).
+
+The single-line `TestStep.Summary` stays human-readable: `"All 3 API assertion(s) passed"` or `"2 of 3 API assertions failed"`.
+
+### Dry-run endpoint
+
+`POST /api/api-step/dry-run` (`src/AiTestCrew.WebApi/Endpoints/ApiStepEndpoints.cs`):
+
+- Resolves URL via `IApiTargetResolver.ResolveApiBaseUrl(stackKey, moduleKey, envKey)` and injects auth via the per-(env,stack) `ITokenProvider`.
+- Applies `TokenSubstituter` to the endpoint + headers + query params + body using the `parameters` dict from the request.
+- `HttpClient.Timeout = 10s` (shorter than the runtime default — exploratory call, not a test run).
+- Truncates the response body to 32 768 bytes in the returned payload.
+- **Rate limit:** reuses `DbDryRunRateLimiter` (10 / minute per user — same bucket as the DB dry-run; returns 429 above).
+- **Per-env gate:** `Environments.<key>.AllowApiDryRun` (default `true`). Returns 403 when disabled.
+- **Safety note:** unlike the DB dry-run (SQL guardrails enforce read-only), the API dry-run sends the request as-is — including write methods (POST/PUT/DELETE). The UI displays a warning banner when `Method != GET`. The per-env `AllowApiDryRun` flag is the production safety surface; no method allowlist is enforced server-side.
+
+### Editor surface
+
+`EditTestCaseDialog.tsx` gains:
+
+- Assertions table — source dropdown, conditional `HeaderName` / `JsonPath` inputs, operator dropdown, `Expected` / `Expected2`, `IgnoreCase`. Add / remove rows.
+- Captures table — source dropdown, conditional inputs, `As` token name, `Required` checkbox. Add / remove rows.
+- "Try Call" button — invokes the dry-run endpoint and renders status + headers + body.
+- Write-method warning banner (POST/PUT/PATCH/DELETE).
+
+`PostStepsPanel.tsx` renders an `ApiPostStepBlock` for expanded API post-steps, showing assertion pills and capture pills.
+
+### NL authoring
+
+`ChatIntentService.cs` teaches the LLM the new `api` post-step shape: `apiAssertions` array, `captures` array, and authoring rules (prefer `Body + JsonPath` over `BodyText` substring; always emit captures for returned IDs; structured assertions bypass LLM validation). The `/add-api-step` skill (`.claude/commands/add-api-step.md`) mirrors `/add-db-assert` — NL → dry-run → PUT workflow with step-by-step prereq checks.
+
+
 ## Deployment
 
 ### Files

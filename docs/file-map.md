@@ -16,7 +16,12 @@ The top-level `CLAUDE.md` keeps only the entry-point files needed to navigate th
 
 | File | What it does |
 |---|---|
-| `src/AiTestCrew.Agents/ApiAgent/ApiTestAgent.cs` | REST API test generation and execution (multi-stack + multi-env aware via `IApiTargetResolver` + `IEnvironmentResolver`) |
+| `src/AiTestCrew.Agents/ApiAgent/ApiTestAgent.cs` | REST API test generation and execution (multi-stack + multi-env aware via `IApiTargetResolver` + `IEnvironmentResolver`). REQ-007: structured assertion evaluation, response captures, `capturedTokens` threaded to post-steps |
+| `src/AiTestCrew.Agents/ApiAgent/ApiAssertionEvaluator.cs` | Pure evaluator for `ApiAssertion` — resolves Status/Header/Body/BodyText sources, delegates operator logic to `ScalarOperatorEvaluator` (REQ-007) |
+| `src/AiTestCrew.Storage/ApiAgent/ApiAssertion.cs` | Structured API response assertion model (Source, HeaderName, JsonPath, Operator, Expected, Expected2, tolerances — REQ-007) |
+| `src/AiTestCrew.Storage/ApiAgent/ApiCapture.cs` | Response capture model — binds a response field as a `{{Token}}` for sibling post-steps (REQ-007) |
+| `src/AiTestCrew.Storage/ApiAgent/ApiAssertionSource.cs` | `ApiAssertionSource` enum: Status, Header, Body, BodyText (REQ-007) |
+| `src/AiTestCrew.WebApi/Endpoints/ApiStepEndpoints.cs` | `POST /api/api-step/dry-run` — executes a single HTTP call server-side with rate limiting, per-env `AllowApiDryRun` gate, and 32 KB body truncation (REQ-007) |
 | `src/AiTestCrew.Agents/Auth/ApiTargetResolver.cs` | Resolves API base URLs (env-overridable) and per-(env,stack) token providers |
 | `src/AiTestCrew.Agents/Environment/EnvironmentResolver.cs` | `IEnvironmentResolver` impl — per-customer overrides for UI URLs, creds, WinForms path, Bravo DB, per-stack BaseUrls; falls back to top-level config fields |
 | `src/AiTestCrew.Agents/Environment/StepParameterSubstituter.cs` | Clones step definitions / test cases and substitutes `{{Tokens}}` using `TokenSubstituter` (lenient). Handles API, WebUi, DesktopUi, aseXml, AseXmlDelivery, VerificationStep shapes plus their runtime test-case counterparts |
@@ -35,7 +40,7 @@ The top-level `CLAUDE.md` keeps only the entry-point files needed to navigate th
 | `src/AiTestCrew.Agents/Persistence/TestSetRepository.cs` | Save/load/move/delete test sets (legacy flat + module-scoped) |
 | `src/AiTestCrew.Agents/Persistence/ExecutionHistoryRepository.cs` | Save/load/delete/prune execution runs in `executions/`, auto-retention via `MaxExecutionRunsPerTestSet` |
 | `src/AiTestCrew.Agents/Persistence/TestObjective.cs` | Test objective model (wraps ApiTestDefinition or WebUiTestDefinition) |
-| `src/AiTestCrew.Agents/ApiAgent/ApiTestDefinition.cs` | API test definition (HTTP request + expected response) |
+| `src/AiTestCrew.Storage/ApiAgent/ApiTestDefinition.cs` | API test definition (HTTP request + expected response). REQ-007: adds `ApiAssertions`, `Captures`, and `NormaliseLegacyFields()` one-way shim for back-compat |
 | `src/AiTestCrew.Agents/Shared/WebUiTestDefinition.cs` | Web UI test definition (start URL + Playwright steps) |
 | `src/AiTestCrew.Agents/Persistence/MigrationHelper.cs` | Auto-migrates legacy layouts: `testsets/` → `modules/default/`, v1 → v2 schema |
 

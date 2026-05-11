@@ -19,7 +19,7 @@ Dependency direction is strict: `Runner/WebApi → Orchestrator → Agents → C
 
 ## Key files
 
-These are entry points — start here when navigating the codebase. For the full file map (~125 entries: aseXML delivery, deferred verification, auth recovery, distributed agents, data packs, DB Assert step, Event Assertion step (Service Bus), UI components), see `docs/file-map.md`.
+These are entry points — start here when navigating the codebase. For the full file map (~130 entries: aseXML delivery, deferred verification, auth recovery, distributed agents, data packs, DB Assert step, Event Assertion step (Service Bus), API step assertions + captures, UI components), see `docs/file-map.md`.
 
 | File | What it does |
 |---|---|
@@ -115,6 +115,7 @@ All agents extend `BaseTestAgent` and implement `ITestAgent`:
 | `/add-validation <agent> "<rule>"` | Add a new response validation rule to an existing agent |
 | `/add-asexml-template <TransactionType> <templateId> "<desc>"` | Scaffold a new aseXML template + manifest pair (content-only — no agent changes) |
 | `/add-asexml-verification` | Scaffold a post-delivery UI verification attached to an existing delivery objective (recorder + auto-parameterisation) |
+| `/add-api-step <moduleId> <testSetId> <objectiveId> <parentKind> <parentStepIndex> "<NL description>"` | Scaffold an API post-step with structured assertions + captures, validated via dry-run (REQ-007) |
 | `/add-db-assert <moduleId> <testSetId> <objectiveId> <parentKind> <parentStepIndex> "<NL description>"` | Scaffold a DB Assert post-step attached to an existing parent test step |
 | `/add-event-assert <moduleId> <testSetId> <objectiveId> <parentKind> <parentStepIndex> "<NL description>"` | Scaffold an Azure Service Bus event-assertion post-step attached to an existing parent test step |
 | `/add-data-pack-script` | Scaffold a startup-time SQL data-pack script (stored proc install, data prep, or cleanup) in the right folder with idempotency template |
@@ -139,6 +140,9 @@ Adding a ___ is → ___
 
 | You want to add... | Use | Files touched |
 |---|---|---|
+| A new API assertion source (e.g. timing, response size) | Manual — `ApiAssertionEvaluator` + editor dropdown | Add to `ApiAssertionSource.cs`; branch in `ApiAssertionEvaluator.Evaluate`; update source dropdown in `EditTestCaseDialog.tsx` + chat prompt authoring rules in `ChatIntentService.cs`. |
+| A new API response capture source | Same as above (source and capture share the same enum) | `ApiAssertionSource.cs` + `ApiAssertionEvaluator` + capture dispatch in `ApiTestAgent.RunCaptures` + editor. |
+| A new API step post-step (NL authoring) | `/add-api-step` | Reads parent step from test set, drafts assertions + captures, validates via `POST /api/api-step/dry-run`, PUTs the post-step. |
 | A new aseXML transaction type (e.g. CDN, MDM messages) | `/add-asexml-template` | `templates/asexml/<TransactionType>/*.xml` + manifest only. Zero C# changes. |
 | A new auto-field generator (e.g. sequenced counter, GUID format) | Step 7 of `/add-asexml-template` | `src/AiTestCrew.Agents/AseXmlAgent/Templates/FieldGenerators.cs` |
 | A new delivery protocol (e.g. AS2, HTTP POST, SMB, GPG-encrypted SFTP) | `/add-delivery-protocol` | `src/AiTestCrew.Agents/AseXmlAgent/Delivery/*DropTarget.cs` + `DropTargetFactory.cs` |
