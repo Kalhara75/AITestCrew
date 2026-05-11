@@ -123,6 +123,14 @@ public interface IEnvironmentResolver
     string ResolveApiStackBaseUrl(string? key, string stackKey);
 
     /// <summary>
+    /// Whether the <c>POST /api/api-step/dry-run</c> endpoint is enabled for
+    /// this env. Defaults to <c>true</c>; envs can opt out by setting
+    /// <see cref="AiTestCrew.Core.Configuration.EnvironmentConfig.AllowApiDryRun"/> to <c>false</c>.
+    /// Mirrors the <see cref="ResolveAllowDbDryRun"/> contract.
+    /// </summary>
+    bool ResolveAllowApiDryRun(string? envKey);
+
+    /// <summary>
     /// Whether this env should be tracked by the dashboard's pre-flight
     /// auth-health panel. Defaults to true; an env with the flag set to false
     /// is skipped by the agent scanner and hidden from the

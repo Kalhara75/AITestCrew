@@ -50,6 +50,29 @@ public static class StepParameterSubstituter
             ExpectedBodyContains = SubList(source.ExpectedBodyContains, context, unknownTokens),
             ExpectedBodyNotContains = SubList(source.ExpectedBodyNotContains, context, unknownTokens),
             IsFuzzTest = source.IsFuzzTest,
+            // REQ-007: substitute ApiAssertions fields and Captures (except Captures.As).
+            ApiAssertions = source.ApiAssertions.Select(a => new AiTestCrew.Agents.ApiAgent.ApiAssertion
+            {
+                Source = a.Source,
+                HeaderName = Sub(a.HeaderName, context, unknownTokens),
+                JsonPath = Sub(a.JsonPath, context, unknownTokens),
+                Operator = a.Operator,
+                Expected = Sub(a.Expected, context, unknownTokens) ?? "",
+                Expected2 = Sub(a.Expected2, context, unknownTokens),
+                IgnoreCase = a.IgnoreCase,
+                ToleranceSeconds = a.ToleranceSeconds,
+                ToleranceDelta = a.ToleranceDelta,
+            }).ToList(),
+            Captures = source.Captures.Select(c => new AiTestCrew.Agents.ApiAgent.ApiCapture
+            {
+                Source = c.Source,
+                HeaderName = Sub(c.HeaderName, context, unknownTokens),
+                JsonPath = Sub(c.JsonPath, context, unknownTokens),
+                // Captures.As is intentionally NOT substituted -- substituting it would
+                // let parent context redirect captures unexpectedly (same rule as ColumnCapture.As).
+                As = c.As,
+                Required = c.Required,
+            }).ToList(),
             PostSteps = ApplyPostSteps(source.PostSteps, context, unknownTokens)
         };
     }
@@ -184,6 +207,27 @@ public static class StepParameterSubstituter
             ExpectedBodyContains = SubList(source.ExpectedBodyContains, context, unknownTokens),
             ExpectedBodyNotContains = SubList(source.ExpectedBodyNotContains, context, unknownTokens),
             IsFuzzTest = source.IsFuzzTest,
+            // REQ-007: substitute ApiAssertions and Captures (not Captures.As).
+            ApiAssertions = source.ApiAssertions.Select(a => new AiTestCrew.Agents.ApiAgent.ApiAssertion
+            {
+                Source = a.Source,
+                HeaderName = Sub(a.HeaderName, context, unknownTokens),
+                JsonPath = Sub(a.JsonPath, context, unknownTokens),
+                Operator = a.Operator,
+                Expected = Sub(a.Expected, context, unknownTokens) ?? "",
+                Expected2 = Sub(a.Expected2, context, unknownTokens),
+                IgnoreCase = a.IgnoreCase,
+                ToleranceSeconds = a.ToleranceSeconds,
+                ToleranceDelta = a.ToleranceDelta,
+            }).ToList(),
+            Captures = source.Captures.Select(c => new AiTestCrew.Agents.ApiAgent.ApiCapture
+            {
+                Source = c.Source,
+                HeaderName = Sub(c.HeaderName, context, unknownTokens),
+                JsonPath = Sub(c.JsonPath, context, unknownTokens),
+                As = c.As,  // NOT substituted
+                Required = c.Required,
+            }).ToList(),
             PostSteps = ApplyPostSteps(source.PostSteps, context, unknownTokens)
         };
     }

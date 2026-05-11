@@ -170,6 +170,17 @@ public class EnvironmentResolver : IEnvironmentResolver
         return env.AllowEventAssertPeek;
     }
 
+    public bool ResolveAllowApiDryRun(string? envKey)
+    {
+        // Mirrors ResolveAllowDbDryRun: unknown env keys are conservative-deny.
+        if (!string.IsNullOrWhiteSpace(envKey)
+            && !_config.Environments.ContainsKey(envKey))
+            return false;
+
+        var env = Resolve(envKey);
+        return env.AllowApiDryRun;
+    }
+
     public IReadOnlyList<string> ListServiceBusConnectionKeys(string? envKey)
     {
         var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

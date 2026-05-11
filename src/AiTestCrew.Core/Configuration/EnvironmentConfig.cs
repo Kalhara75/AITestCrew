@@ -75,6 +75,15 @@ public class EnvironmentConfig
     public bool AllowEventAssertPeek { get; set; } = true;
 
     /// <summary>
+    /// Per-env opt-out for the <c>POST /api/api-step/dry-run</c> endpoint.
+    /// Default <c>true</c> -- set to <c>false</c> on production-style envs to
+    /// disable exploratory API calls from the editor while still allowing
+    /// scheduled API post-steps to run as normal.
+    /// Mirrors <see cref="AllowDbDryRun"/> and <see cref="AllowEventAssertPeek"/>.
+    /// </summary>
+    public bool AllowApiDryRun { get; set; } = true;
+
+    /// <summary>
     /// Opt-in flag for SQL data teardown in this environment. When false
     /// (the default), test-set teardown steps are rejected before any SQL
     /// runs. Set to true only on environments where DELETE statements are safe
