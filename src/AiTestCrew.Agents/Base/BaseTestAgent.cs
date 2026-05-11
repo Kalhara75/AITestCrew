@@ -181,7 +181,8 @@ public abstract class BaseTestAgent : ITestAgent
         string? environmentKey,
         IReadOnlyDictionary<string, string> environmentParameters,
         CancellationToken ct,
-        TestTask? task = null)
+        TestTask? task = null,
+        IReadOnlyDictionary<string, string>? capturedTokens = null)
     {
         if (postSteps.Count == 0 || PostStepOrchestrator is null) return;
 
@@ -210,6 +211,10 @@ public abstract class BaseTestAgent : ITestAgent
         var agentCtx = BuildPostStepContext(parentTestCase, parentSteps);
         foreach (var (k, v) in agentCtx)
             if (!string.IsNullOrEmpty(v)) context[k] = v;
+
+        if (capturedTokens is not null)
+            foreach (var (k, v) in capturedTokens)
+                if (!string.IsNullOrEmpty(v)) context[k] = v;
 
         // Try deferred path first when the agent opts in via PostStepParentKind
         // and the wait thresholds qualify.
