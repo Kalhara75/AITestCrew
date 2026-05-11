@@ -95,6 +95,35 @@ export function ConfirmCreatePostStepCard({ summary, data }: { summary?: string;
   if (ps?.eventAssert) {
     summariseEventAssert(ps.eventAssert).forEach(r => rows.push(r));
   }
+  if (ps?.api) {
+    rows.push(['method / endpoint', ps.api.method + ' ' + ps.api.endpoint]);
+    const apiAssertions = ps.api.apiAssertions ?? [];
+    if (apiAssertions.length > 0) {
+      rows.push([
+        'assertions',
+        apiAssertions.map(a => {
+          const src = a.source === 'Header' ? 'Header[' + (a.headerName ?? '') + ']'
+            : a.source === 'Body' ? 'Body[' + (a.jsonPath ?? '') + ']'
+            : a.source;
+          if (a.operator === 'IsNull' || a.operator === 'IsNotNull') return src + ' ' + a.operator;
+          if (a.operator === 'Between') return src + ' ' + a.operator + ' ' + (a.expected ?? '') + '...' + (a.expected2 ?? '');
+          return src + ' ' + a.operator + ' ' + (a.expected ?? '');
+        }).join('; '),
+      ]);
+    }
+    const apiCaptures = ps.api.captures ?? [];
+    if (apiCaptures.length > 0) {
+      rows.push([
+        'captures',
+        apiCaptures.map(c => {
+          const src = c.source === 'Header' ? 'Header[' + (c.headerName ?? '') + ']'
+            : c.source === 'Body' ? 'Body[' + (c.jsonPath ?? '') + ']'
+            : c.source;
+          return '{{' + c.as + '}} <- ' + src + (c.required ? '' : ' (optional)');
+        }).join('; '),
+      ]);
+    }
+  }
 
   return (
     <div style={actionCardStyle(tokens.color.postTint)}>

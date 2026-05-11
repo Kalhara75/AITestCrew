@@ -136,7 +136,7 @@ export function PostStepsPanel({
         </thead>
         <tbody>
           {postSteps.map((p, i) => {
-            const expandable = !!(p.webUi || p.desktopUi || p.dbCheck || p.eventAssert);
+            const expandable = !!(p.webUi || p.desktopUi || p.dbCheck || p.eventAssert || p.api);
             const isExpanded = expanded.has(i);
             return (
               <Fragment key={i}>
@@ -201,7 +201,7 @@ export function PostStepsPanel({
                               Run
                             </button>
                           )}
-                          {(p.webUi || p.desktopUi || p.dbCheck || p.eventAssert) && canEdit && (
+                          {(p.webUi || p.desktopUi || p.dbCheck || p.eventAssert || p.api) && canEdit && (
                             <span
                               onClick={() => setEditingIdx(i)}
                               style={{ fontSize: 13, color: '#1d4ed8', cursor: 'pointer', opacity: 0.7, marginRight: 8 }}
@@ -240,6 +240,7 @@ export function PostStepsPanel({
                       {p.desktopUi && <DesktopUiStepsTable steps={p.desktopUi.steps} />}
                       {p.dbCheck && <DbCheckBlock dc={p.dbCheck} />}
                       {p.eventAssert && <EventAssertBlock ea={p.eventAssert} />}
+                      {p.api && <ApiPostStepBlock api={p.api} />}
                     </td>
                   </tr>
                 )}
@@ -397,7 +398,12 @@ function PayloadSummary({ p }: { p: PostStep }) {
     const cap = capturesCount > 0 ? ` / captures=${capturesCount}` : '';
     return <>{entity} · {mode} · criteria={criteriaCount}{cap}{drain}</>;
   }
-  if (p.api) return <>{p.api.method} {p.api.endpoint}</>;
+  if (p.api) {
+    const assertCount = p.api.apiAssertions?.length ?? 0;
+    const capCount = p.api.captures?.length ?? 0;
+    const suffix = [assertCount > 0 && 'asserts=' + assertCount, capCount > 0 && 'captures=' + capCount].filter(Boolean).join(' / ');
+    return <>{p.api.method} {p.api.endpoint}{suffix ? ' · ' + suffix : ''}</>;
+  }
   if (p.aseXmlDeliver) return <>deliver {p.aseXmlDeliver.templateId} → {p.aseXmlDeliver.endpointCode}</>;
   if (p.aseXml) return <>render {p.aseXml.templateId}</>;
   return <em style={{ color: '#94a3b8' }}>(no payload)</em>;
@@ -569,6 +575,50 @@ function EventAssertBlock({ ea }: { ea: NonNullable<PostStep['eventAssert']> }) 
                 </span>
               );
             })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function ApiPostStepBlock({ api }: { api: NonNullable<PostStep["api"]> }) {
+  const assertions = api.apiAssertions ?? [];
+  const captures = api.captures ?? [];
+  return (
+    <div style={{ marginTop: 6, fontSize: 12 }}>
+      <div style={{ color: '#64748b', marginBottom: 4 }}>
+        <strong>endpoint:</strong> <code style={inlineCode}>{api.method} {api.endpoint}</code>
+        {api.expectedStatus > 0 && (
+          <span style={{ marginLeft: 10 }}><strong>expected:</strong> {api.expectedStatus}</span>
+        )}
+      </div>
+      {assertions.length > 0 && (
+        <div style={{ color: '#64748b', marginTop: 4 }}>
+          <strong>assertions:</strong>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+            {assertions.map((assn, i) => (
+              <span key={i} style={pillStyle}>
+                <strong>{assn.source}</strong>
+                {assn.jsonPath ? <code>[{assn.jsonPath}]</code> : null}
+                {assn.headerName ? <code>[{assn.headerName}]</code> : null}
+                {' '}{assn.operator}{assn.expected ? ' ' + assn.expected : ''}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {captures.length > 0 && (
+        <div style={{ color: '#64748b', marginTop: 4 }}>
+          <strong>captures:</strong>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+            {captures.map((cap, i) => (
+              <span key={i} style={pillStyle}>
+                <strong style={{ color: '#0d9488' }}>{`{{${cap.as}}}`}</strong>
+                {' <- '}{cap.source}{cap.jsonPath ? '.' + cap.jsonPath : ''}
+              </span>
+            ))}
           </div>
         </div>
       )}

@@ -26,6 +26,28 @@ export interface TestSetListItem {
   lastRunStatus: string | null;
 }
 
+export type ApiAssertionSource = 'Status' | 'Header' | 'Body' | 'BodyText';
+
+export interface ApiAssertion {
+  source: ApiAssertionSource;
+  headerName?: string | null;
+  jsonPath?: string | null;
+  operator: string;
+  expected?: string | null;
+  expected2?: string | null;
+  ignoreCase: boolean;
+  toleranceSeconds?: number | null;
+  toleranceDelta?: number | null;
+}
+
+export interface ApiCapture {
+  source: ApiAssertionSource;
+  headerName?: string | null;
+  jsonPath?: string | null;
+  as: string;
+  required: boolean;
+}
+
 export interface ApiTestDefinition {
   method: string;
   endpoint: string;
@@ -36,6 +58,8 @@ export interface ApiTestDefinition {
   expectedBodyContains: string[];
   expectedBodyNotContains: string[];
   isFuzzTest: boolean;
+  apiAssertions?: ApiAssertion[];
+  captures?: ApiCapture[];
   postSteps?: PostStep[];
 }
 
@@ -337,6 +361,8 @@ export interface ApiTestCase {
   expectedBodyContains: string[];
   expectedBodyNotContains: string[];
   isFuzzTest: boolean;
+  apiAssertions?: ApiAssertion[];
+  captures?: ApiCapture[];
 }
 
 export interface RunSummary {

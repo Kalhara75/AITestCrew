@@ -578,7 +578,67 @@ public class ChatIntentService : IChatIntentService
                     //        "columnAssertions": [{ "column": "Status", "operator": "Equals", "expected": "Processed" }],
                     //        "captures": [{ "column": "JobId", "as": "JobId", "required": true }],
                     //        "timeoutSeconds": 15 }
-                    "api": { <ApiTestDefinition shape> },            // present only when target is API_REST
+                    // api post-step authoring rules:
+                    //   • Prefer Body+jsonPath assertions over BodyText substring checks — JSONPath is safer across serialisation formats.
+                    //   • Always emit captures for returned IDs (orderId, jobId, correlationId, etc.) so downstream post-steps can reference them via {{Token}}.
+                    //   • If apiAssertions array is non-empty, LLM hybrid validation is SKIPPED — structured assertions are authoritative.
+                    //   • Captures bind from the FIRST response that passes all apiAssertions (or from every response if no assertions).
+                    "api": {                                 // present only when target is API_REST
+                      "name": "<human label for this step>",
+                      "method": "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+                      "endpoint": "</path>?query={{Token}}",   // relative to the resolved base URL; {{Tokens}} substituted at runtime
+                      "headers": { "<header>": "<value or {{Token}}>" },   // merged on top of auth headers
+                      "queryParams": { "<param>": "<value or {{Token}}>" }, // appended to the URL
+                      "body": "<raw request body or stringified JSON; {{Tokens}} substituted>",
+                      "expectedStatus": 200,                    // LEGACY — prefer apiAssertions; kept for backward compat
+                      "expectedBodyContains": "<substring>",  // LEGACY — prefer apiAssertions[{source:BodyText,operator:Contains}]
+                      "expectedBodyNotContains": "<substring>",// LEGACY — prefer apiAssertions[{source:BodyText,operator:NotContains}]
+                      "apiAssertions": [                        // structured assertions evaluated rule-by-rule (preferred over legacy fields)
+                        {
+                          "source": "Status" | "Header" | "Body" | "BodyText",
+                          "headerName": "<response header name — only when source is Header>",
+                          "jsonPath": "<JSONPath expression e.g. $.data.id — only when source is Body>",
+                          "operator": "Equals" | "NotEquals" | "Contains" | "NotContains" | "StartsWith" | "EndsWith" | "Regex" | "GreaterThan" | "LessThan" | "Between" | "IsNull" | "IsNotNull" | "EqualsNumeric" | "EqualsDate",
+                          "expected": "<value or {{Token}}>",
+                          "expected2": "<upper bound — only for Between>",
+                          "ignoreCase": true,
+                          "toleranceSeconds": 5,               // EqualsDate only
+                          "toleranceDelta": 0.01               // EqualsNumeric only
+                        }
+                      ],
+                      "captures": [                            // bind response values into {{Token}} for downstream post-steps
+                        {
+                          "source": "Status" | "Header" | "Body" | "BodyText",
+                          "headerName": "<header name — only when source is Header>",
+                          "jsonPath": "<JSONPath — only when source is Body>",
+                          "as": "<Token name WITHOUT braces e.g. CreatedId>",   // never {{-substituted}}
+                          "required": true
+                        }
+                      ],
+                      "timeoutSeconds": 30
+                    },
+                    // api examples (verbatim shape):
+                    //   1) POST with capture — create an order, capture the returned orderId for downstream steps:
+                    //      { "name": "Create order", "method": "POST", "endpoint": "/api/orders",
+                    //        "body": "{"customerId": "{{CustomerId}}"}",
+                    //        "apiAssertions": [ { "source": "Status", "operator": "Equals", "expected": "201" } ],
+                    //        "captures": [ { "source": "Body", "jsonPath": "$.data.id", "as": "OrderId", "required": true } ],
+                    //        "timeoutSeconds": 15 }
+                    //   2) GET with JSONPath assertion — verify the order is in Confirmed state:
+                    //      { "name": "Order confirmed", "method": "GET", "endpoint": "/api/orders/{{OrderId}}",
+                    //        "apiAssertions": [
+                    //          { "source": "Status", "operator": "Equals", "expected": "200" },
+                    //          { "source": "Body", "jsonPath": "$.status", "operator": "Equals", "expected": "Confirmed", "ignoreCase": true }
+                    //        ], "timeoutSeconds": 15 }
+                    //   3) Header assertion — confirm the Location response header was returned after a redirect:
+                    //      { "name": "Redirect location set", "method": "POST", "endpoint": "/api/submit",
+                    //        "body": "{{Payload}}",
+                    //        "apiAssertions": [
+                    //          { "source": "Status", "operator": "Equals", "expected": "302" },
+                    //          { "source": "Header", "headerName": "Location", "operator": "Contains", "expected": "/results/" }
+                    //        ],
+                    //        "captures": [ { "source": "Header", "headerName": "Location", "as": "RedirectUrl", "required": false } ],
+                    //        "timeoutSeconds": 15 }
                     "aseXml": { <AseXmlTestDefinition shape> },      // present only when target is AseXml_Generate
                     "aseXmlDeliver": { <AseXmlDeliveryTestDefinition shape> },  // present only when target is AseXml_Deliver
                     "eventAssert": {                                  // present only when target is Event_AzureServiceBus
