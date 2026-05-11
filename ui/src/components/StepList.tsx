@@ -112,7 +112,8 @@ function StepRow({ step, isLast }: { step: StepResult; isLast: boolean }) {
   const { text: detailText, screenshotFile } = parseScreenshot(step.detail);
   const dbDiagnostics = extractDbDiagnostics(step);
   const eventAssertDiagnostics = extractEventAssertDiagnostics(step);
-  const hasDetail = !!(step.detail) || dbDiagnostics !== null || eventAssertDiagnostics !== null;
+  const apiAssertDiagnostics = extractApiAssertDiagnostics(step);
+  const hasDetail = !!(step.detail) || dbDiagnostics !== null || eventAssertDiagnostics !== null || apiAssertDiagnostics !== null;
   const dueTime = isAwaiting ? extractDueTime(step.summary, step.detail) : null;
 
   return (
@@ -168,6 +169,7 @@ function StepRow({ step, isLast }: { step: StepResult; isLast: boolean }) {
           )}
           {dbDiagnostics && <DbDiagnosticsTable diag={dbDiagnostics} />}
           {eventAssertDiagnostics && <EventAssertDiagnosticsTable diag={eventAssertDiagnostics} />}
+          {apiAssertDiagnostics && <ApiAssertDiagnosticsTable diag={apiAssertDiagnostics} />}
           {screenshotFile && (
             <div style={{ marginTop: 12 }}>
               <a
@@ -461,6 +463,117 @@ function EventAssertMessageRow({ m }: { m: EventAssertMessage }) {
               whiteSpace: 'pre-wrap', wordBreak: 'break-word',
               maxHeight: 200, overflow: 'auto',
             }}>{m.bodyPreview}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ── API Assertion Diagnostics (REQ-007) ──────────────────────────────────────
+
+type ApiAssertionDiagnostic = {
+  source: string;
+  headerName?: string;
+  jsonPath?: string;
+  operator: string;
+  expected: string;
+  actual: string | null;
+  passed: boolean;
+  reason: string | null;
+};
+
+type ApiResponseDiag = {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+};
+
+type ApiAssertDiagnostics = {
+  assertions: ApiAssertionDiagnostic[];
+  response: ApiResponseDiag | null;
+};
+
+function extractApiAssertDiagnostics(step: StepResult): ApiAssertDiagnostics | null {
+  const meta = step.metadata;
+  if (!meta || typeof meta !== 'object') return null;
+  const raw = (meta as Record<string, unknown>)['apiAssertions'];
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const assertions: ApiAssertionDiagnostic[] = (raw as unknown[])
+    .filter(r => r && typeof r === 'object')
+    .map(ru => {
+      const r = ru as Record<string, unknown>;
+      return {
+        source: typeof r['source'] === 'string' ? (r['source'] as string) : '',
+        headerName: typeof r['headerName'] === 'string' ? (r['headerName'] as string) : undefined,
+        jsonPath: typeof r['jsonPath'] === 'string' ? (r['jsonPath'] as string) : undefined,
+        operator: typeof r['operator'] === 'string' ? (r['operator'] as string) : '',
+        expected: typeof r['expected'] === 'string' ? (r['expected'] as string) : '',
+        actual: typeof r['actual'] === 'string' ? (r['actual'] as string) : null,
+        passed: typeof r['passed'] === 'boolean' ? (r['passed'] as boolean) : false,
+        reason: typeof r['reason'] === 'string' ? (r['reason'] as string) : null,
+      };
+    });
+  const rawResp = (meta as Record<string, unknown>)['apiResponse'];
+  let response: ApiResponseDiag | null = null;
+  if (rawResp && typeof rawResp === 'object') {
+    const rr = rawResp as Record<string, unknown>;
+    response = {
+      status: typeof rr['status'] === 'number' ? (rr['status'] as number) : 0,
+      headers: (rr['headers'] && typeof rr['headers'] === 'object') ? rr['headers'] as Record<string, string> : {},
+      body: typeof rr['body'] === 'string' ? (rr['body'] as string) : '',
+    };
+  }
+  return { assertions, response };
+}
+
+function ApiAssertDiagnosticsTable({ diag }: { diag: ApiAssertDiagnostics }) {
+  const [showBody, setShowBody] = useState(false);
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4 }}>
+        API Assertions
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+        <thead>
+          <tr style={{ background: '#f1f5f9' }}>
+            {['Source', 'Path', 'Operator', 'Expected', 'Actual', 'Pass'].map(h => (
+              <th key={h} style={{ padding: '3px 6px', textAlign: 'left', fontWeight: 600, color: '#475569' }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {diag.assertions.map((a, i) => (
+            <tr key={i} style={{ background: a.passed ? 'transparent' : '#fff7ed' }}>
+              <td style={{ padding: '3px 6px' }}>{a.source}</td>
+              <td style={{ padding: '3px 6px', fontFamily: 'monospace', fontSize: 10 }}>
+                {a.jsonPath ?? a.headerName ?? ''}
+              </td>
+              <td style={{ padding: '3px 6px' }}>{a.operator}</td>
+              <td style={{ padding: '3px 6px', fontFamily: 'monospace', fontSize: 10, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.expected}</td>
+              <td style={{ padding: '3px 6px', fontFamily: 'monospace', fontSize: 10, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', color: a.passed ? '#15803d' : '#dc2626' }}>
+                {a.actual ?? '(null)'}
+              </td>
+              <td style={{ padding: '3px 6px' }}>{a.passed ? String.fromCharCode(10003) : String.fromCharCode(10007)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {diag.response && (
+        <div style={{ marginTop: 6 }}>
+          <div style={{ fontSize: 11, color: '#64748b' }}>
+            Response: {diag.response.status}
+            <button onClick={() => setShowBody(!showBody)} style={{ marginLeft: 8, fontSize: 11, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+              {showBody ? 'Hide body' : 'Show body'}
+            </button>
+          </div>
+          {showBody && (
+            <pre style={{
+              margin: '4px 0 0', padding: '4px 6px', background: '#f8fafc',
+              border: '1px solid #e2e8f0', borderRadius: 3, fontSize: 11,
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 200, overflow: 'auto',
+            }}>{diag.response.body}</pre>
           )}
         </div>
       )}
