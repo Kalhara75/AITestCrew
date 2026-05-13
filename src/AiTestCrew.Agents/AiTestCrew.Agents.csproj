@@ -29,4 +29,7 @@
     <PackageReference Include="Azure.Messaging.ServiceBus" Version="7.18.2" />
     <PackageReference Include="Azure.Identity" Version="1.13.1" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AiTestCrew.Agents.Tests" />
+  </ItemGroup>
 </Project>

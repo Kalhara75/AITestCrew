@@ -467,19 +467,7 @@ public class PostStepOrchestrator
         {
             ct.ThrowIfCancellationRequested();
             var v = dr.Verifications[pIdx];
-            var effective = new VerificationStep
-            {
-                Description = v.Description,
-                Target = v.Target,
-                Role = v.Role,
-                WaitBeforeSeconds = pIdx == 0 ? 0 : Math.Max(0, v.WaitBeforeSeconds - firstWait),
-                WebUi = v.WebUi,
-                DesktopUi = v.DesktopUi,
-                Api = v.Api,
-                AseXml = v.AseXml,
-                AseXmlDeliver = v.AseXmlDeliver,
-                DbCheck = v.DbCheck,
-            };
+            var effective = CloneForReplay(v, isFirst: pIdx == 0, firstWait);
 
             var preCount = attemptSteps.Count;
             await RunOneInlineAsync(
@@ -608,6 +596,35 @@ public class PostStepOrchestrator
             Status: TestStatus.Failed,
             Summary: $"Deferred post-step(s) failed for '{dr.DeliveryObjectiveName}' after {dr.AttemptCount + 1} attempt(s).",
             Steps: steps);
+    }
+
+    /// <summary>
+    /// Shallow-copies every carrier field on a <see cref="VerificationStep"/> so
+    /// a deferred replay can adjust <see cref="VerificationStep.WaitBeforeSeconds"/>
+    /// without mutating the snapshot in <see cref="DeferredVerificationRequest"/>.
+    /// Why: TryPreloadPayload reads <c>EventAssert</c>/<c>DbCheck</c>/<c>Api</c>/etc.
+    /// directly off the step it's handed — if a field isn't copied here, the
+    /// deferred path will report "payload is missing" for that target type while
+    /// the inline path passes. Tests exercise this with reflection over every
+    /// nullable payload property on <see cref="VerificationStep"/> so adding a
+    /// new carrier fails the build.
+    /// </summary>
+    internal static VerificationStep CloneForReplay(VerificationStep v, bool isFirst, int firstWait)
+    {
+        return new VerificationStep
+        {
+            Description = v.Description,
+            Target = v.Target,
+            Role = v.Role,
+            WaitBeforeSeconds = isFirst ? 0 : Math.Max(0, v.WaitBeforeSeconds - firstWait),
+            WebUi = v.WebUi,
+            DesktopUi = v.DesktopUi,
+            Api = v.Api,
+            AseXml = v.AseXml,
+            AseXmlDeliver = v.AseXmlDeliver,
+            DbCheck = v.DbCheck,
+            EventAssert = v.EventAssert,
+        };
     }
 
     private static async Task<List<Dictionary<string, object?>>> DeserializeAttemptLogAsync(
