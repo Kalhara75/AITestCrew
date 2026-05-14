@@ -20,6 +20,10 @@ services:
       # Mount auth state directory so Playwright can reuse SSO sessions.
       # Refresh via .\refresh-auth-state.ps1 after running --auth-setup locally.
       - ./docker-auth-state:C:/auth-state
+      # Bind-mount backup directory -- MUST be a bind-mount, not a named volume.
+      # Survives docker volume rm aitestcrew_aitestcrew-data.
+      # Off-host replication: point rclone/robocopy/OneDrive at ./docker-backups.
+      - ./docker-backups:C:/backups
     env_file:
       - .env
     environment:

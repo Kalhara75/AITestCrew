@@ -206,6 +206,13 @@ if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCas
         sp.GetRequiredService<ILogger<AgentHeartbeatMonitor>>(),
         TimeSpan.FromSeconds(envConfig.AgentHeartbeatTimeoutSeconds > 0
             ? envConfig.AgentHeartbeatTimeoutSeconds : 120)));
+
+    // Scheduled SQLite hot-backup
+    builder.Services.AddSingleton(sp => new DatabaseBackupService(
+        sp.GetRequiredService<AiTestCrew.Agents.Persistence.Sqlite.SqliteConnectionFactory>(),
+        sp.GetRequiredService<TestEnvironmentConfig>().Backup,
+        sp.GetRequiredService<ILogger<DatabaseBackupService>>()));
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<DatabaseBackupService>());
 }
 else
 {
@@ -324,6 +331,7 @@ if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCas
     app.MapGroup("/api/auth-refreshes").MapAuthRefreshEndpoints();
     app.MapGroup("/api/auth-health").MapAuthHealthEndpoints();
     app.MapGroup("/api/recordings").MapRecordingEndpoints();
+    app.MapGroup("/api/admin/backup").MapBackupEndpoints();
 }
 
 // ── Execution history (Runner API client) ──

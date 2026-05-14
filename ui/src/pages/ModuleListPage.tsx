@@ -8,6 +8,7 @@ import { DataPacksPanel } from '../components/DataPacksPanel';
 import { QueueBanner } from '../components/QueueBanner';
 import { AuthRefreshBanner } from '../components/AuthRefreshBanner';
 import { AuthHealthPanel } from '../components/AuthHealthPanel';
+import { BackupHealthPanel } from '../components/BackupHealthPanel';
 import { useActiveRun } from '../contexts/ActiveRunContext';
 
 export function ModuleListPage() {
@@ -29,6 +30,7 @@ export function ModuleListPage() {
       <QueueBanner />
       <AgentsPanel />
       <DataPacksPanel />
+      <BackupHealthPanel />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: '#0f172a' }}>Modules</h1>
         <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>

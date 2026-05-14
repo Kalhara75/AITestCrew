@@ -1,4 +1,4 @@
-ï»¿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -43,7 +43,7 @@ public class TestEnvironmentConfig
     // --- Authentication ---
     // Set AuthToken to inject credentials into every request automatically.
     // AuthScheme: "Bearer" (default), "Basic", or "None"
-    // AuthHeaderName: header to use â€” defaults to "Authorization".
+    // AuthHeaderName: header to use — defaults to "Authorization".
     //   For API-key-style auth (e.g. X-Api-Key) change AuthScheme to "None"
     //   and set AuthHeaderName + AuthToken together.
     public string? AuthToken { get; set; }
@@ -85,7 +85,7 @@ public class TestEnvironmentConfig
     public int AgentHeartbeatTimeoutSeconds { get; set; } = 120;
 
     // --- Runner agent mode (Phase 4) ---
-    // Agent-mode identifier â€” persists across restarts so the same machine keeps the same id.
+    // Agent-mode identifier — persists across restarts so the same machine keeps the same id.
     public string AgentName { get; set; } = "";
     // Target types this agent can execute (e.g. "UI_Web_Blazor,UI_Web_MVC,UI_Desktop_WinForms").
     // Empty = default to all three UI target types.
@@ -113,7 +113,7 @@ public class TestEnvironmentConfig
     // On first run the agent performs a full SSO login and saves the state.
     // Subsequent runs within BraveCloudUiStorageStateMaxAgeHours reuse the saved state.
     // When BraveCloudUiTotpSecret is set, the agent handles Azure AD MFA automatically.
-    // When empty and MFA is encountered: headless=false â†’ manual entry; headless=true â†’ fail-fast.
+    // When empty and MFA is encountered: headless=false ? manual entry; headless=true ? fail-fast.
     public string BraveCloudUiUrl { get; set; } = "";
     public string? BraveCloudUiStorageStatePath { get; set; }
     public string BraveCloudUiUsername { get; set; } = "";  // AAD email
@@ -131,7 +131,7 @@ public class TestEnvironmentConfig
 
     // Window-size normalization: forces the app's main window to a known
     // (width, height) at launch and on every detected window transition (e.g.
-    // login â†’ main form). Both the recorder and replay engine apply identical
+    // login ? main form). Both the recorder and replay engine apply identical
     // normalization, so window-relative click coordinates are portable across
     // monitors / resolutions / DPI settings. Set NormalizeWindow=false to
     // honour whatever size the app picks for itself (legacy behaviour).
@@ -146,7 +146,7 @@ public class TestEnvironmentConfig
     public bool DataTeardownEnabled { get; set; } = false;
 
     /// <summary>
-    /// Top-level DB connection registry â€” fallback when a per-env block
+    /// Top-level DB connection registry — fallback when a per-env block
     /// (<see cref="EnvironmentConfig.DbConnections"/>) doesn't define the key.
     /// Used by <see cref="AiTestCrew.Core.Interfaces.IEnvironmentResolver.ResolveDbConnectionString"/>.
     /// Entries are keyed by logical connection name (e.g. <c>"BravoDb"</c>,
@@ -155,7 +155,7 @@ public class TestEnvironmentConfig
     public Dictionary<string, string> DbConnections { get; set; } = new();
 
     /// <summary>
-    /// Top-level Azure Service Bus namespace registry â€” fallback when a
+    /// Top-level Azure Service Bus namespace registry — fallback when a
     /// per-env block (<see cref="EnvironmentConfig.ServiceBusConnections"/>)
     /// doesn't define the key. Used by
     /// <see cref="AiTestCrew.Core.Interfaces.IEnvironmentResolver.ResolveServiceBusConnection"/>.
@@ -166,7 +166,7 @@ public class TestEnvironmentConfig
     /// Stored-procedure name prefixes that teardown SQL is allowed to invoke
     /// via <c>EXEC</c>. Procs whose name does not start with one of these
     /// prefixes (case-insensitive) are rejected by <c>SqlGuardrails</c>.
-    /// Default: <c>["usp_"]</c> â€” pairs with the standard convention for
+    /// Default: <c>["usp_"]</c> — pairs with the standard convention for
     /// dev-installed teardown procs shipped via the data-pack runner. Set to
     /// an empty array to disallow EXEC entirely.
     /// </summary>
@@ -198,6 +198,14 @@ public class TestEnvironmentConfig
     /// pause-and-resume dispatcher.
     /// </summary>
     public AuthRecoveryConfig Auth { get; set; } = new();
+
+    // --- Backup (scheduled SQLite hot-backup) ---
+    /// <summary>
+    /// Scheduled SQLite hot-backup. The <c>DatabaseBackupService</c> uses
+    /// <see cref="BackupConfig.Directory"/> as the output path (must be a separate
+    /// host bind-mount). Disabled by default â€” opt-in in your production config.
+    /// </summary>
+    public BackupConfig Backup { get; set; } = new();
 }
 
 /// <summary>
@@ -261,7 +269,7 @@ public class ChatConfig
     /// <summary>
     /// How many conversations to retain per user. Older threads beyond this
     /// cap are auto-pruned on the next conversation-create. Set to 0 to disable
-    /// the cap (unbounded â€” not recommended).
+    /// the cap (unbounded — not recommended).
     /// </summary>
     public int MaxConversationsPerUser { get; set; } = 20;
 
@@ -310,8 +318,8 @@ public class AseXmlConfig
     public bool DeferVerifications { get; set; } = true;
 
     /// <summary>
-    /// Waits â‰¤ this value run synchronously on the delivery agent even when
-    /// <see cref="DeferVerifications"/> is true â€” the queueing/agent-hop overhead
+    /// Waits = this value run synchronously on the delivery agent even when
+    /// <see cref="DeferVerifications"/> is true — the queueing/agent-hop overhead
     /// isn't worth it for short delays.
     /// </summary>
     public int VerificationDeferThresholdSeconds { get; set; } = 30;
@@ -347,7 +355,7 @@ public class BravoDbConfig
 {
     /// <summary>
     /// SQL Server connection string for the Bravo application DB.
-    /// Stored in appsettings.json only â€” never in appsettings.example.json.
+    /// Stored in appsettings.json only — never in appsettings.example.json.
     /// </summary>
     public string ConnectionString { get; set; } = "";
 }

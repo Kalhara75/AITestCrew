@@ -62,7 +62,8 @@ public static class DatabaseMigrator
                 name       TEXT NOT NULL,
                 api_key    TEXT NOT NULL UNIQUE,
                 created_at TEXT NOT NULL,
-                is_active  INTEGER NOT NULL DEFAULT 1
+                is_active  INTEGER NOT NULL DEFAULT 1,
+                is_admin   INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS active_runs (
@@ -234,7 +235,7 @@ public static class DatabaseMigrator
                 value TEXT NOT NULL
             );
 
-            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '10');
+            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '11');
             """;
         cmd.ExecuteNonQuery();
 
@@ -463,8 +464,24 @@ public static class DatabaseMigrator
 
         // Ensure schema_version reflects the latest applied migration even on upgraded DBs
         using var bump = conn.CreateCommand();
-        bump.CommandText = "UPDATE schema_version SET value = '10' WHERE key = 'version' AND CAST(value AS INTEGER) < 10";
+        bump.CommandText = "UPDATE schema_version SET value = '11' WHERE key = 'version' AND CAST(value AS INTEGER) < 11";
         bump.ExecuteNonQuery();
+
+        // ── v10 → v11: users.is_admin ──
+        // Additive column landing now so role-based enforcement can flip the
+        // predicate later without a schema change. For v1, all existing users are
+        // backfilled to is_admin = 1 (matches current "any key holder is admin" policy).
+        if (!ColumnExists(conn, "users", "is_admin"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0";
+            alter.ExecuteNonQuery();
+
+            using var backfill = conn.CreateCommand();
+            // v1: all existing users are treated as admins (role enforcement is a future REQ)
+            backfill.CommandText = "UPDATE users SET is_admin = 1";
+            backfill.ExecuteNonQuery();
+        }
     }
 
     private static bool ColumnExists(SqliteConnection conn, string table, string column)
