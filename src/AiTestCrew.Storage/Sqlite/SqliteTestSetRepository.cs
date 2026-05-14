@@ -29,13 +29,18 @@ public sealed class SqliteTestSetRepository : ITestSetRepository
     {
         using var conn = _factory.CreateConnection();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT data FROM test_sets ORDER BY created_at DESC";
+        cmd.CommandText = "SELECT data, version, updated_by, updated_at FROM test_sets ORDER BY created_at DESC";
         using var reader = cmd.ExecuteReader();
         var result = new List<PersistedTestSet>();
         while (reader.Read())
         {
             var ts = Deserialize(reader.GetString(0));
-            if (ts is not null) result.Add(ts);
+            if (ts is null) continue;
+            if (!reader.IsDBNull(1)) ts.Version = reader.GetInt32(1);
+            if (!reader.IsDBNull(2)) ts.LastModifiedBy = reader.GetString(2);
+            if (!reader.IsDBNull(3) && DateTime.TryParse(reader.GetString(3), out var updAt))
+                ts.UpdatedAt = updAt;
+            result.Add(ts);
         }
         return result;
     }
@@ -52,6 +57,13 @@ public sealed class SqliteTestSetRepository : ITestSetRepository
         await UpsertAsync(testSet, moduleId);
     }
 
+    public async Task SaveAsync(PersistedTestSet testSet, string moduleId, int? expectedVersion, string? userId = null)
+    {
+        using var conn = _factory.CreateConnection();
+        UpsertWithConnection(conn, testSet, moduleId, expectedVersion, userId);
+        await Task.CompletedTask;
+    }
+
     public async Task<PersistedTestSet?> LoadAsync(string moduleId, string testSetId)
     {
         return await LoadInternalAsync(moduleId, testSetId);
@@ -61,14 +73,19 @@ public sealed class SqliteTestSetRepository : ITestSetRepository
     {
         using var conn = _factory.CreateConnection();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT data FROM test_sets WHERE module_id = $mid ORDER BY created_at DESC";
+        cmd.CommandText = "SELECT data, version, updated_by, updated_at FROM test_sets WHERE module_id = $mid ORDER BY created_at DESC";
         cmd.Parameters.AddWithValue("$mid", moduleId);
         using var reader = cmd.ExecuteReader();
         var result = new List<PersistedTestSet>();
         while (reader.Read())
         {
             var ts = Deserialize(reader.GetString(0));
-            if (ts is not null) result.Add(ts);
+            if (ts is null) continue;
+            if (!reader.IsDBNull(1)) ts.Version = reader.GetInt32(1);
+            if (!reader.IsDBNull(2)) ts.LastModifiedBy = reader.GetString(2);
+            if (!reader.IsDBNull(3) && DateTime.TryParse(reader.GetString(3), out var updAt))
+                ts.UpdatedAt = updAt;
+            result.Add(ts);
         }
         return result;
     }
@@ -238,11 +255,19 @@ public sealed class SqliteTestSetRepository : ITestSetRepository
         Microsoft.Data.Sqlite.SqliteConnection conn, string moduleId, string testSetId)
     {
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT data FROM test_sets WHERE module_id = $mid AND id = $id";
+        cmd.CommandText = "SELECT data, version, updated_by, updated_at FROM test_sets WHERE module_id = $mid AND id = $id";
         cmd.Parameters.AddWithValue("$mid", moduleId);
         cmd.Parameters.AddWithValue("$id", testSetId);
-        var json = await cmd.ExecuteScalarAsync() as string;
-        return json is null ? null : Deserialize(json);
+        using var reader = await cmd.ExecuteReaderAsync();
+        if (!await reader.ReadAsync()) return null;
+        var json = reader.GetString(0);
+        var ts = Deserialize(json);
+        if (ts is null) return null;
+        if (!reader.IsDBNull(1)) ts.Version = reader.GetInt32(1);
+        if (!reader.IsDBNull(2)) ts.LastModifiedBy = reader.GetString(2);
+        if (!reader.IsDBNull(3) && DateTime.TryParse(reader.GetString(3), out var updatedAt))
+            ts.UpdatedAt = updatedAt;
+        return ts;
     }
 
     private async Task UpsertAsync(PersistedTestSet testSet, string moduleId)
@@ -253,27 +278,79 @@ public sealed class SqliteTestSetRepository : ITestSetRepository
     }
 
     private static void UpsertWithConnection(
-        Microsoft.Data.Sqlite.SqliteConnection conn, PersistedTestSet testSet, string moduleId)
+        Microsoft.Data.Sqlite.SqliteConnection conn, PersistedTestSet testSet, string moduleId,
+        int? expectedVersion = null, string? userId = null)
     {
+        var now = DateTime.UtcNow.ToString("O");
+        testSet.UpdatedAt = DateTime.UtcNow;
+        if (userId is not null) testSet.LastModifiedBy = userId;
         var json = JsonSerializer.Serialize(testSet, JsonOpts.Value);
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            INSERT INTO test_sets (id, module_id, name, data, created_at, last_run_at, run_count)
-            VALUES ($id, $mid, $name, $data, $createdAt, $lastRunAt, $runCount)
-            ON CONFLICT (module_id, id) DO UPDATE SET
-                name = excluded.name,
-                data = excluded.data,
-                last_run_at = excluded.last_run_at,
-                run_count = excluded.run_count
-            """;
-        cmd.Parameters.AddWithValue("$id", testSet.Id);
-        cmd.Parameters.AddWithValue("$mid", moduleId);
-        cmd.Parameters.AddWithValue("$name", testSet.Name ?? "");
-        cmd.Parameters.AddWithValue("$data", json);
-        cmd.Parameters.AddWithValue("$createdAt", testSet.CreatedAt.ToString("O"));
-        cmd.Parameters.AddWithValue("$lastRunAt", testSet.LastRunAt == default ? "" : testSet.LastRunAt.ToString("O"));
-        cmd.Parameters.AddWithValue("$runCount", testSet.RunCount);
-        cmd.ExecuteNonQuery();
+
+        if (expectedVersion.HasValue)
+        {
+            // Conditional UPDATE — only succeeds when stored version matches expected.
+            cmd.CommandText = """
+                UPDATE test_sets
+                SET name = $name, data = $data, last_run_at = $lastRunAt, run_count = $runCount,
+                    version = version + 1, updated_by = $updatedBy, updated_at = $now
+                WHERE module_id = $mid AND id = $id AND version = $expected
+                """;
+            cmd.Parameters.AddWithValue("$mid", moduleId);
+            cmd.Parameters.AddWithValue("$id", testSet.Id);
+            cmd.Parameters.AddWithValue("$name", testSet.Name ?? "");
+            cmd.Parameters.AddWithValue("$data", json);
+            cmd.Parameters.AddWithValue("$lastRunAt", testSet.LastRunAt == default ? "" : testSet.LastRunAt.ToString("O"));
+            cmd.Parameters.AddWithValue("$runCount", testSet.RunCount);
+            cmd.Parameters.AddWithValue("$updatedBy", (object?)userId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$now", now);
+            cmd.Parameters.AddWithValue("$expected", expectedVersion.Value);
+            var rows = cmd.ExecuteNonQuery();
+            if (rows == 0)
+            {
+                using var readCmd = conn.CreateCommand();
+                readCmd.CommandText = "SELECT version, updated_by, updated_at FROM test_sets WHERE module_id = $mid AND id = $id";
+                readCmd.Parameters.AddWithValue("$mid", moduleId);
+                readCmd.Parameters.AddWithValue("$id", testSet.Id);
+                using var reader = readCmd.ExecuteReader();
+                if (reader.Read())
+                {
+                    var currentVersion = reader.GetInt32(0);
+                    var currentUpdatedBy = reader.IsDBNull(1) ? null : reader.GetString(1);
+                    var currentUpdatedAt = reader.IsDBNull(2) ? null : reader.GetString(2);
+                    throw new AiTestCrew.Core.Exceptions.ConcurrencyException(
+                        currentVersion, expectedVersion.Value, currentUpdatedBy, currentUpdatedAt);
+                }
+                throw new AiTestCrew.Core.Exceptions.ConcurrencyException(-1, expectedVersion.Value, null, null);
+            }
+        }
+        else
+        {
+            // Unconditional upsert (legacy callers, internal operations like run stats).
+            cmd.CommandText = """
+                INSERT INTO test_sets (id, module_id, name, data, created_at, last_run_at, run_count, version, created_by, updated_by, updated_at)
+                VALUES ($id, $mid, $name, $data, $createdAt, $lastRunAt, $runCount, 1, $createdBy, $updatedBy, $now)
+                ON CONFLICT (module_id, id) DO UPDATE SET
+                    name = excluded.name,
+                    data = excluded.data,
+                    last_run_at = excluded.last_run_at,
+                    run_count = excluded.run_count,
+                    version = version + 1,
+                    updated_by = $updatedBy,
+                    updated_at = $now
+                """;
+            cmd.Parameters.AddWithValue("$id", testSet.Id);
+            cmd.Parameters.AddWithValue("$mid", moduleId);
+            cmd.Parameters.AddWithValue("$name", testSet.Name ?? "");
+            cmd.Parameters.AddWithValue("$data", json);
+            cmd.Parameters.AddWithValue("$createdAt", testSet.CreatedAt.ToString("O"));
+            cmd.Parameters.AddWithValue("$lastRunAt", testSet.LastRunAt == default ? "" : testSet.LastRunAt.ToString("O"));
+            cmd.Parameters.AddWithValue("$runCount", testSet.RunCount);
+            cmd.Parameters.AddWithValue("$createdBy", (object?)userId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$updatedBy", (object?)userId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$now", now);
+            cmd.ExecuteNonQuery();
+        }
     }
 
     private static void DeleteWithConnection(

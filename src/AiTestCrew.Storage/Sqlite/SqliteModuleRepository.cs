@@ -21,15 +21,16 @@ public sealed class SqliteModuleRepository : IModuleRepository
             Name = name,
             Description = description ?? "",
             CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow
+            UpdatedAt = DateTime.UtcNow,
+            Version = 1
         };
 
         var json = JsonSerializer.Serialize(module, JsonOpts.Value);
         using var conn = _factory.CreateConnection();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO modules (id, name, description, data, created_at, updated_at)
-            VALUES ($id, $name, $desc, $data, $createdAt, $updatedAt)
+            INSERT INTO modules (id, name, description, data, created_at, updated_at, version)
+            VALUES ($id, $name, $desc, $data, $createdAt, $updatedAt, 1)
             """;
         cmd.Parameters.AddWithValue("$id", module.Id);
         cmd.Parameters.AddWithValue("$name", module.Name);
@@ -45,10 +46,15 @@ public sealed class SqliteModuleRepository : IModuleRepository
     {
         using var conn = _factory.CreateConnection();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT data FROM modules WHERE id = $id";
+        cmd.CommandText = "SELECT data, version, updated_by FROM modules WHERE id = $id";
         cmd.Parameters.AddWithValue("$id", moduleId);
-        var json = await cmd.ExecuteScalarAsync() as string;
-        return json is null ? null : JsonSerializer.Deserialize<PersistedModule>(json, JsonOpts.Value);
+        using var reader = await cmd.ExecuteReaderAsync();
+        if (!await reader.ReadAsync()) return null;
+        var module = JsonSerializer.Deserialize<PersistedModule>(reader.GetString(0), JsonOpts.Value);
+        if (module is null) return null;
+        if (!reader.IsDBNull(1)) module.Version = reader.GetInt32(1);
+        if (!reader.IsDBNull(2)) module.LastModifiedBy = reader.GetString(2);
+        return module;
     }
 
     public async Task<List<PersistedModule>> ListAllAsync()
@@ -70,11 +76,13 @@ public sealed class SqliteModuleRepository : IModuleRepository
     public async Task UpdateAsync(PersistedModule module)
     {
         module.UpdatedAt = DateTime.UtcNow;
+        module.Version++;
         var json = JsonSerializer.Serialize(module, JsonOpts.Value);
         using var conn = _factory.CreateConnection();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            UPDATE modules SET name = $name, description = $desc, data = $data, updated_at = $updatedAt
+            UPDATE modules SET name = $name, description = $desc, data = $data, updated_at = $updatedAt,
+                version = $version, updated_by = $updatedBy
             WHERE id = $id
             """;
         cmd.Parameters.AddWithValue("$id", module.Id);
@@ -82,6 +90,8 @@ public sealed class SqliteModuleRepository : IModuleRepository
         cmd.Parameters.AddWithValue("$desc", module.Description);
         cmd.Parameters.AddWithValue("$data", json);
         cmd.Parameters.AddWithValue("$updatedAt", module.UpdatedAt.ToString("O"));
+        cmd.Parameters.AddWithValue("$version", module.Version);
+        cmd.Parameters.AddWithValue("$updatedBy", (object?)module.LastModifiedBy ?? DBNull.Value);
         await cmd.ExecuteNonQueryAsync();
     }
 

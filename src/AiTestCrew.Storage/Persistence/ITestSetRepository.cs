@@ -13,6 +13,12 @@ public interface ITestSetRepository
 
     // ── Module-scoped operations ──
     Task SaveAsync(PersistedTestSet testSet, string moduleId);
+    /// <summary>
+    /// Versioned save: when <paramref name="expectedVersion"/> is provided and the stored version
+    /// differs, throws <see cref="AiTestCrew.Core.Exceptions.ConcurrencyException"/>.
+    /// When absent, behaves like the unconditional overload.
+    /// </summary>
+    Task SaveAsync(PersistedTestSet testSet, string moduleId, int? expectedVersion, string? userId = null);
     Task<PersistedTestSet?> LoadAsync(string moduleId, string testSetId);
     IReadOnlyList<PersistedTestSet> ListByModule(string moduleId);
     Task<PersistedTestSet> CreateEmptyAsync(string moduleId, string name);

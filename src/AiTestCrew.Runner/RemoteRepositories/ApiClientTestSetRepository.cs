@@ -45,6 +45,13 @@ internal sealed class ApiClientTestSetRepository : ITestSetRepository
         await _http.PutAsync($"api/modules/{moduleId}/testsets/{testSet.Id}/data", testSet);
     }
 
+    public async Task SaveAsync(PersistedTestSet testSet, string moduleId, int? expectedVersion, string? userId = null)
+    {
+        // Remote client sends the full test set via the data endpoint; version enforcement
+        // is handled server-side when the If-Match header is present on objective updates.
+        await SaveAsync(testSet, moduleId);
+    }
+
     public async Task<PersistedTestSet?> LoadAsync(string moduleId, string testSetId)
     {
         var json = await _http.GetStringOrNullAsync($"api/modules/{moduleId}/testsets/{testSetId}");

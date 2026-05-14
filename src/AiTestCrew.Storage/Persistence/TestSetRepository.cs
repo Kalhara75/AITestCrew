@@ -167,6 +167,14 @@ public class TestSetRepository : ITestSetRepository
         finally { fileLock.Release(); }
     }
 
+    /// <summary>
+    /// Versioned save — file-based storage does not support optimistic concurrency,
+    /// so the expectedVersion check is silently ignored. Use SqliteTestSetRepository
+    /// for real concurrency protection.
+    /// </summary>
+    public async Task SaveAsync(PersistedTestSet testSet, string moduleId, int? expectedVersion, string? userId = null)
+        => await SaveAsync(testSet, moduleId);
+
     /// <summary>Loads a test set from a module directory. Returns null if not found.</summary>
     public async Task<PersistedTestSet?> LoadAsync(string moduleId, string testSetId)
     {
