@@ -80,7 +80,7 @@ Anything else is `File.Delete`'d. Sweep runs on every tick — cheap (file mtime
 ```json
 {
   "Enabled": true,
-  "Directory": "/data/backups",       // absolute path; auto-created if missing
+  "Directory": "c:\\backups",         // Windows container path; auto-created if missing
   "IntervalMinutes": 30,
   "RetentionHourly": 24,
   "RetentionDaily": 14,
@@ -90,6 +90,18 @@ Anything else is `File.Delete`'d. Sweep runs on every tick — cheap (file mtime
 ```
 
 Disabled by default in `appsettings.example.json` (opt-in), enabled in our production config.
+
+**Critical — backup directory MUST be a separate host bind-mount, not a path inside the data volume.** Putting backups in `c:\data\backups` (same volume as the live DB) defeats the stated goal of surviving `docker volume rm aitestcrew_aitestcrew-data` or volume corruption — both would wipe the backups too. Mount a host directory in `docker-compose.yml` alongside the existing `auth-state` / `config` bind-mounts:
+
+```yaml
+volumes:
+  - ./docker-backups:c:\backups     # bind-mount; survives `docker volume rm`
+  - aitestcrew-data:c:\data          # named volume — the live DB
+```
+
+This also makes future off-host replication trivial — point `rclone` / `robocopy` / OneDrive at the host's `./docker-backups` directory and you have automatic off-host backups with zero in-app changes.
+
+**Path note** — `/data/backups` (Linux-style) was the original draft default; production runs in a Windows container so paths are `c:\…`. The config value should match the container's OS. For a Linux-container deployment, swap to `/backups` and the equivalent compose mount.
 
 ### 4. Admin endpoints
 
@@ -107,19 +119,47 @@ Authentication: existing `ApiKeyAuthMiddleware` + a new `IsAdmin` flag on `users
 
 ### 6. Restore procedure doc
 
-`docs/ops/backup-restore.md`:
+`docs/ops/backup-restore.md` — separate sections for Windows and Linux containers, because the in-container paths and shell built-ins differ. Restore requires container downtime (you can't overwrite a live `.db` while the WebApi has handles on it) but is rare — backup is constant.
 
-```markdown
-1. Stop the WebApi container: `docker stop aitestcrew-webapi`
-2. Locate the chosen backup: `ls -lh /data/backups/`
-3. Back up the current (possibly corrupt) live file: `mv /data/aitestcrew.db /data/aitestcrew.db.broken`
-4. Copy the backup into place: `cp /data/backups/aitestcrew-YYYYMMDD-HHMMSS.db /data/aitestcrew.db`
-5. Remove WAL artifacts: `rm -f /data/aitestcrew.db-wal /data/aitestcrew.db-shm`
-6. Start the container: `docker start aitestcrew-webapi`
-7. Verify: `GET /api/health` → 200. `GET /api/modules` → expected modules. Hit the dashboard.
+**Windows container (our prod):**
+
+```powershell
+# 1. Stop the WebApi
+docker stop aitestcrew-webapi-1
+
+# 2. Locate the chosen backup on the HOST (because the backup directory is a bind-mount,
+#    you can browse it directly — no docker exec needed):
+dir .\docker-backups\
+
+# 3. Use a one-shot sidecar (same image, cmd entrypoint) to swap the file in the volume.
+#    The data volume isn't reachable from the host without admin; the sidecar mounts it for us.
+docker run --rm --entrypoint cmd `
+  -v aitestcrew_aitestcrew-data:c:\data `
+  -v ${PWD}\docker-backups:c:\backups `
+  aitestcrew-webapi /c "ren c:\data\aitestcrew.db aitestcrew.db.broken && del /Q c:\data\aitestcrew.db-wal c:\data\aitestcrew.db-shm && copy /B c:\backups\aitestcrew-YYYYMMDD-HHMMSS.db c:\data\aitestcrew.db"
+
+# 4. Start the container
+docker start aitestcrew-webapi-1
+
+# 5. Verify
+curl http://localhost:5050/api/health    # → 200
+curl http://localhost:5050/api/modules   # → expected modules
 ```
 
-Plus: "exporting a backup file off-host" (a one-liner `docker cp` example).
+**Linux container:**
+
+```bash
+docker stop aitestcrew-webapi
+ls -lh ./docker-backups/
+docker run --rm --entrypoint sh \
+  -v aitestcrew_aitestcrew-data:/data \
+  -v $(pwd)/docker-backups:/backups \
+  aitestcrew-webapi -c "mv /data/aitestcrew.db /data/aitestcrew.db.broken && rm -f /data/aitestcrew.db-wal /data/aitestcrew.db-shm && cp /backups/aitestcrew-YYYYMMDD-HHMMSS.db /data/aitestcrew.db"
+docker start aitestcrew-webapi
+curl http://localhost:5050/api/health && curl http://localhost:5050/api/modules
+```
+
+Plus: "exporting a backup file off-host" — because the backup directory is a host bind-mount (see config note above), this is just a normal file copy on the host. No `docker cp` needed.
 
 ## Scope — explicitly out
 
@@ -154,7 +194,12 @@ Plus: "exporting a backup file off-host" (a one-liner `docker cp` example).
 **Modified**
 - `src/AiTestCrew.Core/Configuration/TestEnvironmentConfig.cs` (add `Backup` block)
 - `src/AiTestCrew.WebApi/Program.cs` (DI registration, `MapBackupEndpoints`)
-- `src/AiTestCrew.Storage/Sqlite/DatabaseMigrator.cs` (v10 → v11: add `users.is_admin INTEGER NOT NULL DEFAULT 0`; bootstrap user gets `1`)
+- `src/AiTestCrew.Storage/Sqlite/DatabaseMigrator.cs` (next schema head + 1: add `users.is_admin INTEGER NOT NULL DEFAULT 0`; bootstrap user gets `1`)
 - `appsettings.example.json` (Backup block with `Enabled: false`)
 - `ui/src/components/Dashboard.tsx` (mount `BackupHealthPanel`)
 - `CLAUDE.md` and `docs/architecture.md` (new "Backup & restore" section)
+- `docker-compose.yml` (add `./docker-backups:c:\backups` bind-mount)
+
+## Sequencing note
+
+The schema migration here is "current schema head + 1". REQ-008 is currently on a feature branch landing v9 → v10. REQ-009's `users.is_admin` migration should be v10 → v11 if REQ-008 merges first, or v9 → v10 if REQ-008 hasn't landed yet. The implementer should check `DatabaseMigrator.cs`'s current schema version stamp on `main` before assigning a version number — don't hardcode v11 in the requirement.
