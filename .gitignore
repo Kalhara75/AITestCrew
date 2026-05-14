@@ -44,6 +44,9 @@ docker-config/
 # Docker auth state (Playwright SSO sessions — refreshed via refresh-auth-state.ps1)
 docker-auth-state/
 
+# Docker backup target (scheduled SQLite snapshots — bind-mounted into the container)
+docker-backups/
+
 # Media Foundation DLLs copied from the host for the Windows container build
 docker-mf-dlls/
 

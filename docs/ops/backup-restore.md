@@ -9,6 +9,16 @@ This document covers:
 
 ---
 
+## First-time host setup
+
+Docker on Windows requires bind-mount source paths to exist before the container starts. Create the backup directory once on the host before the first `docker compose up`:
+
+```powershell
+New-Item -ItemType Directory -Path .\docker-backups -Force
+```
+
+The folder is git-ignored (per-host state). Skip this step and `docker compose up` will fail with `bind source path does not exist: ...\docker-backups`.
+
 ## How backups work
 
 DatabaseBackupService is a BackgroundService inside the WebApi. On each tick it calls the SQLite Online Backup API (SqliteConnection.BackupDatabase), streaming a consistent page-level snapshot of the live database. The source DB stays fully writable during the copy -- no locks, no downtime.
