@@ -23,7 +23,10 @@ public static class DatabaseMigrator
                 description TEXT NOT NULL DEFAULT '',
                 data        TEXT NOT NULL,
                 created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL
+                updated_at  TEXT NOT NULL,
+                version     INTEGER NOT NULL DEFAULT 1,
+                created_by  TEXT,
+                updated_by  TEXT
             );
 
             CREATE TABLE IF NOT EXISTS test_sets (
@@ -34,6 +37,10 @@ public static class DatabaseMigrator
                 created_at  TEXT NOT NULL,
                 last_run_at TEXT NOT NULL,
                 run_count   INTEGER NOT NULL DEFAULT 0,
+                version     INTEGER NOT NULL DEFAULT 1,
+                created_by  TEXT,
+                updated_by  TEXT,
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (module_id, id)
             );
 
@@ -209,12 +216,25 @@ public static class DatabaseMigrator
             CREATE INDEX IF NOT EXISTS idx_agent_auth_state_scope
                 ON agent_auth_state (env_key, surface);
 
+            -- v10: per-objective recording lock table.
+            CREATE TABLE IF NOT EXISTS recording_locks (
+                module_id      TEXT NOT NULL,
+                test_set_id    TEXT NOT NULL,
+                objective_id   TEXT,
+                job_id         TEXT NOT NULL,
+                locked_by      TEXT NOT NULL,
+                locked_at      TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS uix_recording_locks
+                ON recording_locks (module_id, test_set_id, COALESCE(objective_id, ''));
+
             CREATE TABLE IF NOT EXISTS schema_version (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
 
-            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '9');
+            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '10');
             """;
         cmd.ExecuteNonQuery();
 
@@ -371,9 +391,70 @@ public static class DatabaseMigrator
             createAuthState.ExecuteNonQuery();
         }
 
+        // ── v9 → v10: optimistic concurrency + recording locks ──
+        if (!ColumnExists(conn, "test_sets", "version"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE test_sets ADD COLUMN version INTEGER NOT NULL DEFAULT 1";
+            alter.ExecuteNonQuery();
+        }
+        if (!ColumnExists(conn, "test_sets", "created_by"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE test_sets ADD COLUMN created_by TEXT";
+            alter.ExecuteNonQuery();
+        }
+        if (!ColumnExists(conn, "test_sets", "updated_by"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE test_sets ADD COLUMN updated_by TEXT";
+            alter.ExecuteNonQuery();
+        }
+        if (!ColumnExists(conn, "test_sets", "updated_at"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE test_sets ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))";
+            alter.ExecuteNonQuery();
+        }
+        if (!ColumnExists(conn, "modules", "version"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE modules ADD COLUMN version INTEGER NOT NULL DEFAULT 1";
+            alter.ExecuteNonQuery();
+        }
+        if (!ColumnExists(conn, "modules", "created_by"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE modules ADD COLUMN created_by TEXT";
+            alter.ExecuteNonQuery();
+        }
+        if (!ColumnExists(conn, "modules", "updated_by"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE modules ADD COLUMN updated_by TEXT";
+            alter.ExecuteNonQuery();
+        }
+
+        using (var createLocks = conn.CreateCommand())
+        {
+            createLocks.CommandText = """
+                CREATE TABLE IF NOT EXISTS recording_locks (
+                    module_id      TEXT NOT NULL,
+                    test_set_id    TEXT NOT NULL,
+                    objective_id   TEXT,
+                    job_id         TEXT NOT NULL,
+                    locked_by      TEXT NOT NULL,
+                    locked_at      TEXT NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS uix_recording_locks
+                    ON recording_locks (module_id, test_set_id, COALESCE(objective_id, ''));
+                """;
+            createLocks.ExecuteNonQuery();
+        }
+
         // Ensure schema_version reflects the latest applied migration even on upgraded DBs
         using var bump = conn.CreateCommand();
-        bump.CommandText = "UPDATE schema_version SET value = '9' WHERE key = 'version' AND CAST(value AS INTEGER) < 9";
+        bump.CommandText = "UPDATE schema_version SET value = '10' WHERE key = 'version' AND CAST(value AS INTEGER) < 10";
         bump.ExecuteNonQuery();
     }
 
