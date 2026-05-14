@@ -185,6 +185,38 @@ When `ServerUrl` is configured in the Runner's `appsettings.json`, all recording
 - The same test set cannot be run concurrently — the API returns `409 Conflict`.
 - Module-level "Run All" runs are locked per module — only one module-level run at a time.
 
+### Concurrent editing — optimistic concurrency
+
+When two users edit the same test set simultaneously, the second save wins by default unless the caller supplies an `If-Match` header:
+
+- `PUT /api/modules/{moduleId}/test-sets/{id}` and `PUT /api/modules/{id}` accept an optional `If-Match: <version>` request header.
+- If the stored version does not match the client's version, the server returns `409 Conflict` with:
+  ```json
+  {
+    "error": "Test set was modified by another user",
+    "currentVersion": 7,
+    "yourVersion": 6,
+    "currentUpdatedBy": "Alice",
+    "currentUpdatedAt": "2026-05-14T03:21:08Z"
+  }
+  ```
+- When `If-Match` is absent (all pre-REQ-008 callers, CLI runner modes) the write proceeds unconditionally — legacy behaviour is preserved.
+- The React UI caches `version` on load and sends `If-Match` on save. A 409 response prompts the user to reload the latest version before retrying.
+
+### Recording locks
+
+While a `POST /api/recordings` job is `Queued`, `Claimed`, or `Running` against a test set + objective, the system holds a recording lock:
+
+- A second `POST /api/recordings` for the same objective returns `409 Conflict { error: "Recording in progress on this objective by <user>" }`.
+- The lock is released automatically when the job reaches a terminal state (Completed, Failed, Cancelled) or when the run is cancelled via `POST /api/runs/{id}/cancel`.
+- A background janitor sweeps stale locks every 30 s — covering crash-without-deregister.
+
+### Last-edited display
+
+- Test set cards on the dashboard show **"Edited X min ago by Y"** when `updatedAt` is populated (Sqlite mode only).
+- `GET /api/modules/{id}/test-sets` and the detail endpoint return `version`, `updatedBy`, and `updatedAt` fields.
+- Pre-migration rows (upgraded from schema v9) have null `updatedBy` — shown as "system" in the UI.
+
 ### Deployment options
 
 **1. Docker Compose (Windows containers)**

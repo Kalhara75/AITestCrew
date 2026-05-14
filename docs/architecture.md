@@ -1128,16 +1128,18 @@ TestOrchestrator.RunAsync(objective, Normal)
 
 The persistence layer supports two backends (see Persistence Layer section above). SQLite is required for multi-user features (auth, audit trail).
 
-**SQLite schema** — Seven tables:
+**SQLite schema** — Nine tables (schema v10):
 
 | Table | Purpose |
 |---|---|
-| `modules` | Module metadata + full JSON in `data TEXT` column |
-| `test_sets` | Test set metadata (module_id FK) + full JSON in `data TEXT` |
+| `modules` | Module metadata + full JSON in `data TEXT` column; `version`, `created_by`, `updated_by` for optimistic concurrency |
+| `test_sets` | Test set metadata (module_id FK) + full JSON in `data TEXT`; `version`, `created_by`, `updated_by`, `updated_at` |
 | `execution_runs` | Run metadata (test_set_id, status, timestamps) + full JSON in `data TEXT` |
 | `users` | Id, Name, ApiKey (unique, `atc_` prefixed), Role, timestamps |
 | `active_runs` | In-progress individual runs (for crash recovery) |
 | `active_module_runs` | In-progress module-level runs (for crash recovery) |
+| `recording_locks` | Per-objective serialisation lock for active recording jobs (Queued/Claimed/Running) |
+| `run_queue` | Distributed job queue for agent-mode execution |
 | `schema_version` | Single-row version tracker for migrations |
 
 Design: structured columns are used for queries and filtering; the `data TEXT` column holds the full serialized model as JSON for lossless round-tripping. WAL mode is enabled for concurrent read access.
@@ -1163,10 +1165,52 @@ The original architecture used a global single-run lock — only one test set co
 
 ### Audit trail
 
-- `PersistedModule` gained `CreatedBy` and `LastModifiedBy` fields — populated from the authenticated user.
-- `PersistedTestSet` gained `CreatedBy` and `LastModifiedBy` fields.
+- `PersistedModule` gained `CreatedBy`, `LastModifiedBy`, and `Version` fields — populated from the authenticated user.
+- `PersistedTestSet` gained `CreatedBy`, `LastModifiedBy`, `UpdatedAt`, and `Version` fields.
 - `PersistedExecutionRun` gained `StartedBy` (user ID) and `StartedByName` (display name) fields.
 - File-based backend: fields are present but always null (no auth in file mode).
+- The `LastModifiedBy` field on modules and test sets is mapped to the `updated_by` SQLite column and surfaced as `updatedBy` in API responses.
+- Pre-migration rows (upgraded from schema v9) have `created_by` / `updated_by` NULL — treated as "system" in the UI.
+
+### Multi-user collaboration: optimistic concurrency + recording locks
+
+When multiple QA engineers share one WebApi, two safety mechanisms prevent silent data loss.
+
+#### Optimistic concurrency on writes
+
+Every `modules` and `test_sets` row carries a monotonic `version INTEGER` column (default 1, bumped on every successful write). Callers that want conflict detection send an `If-Match: <version>` request header with their `PUT` request.
+
+Repository behaviour: the UPDATE includes `WHERE version = $expected`. If 0 rows are updated (version mismatch), `SqliteTestSetRepository` reads the current row and throws `ConcurrencyException` carrying `currentVersion`, `yourVersion`, `currentUpdatedBy`, and `currentUpdatedAt`. The endpoint converts this to HTTP 409 with a JSON body containing those four fields plus a human-readable `error` string.
+
+**Legacy compatibility** — when the `If-Match` header is absent, the repository skips version checking (`null` for `expectedVersion`). All existing callers continue to work without modification.
+
+Key types:
+- `Core/Exceptions/ConcurrencyException.cs` — typed exception carrying both versions and last-writer info
+- `ITestSetRepository.SaveAsync(testSet, moduleId, int? expectedVersion, string? userId)` — versioned overload
+- `SqliteTestSetRepository` — conditional UPDATE path; `SqliteModuleRepository` — same pattern
+
+#### Recording locks
+
+While a recording job is `Queued`, `Claimed`, or `Running`, a row exists in `recording_locks` keyed by `(module_id, test_set_id, objective_id)`. `objective_id` is NULL for whole-test-set recordings (RecordSetup, full re-record). A unique index on `(module_id, test_set_id, COALESCE(objective_id, ''))` enforces one active recording per objective.
+
+Lock lifecycle:
+1. **Acquire** — `POST /api/recordings` calls `IRecordingLockRepository.AcquireAsync` before enqueuing. Unique-constraint violation → `409 Conflict { error: "Recording in progress on this objective by <user>" }`.
+2. **Release** — `JobExecutor` calls `TryReleaseLockAsync(job.JobId)` after the recording finishes (Completed or Failed). `POST /api/runs/{id}/cancel` also releases the lock.
+3. **Janitor sweep** — `AgentHeartbeatMonitor` calls `SqliteRecordingLockRepository.SweepStaleLocksAsync` on every 30 s tick. It deletes locks whose `job_id` is no longer present in `run_queue` with a live status — covers crash-without-deregister.
+
+The recording lock is separate from the execution run lock (`IRunTracker.HasActiveRunForTestSet`) — both may coexist.
+
+Key types:
+- `Core/Interfaces/IRecordingLockRepository.cs` — `AcquireAsync`, `ReleaseAsync`, `GetLockAsync`, `SweepStaleLocksAsync`
+- `Storage/Sqlite/SqliteRecordingLockRepository.cs` — SQLite implementation; catches `SqliteException(code=19)` for graceful 409 messages
+- `WebApi/Services/AgentHeartbeatMonitor.cs` — sweep on every 30 s tick
+- `Runner/AgentMode/JobExecutor.cs` — lock release on terminal recording state
+
+#### UI awareness
+
+- Test set cards on the dashboard show "Edited X min ago by Y" when `updatedAt` is present.
+- `GET /api/modules/{id}/test-sets` and the detail endpoint surface `version`, `updatedBy`, `updatedAt`.
+- The frontend caches `version` from load and sends `If-Match` on save; a 409 response triggers a "reload from server" prompt.
 
 ### Config externalization
 
