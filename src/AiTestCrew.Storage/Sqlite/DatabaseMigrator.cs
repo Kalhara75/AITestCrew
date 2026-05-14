@@ -412,9 +412,18 @@ public static class DatabaseMigrator
         }
         if (!ColumnExists(conn, "test_sets", "updated_at"))
         {
-            using var alter = conn.CreateCommand();
-            alter.CommandText = "ALTER TABLE test_sets ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))";
-            alter.ExecuteNonQuery();
+            // SQLite's ALTER TABLE ADD COLUMN forbids non-constant defaults, so we
+            // add the column nullable and backfill pre-migration rows from created_at.
+            // The CREATE TABLE path uses `NOT NULL DEFAULT (datetime('now'))` for fresh DBs;
+            // application writes always supply updated_at, so the looser constraint here is safe.
+            using (var alter = conn.CreateCommand())
+            {
+                alter.CommandText = "ALTER TABLE test_sets ADD COLUMN updated_at TEXT";
+                alter.ExecuteNonQuery();
+            }
+            using var backfill = conn.CreateCommand();
+            backfill.CommandText = "UPDATE test_sets SET updated_at = created_at WHERE updated_at IS NULL";
+            backfill.ExecuteNonQuery();
         }
         if (!ColumnExists(conn, "modules", "version"))
         {
