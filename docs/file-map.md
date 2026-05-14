@@ -137,6 +137,7 @@ The top-level `CLAUDE.md` keeps only the entry-point files needed to navigate th
 | `src/AiTestCrew.Runner/RemoteRepositories/ApiClientRunQueueRepository.cs` | HTTP-backed `IRunQueueRepository` — agent enqueues deferred / retry rows via `POST /api/queue`. Non-hot-path methods throw `NotSupportedException` |
 | `src/AiTestCrew.Runner/RemoteRepositories/ApiClientPendingVerificationRepository.cs` | HTTP-backed `IPendingVerificationRepository` over `/api/pending-verifications/*` |
 | `src/AiTestCrew.Agents/AseXmlAgent/AseXmlDeliveryAgent.cs` | Delivery agent with deferred path — `TryEnqueueDeferredVerifications` + `DeferredVerifyAsync` (retry-via-reenqueue) + `TryFinaliseParentRunAsync` (transactional merge + summary regeneration) |
+|  | AgentPicker dropdown (REQ-010) -- filters to Execution/Both agents by capability;  (colour-coded) + ; mounts in TriggerRunButton + TriggerObjectiveRunButton |
 | `ui/src/components/AgentsPanel.tsx` | Dashboard panel — agents with status dot, capabilities, owner, current job |
 | `ui/src/components/QueueBanner.tsx` | Dashboard banner — active queued/claimed/running jobs + cancel button; deferred entries (`notBeforeAt` in future) show "Deferred verification — next attempt in ~N min" |
 | `ui/src/components/StepList.tsx` | Step rendering; `AwaitingVerification` steps get a cyan ⏳ pill and live countdown parsed from `firstDueAtUtc` in step detail |

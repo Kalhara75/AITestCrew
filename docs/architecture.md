@@ -1432,6 +1432,30 @@ Agents authenticate via the owning user's API key (the existing `X-Api-Key` midd
 
 ---
 
+### Agent roles + run-trigger pinning (REQ-010)
+
+By default every agent can claim any job matching its capabilities, which means a QA engineer recording on their laptop can accidentally have their browser hijacked by an execution run. REQ-010 adds two orthogonal filters to the claim path.
+
+**Agent role** — each agent has a  column (default , back-compat with all existing agents):
+
+| Role | Claims | Skips |
+|---|---|---|
+|  | , , ,  jobs |  jobs |
+|  |  jobs (including deferred-verify + verify-only) | Recording kinds |
+|  (default) | Everything the capabilities allow | Nothing |
+
+Set at registration:  (CLI flag) or  in appsettings.
+
+**Required tags** — free-form labels stored as a JSON array on the agent (). A  can carry ; the claim loop rejects any agent whose tag set is not a superset of the job's tags. Empty/null required_tags = any agent.
+
+**Preferred-agent pin** —  locks a job to a specific agent by ID. Only that agent's claim attempt succeeds; all other agents skip the entry. The  run-trigger accepts  and  fields, with the same pre-validation as the recording endpoint (agent must be registered, have the right capability, and have role  or ).
+
+**Claim-deadline sweep** —  sweeps jobs older than  (default 600) from  → , writing the reason (e.g. "No online agent with required role/tags claimed within 600s") into the  column.  (default) keeps the pin active until the deadline;  removes the pin so any matching agent can claim instead.
+
+**Schema change** — migration v11 → v12 adds  and  to , and  +  to . All ALTERs are idempotent ( guard before each column add).
+
+**UI** — the  component surfaces a dropdown in the run-trigger button group: "Any execution agent" (default) or a specific online Execution/Both agent. The agents panel shows a role chip (colour-coded: Recording=purple, Execution=blue, Both=grey) and tag chips.
+
 ## Deferred Post-Delivery Verification
 
 aseXML delivery objectives frequently attach a UI verification that only becomes meaningful after Bravo has processed the uploaded file — typically a 60–180 s delay. Running that delay inline with `Task.Delay` would hold the executing agent slot open for the whole period; with `MaxParallelAgents = 4` and many concurrent deliveries, most slots would spend their time sleeping. Deferred verification decouples the wait from the executing thread: after a delivery uploads, its verifications are queued with a future claim time and the agent slot is freed immediately. When the due time arrives, any compatible agent on its existing poll loop claims and runs the verification. Failed attempts re-enqueue (instead of in-handler polling) so the agent slot is held only during an actual attempt — ~10–30 s — not across the entire wait window.

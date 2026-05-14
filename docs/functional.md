@@ -1050,6 +1050,16 @@ dotnet run --project src/AiTestCrew.Runner -- --agent --capabilities UI_Web_Blaz
 
 `--name` defaults to the machine's hostname (`$env:COMPUTERNAME`). `--capabilities` defaults to all three UI targets (`UI_Web_Blazor,UI_Web_MVC,UI_Desktop_WinForms`). The agent registers, sends heartbeats every 30s on a dedicated task, polls the job queue every 10s, and deregisters gracefully on Ctrl+C. Requires `TestEnvironment.ServerUrl` and `ApiKey` to be set so it can reach the shared server. See `docs/deployment.md#local-agent-setup-phase-4` for the team setup.
 
+**Agent role flags (REQ-010):**
+
+
+
+-  (default ) -- restricts which job kinds the agent claims. A QA recording machine should use ; a CI server should use .
+-  (default empty) -- free-form pool labels. A job enqueued with  is only claimable by agents whose tag set is a superset.
+- Both flags fall back to  /  in appsettings when not passed on the CLI.
+
+The run-trigger in the dashboard picks up online Execution/Both agents and offers a dropdown: "Any execution agent" (default) or a specific agent by name. Pre-validation at enqueue time returns 400 if the named agent isn't registered, lacks the capability, or has the wrong role.
+
 **Behaviour notes:**
 - **Screenshots** captured by the Web UI or Desktop UI agents (on step failure) are saved locally first, then uploaded to the server via `POST /api/screenshots` so the dashboard's execution-detail page can render them. Upload is silent on success; failures are logged as warnings but don't fail the run.
 - **Legacy MVC serialization** — `UI_Web_MVC` objectives run sequentially inside one agent process via a static semaphore in `LegacyWebUiTestAgent`. This avoids 15-second Playwright timeouts caused by single-session enforcement on the legacy backend when multiple objectives in a set run concurrently. Blazor, API, aseXML, and Desktop agents still parallelize up to `MaxParallelAgents`.
