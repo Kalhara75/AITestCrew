@@ -81,7 +81,7 @@ public static class RecordingEndpoints
                     return Results.BadRequest(new { error = $"Unknown kind '{request.Kind}'. Expected Record, RecordSetup, RecordVerification, or AuthSetup." });
             }
 
-            // If agentId is specified, validate it's online and has the right capability
+            // If agentId is specified, validate it's online, has the right capability, and is a recording-capable role
             if (!string.IsNullOrWhiteSpace(request.AgentId))
             {
                 var agent = await agentRepo.GetByIdAsync(request.AgentId);
@@ -89,9 +89,12 @@ public static class RecordingEndpoints
                     return Results.BadRequest(new { error = $"Agent '{request.AgentId}' is not registered" });
                 if (!agent.Capabilities.Contains(request.Target))
                     return Results.BadRequest(new { error = $"Agent '{agent.Name}' does not advertise capability '{request.Target}'" });
+                if (agent.Role != "Recording" && agent.Role != "Both")
+                    return Results.BadRequest(new { error = $"Agent '{agent.Name}' has role '{agent.Role}' — only Recording or Both agents can perform recordings" });
             }
 
             var user = ctx.Items["User"] as User;
+            var reqTags = request.RequiredTags?.Where(t => !string.IsNullOrWhiteSpace(t)).ToList() ?? new();
             var entry = new RunQueueEntry
             {
                 Id = Guid.NewGuid().ToString("N")[..12],
@@ -103,7 +106,8 @@ public static class RecordingEndpoints
                 JobKind = request.Kind,
                 RequestedBy = user?.Id,
                 RequestJson = requestJson,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                RequiredTags = reqTags,
             };
             // Acquire a recording lock when kind targets a specific objective or test set.
             // AuthSetup jobs don't lock — they have no moduleId/testSetId.
@@ -151,4 +155,6 @@ public record StartRecordingRequest(
     // Slice 2: parent-kind + index lets RecordVerification attach the
     // captured UI payload to any parent step type, not just aseXML delivery.
     string? ParentKind = null,
-    int? ParentStepIndex = null);
+    int? ParentStepIndex = null,
+    // Optional pool-tag filter for symmetry with RunEndpoints
+    string[]? RequiredTags = null);

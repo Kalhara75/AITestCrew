@@ -690,6 +690,15 @@ if (cli.AgentMode)
     if (caps.Length == 0)
         caps = new[] { "UI_Web_Blazor", "UI_Web_MVC", "UI_Desktop_WinForms" };
 
+    // Role: CLI flag → config → default Both
+    var agentRoleValue = !string.IsNullOrWhiteSpace(cli.AgentRole) ? cli.AgentRole
+        : !string.IsNullOrWhiteSpace(envConfig.AgentRole) ? envConfig.AgentRole
+        : "Both";
+    // Tags: CLI flag → config → empty
+    var agentTagsRaw = !string.IsNullOrWhiteSpace(cli.AgentTags) ? cli.AgentTags
+        : envConfig.AgentTags ?? "";
+    var agentTagsList = agentTagsRaw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
     var agentLogger = host.Services.GetRequiredService<ILogger<AiTestCrew.Runner.AgentMode.AgentRunner>>();
     var agentClient = new AiTestCrew.Runner.AgentMode.AgentClient(envConfig.ServerUrl, envConfig.ApiKey);
     var jobExecutor = new AiTestCrew.Runner.AgentMode.JobExecutor(
@@ -703,7 +712,8 @@ if (cli.AgentMode)
     var authStateScanner = new AiTestCrew.Agents.Auth.AuthStateScanner(
         host.Services.GetRequiredService<IEnvironmentResolver>());
     var agentRunner = new AiTestCrew.Runner.AgentMode.AgentRunner(
-        agentClient, jobExecutor, envConfig, agentLogger, agentName, caps, authStateScanner);
+        agentClient, jobExecutor, envConfig, agentLogger, agentName, caps, authStateScanner,
+        role: agentRoleValue, tags: agentTagsList);
 
     using var shutdownCts = new CancellationTokenSource();
     Console.CancelKeyPress += (_, e) =>
@@ -1011,6 +1021,7 @@ static CliArgs ParseArgs(string[] args)
     VerifyStepFilter? verifyStepFilter = null;
     bool agentMode = false;
     string? agentName = null, agentCapabilities = null;
+    string? agentRole = null, agentTags = null;
     bool teardownDryRun = false, skipTeardown = false;
     bool noDeferVerifications = false;
     var mode = RunMode.Normal;
@@ -1187,6 +1198,16 @@ static CliArgs ParseArgs(string[] args)
                 break;
             case "--capabilities":
                 throw new ArgumentException("--capabilities requires a comma-separated list.");
+            case "--role" when i + 1 < args.Length:
+                agentRole = args[++i];
+                break;
+            case "--role":
+                throw new ArgumentException("--role requires Recording, Execution, or Both.");
+            case "--tags" when i + 1 < args.Length:
+                agentTags = args[++i];
+                break;
+            case "--tags":
+                throw new ArgumentException("--tags requires a comma-separated list of pool tags.");
             case "--teardown-dry-run":
                 teardownDryRun = true;
                 break;
@@ -1238,6 +1259,8 @@ static CliArgs ParseArgs(string[] args)
         AgentMode = agentMode,
         AgentName = agentName,
         AgentCapabilities = agentCapabilities,
+        AgentRole = agentRole,
+        AgentTags = agentTags,
         TeardownDryRun = teardownDryRun,
         SkipTeardown = skipTeardown,
         NoDeferVerifications = noDeferVerifications,
@@ -1277,6 +1300,8 @@ class CliArgs
     public bool AgentMode { get; init; }
     public string? AgentName { get; init; }
     public string? AgentCapabilities { get; init; }
+    public string? AgentRole { get; init; }
+    public string? AgentTags { get; init; }
 
     /// <summary>
     /// --objective &lt;id&gt;. Context-dependent:

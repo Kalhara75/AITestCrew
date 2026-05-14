@@ -53,7 +53,7 @@ public sealed class DatabaseBackupService : BackgroundService
             LastError = _lastError,
             NextScheduledAt = _nextScheduledAt,
             TotalBackupsOnDisk = files.Count,
-            OldestBackupAt = files.Count > 0 ? ParseTimestamp(files.Min(f => f.Name) ?? string.Empty) : null,
+            OldestBackupAt = files.Count > 0 ? ParseTimestamp(files.Min(f => f.Name)) : null,
         };
     }
 

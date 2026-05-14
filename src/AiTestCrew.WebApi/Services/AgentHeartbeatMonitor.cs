@@ -37,6 +37,9 @@ public sealed class AgentHeartbeatMonitor : BackgroundService
     /// </summary>
     private DateTime _lastRateLimiterSweepAt = DateTime.UtcNow;
 
+    /// <summary>Last time the role-distribution log line was emitted (5-minute cadence).</summary>
+    private DateTime _lastRoleLogAt = DateTime.UtcNow;
+
     public AgentHeartbeatMonitor(IServiceProvider sp, ILogger<AgentHeartbeatMonitor> logger, TimeSpan timeout)
     {
         _sp = sp;
@@ -54,7 +57,9 @@ public sealed class AgentHeartbeatMonitor : BackgroundService
             await SweepExpiredPendingVerificationsAsync();
             await SweepAuthRefreshesAsync();
             await SweepStaleRecordingLocksAsync();
+            await SweepQueueClaimDeadlinesAsync();
             SweepRateLimiterIfDue();
+            LogRoleDistributionIfDue();
 
             try
             {
@@ -316,6 +321,67 @@ public sealed class AgentHeartbeatMonitor : BackgroundService
         catch (Exception ex)
         {
             _logger.LogError(ex, "AgentHeartbeatMonitor: rate-limiter sweep failed");
+        }
+    }
+
+    /// <summary>
+    /// Marks run_queue entries that have been Queued for longer than QueueClaimDeadlineSeconds
+    /// without being claimed as Failed, with a reason explaining which role/tags were missing.
+    /// This prevents jobs sitting in Queued indefinitely when no matching agent is online.
+    /// </summary>
+    private async Task SweepQueueClaimDeadlinesAsync()
+    {
+        try
+        {
+            var queueRepo = _sp.GetService<IRunQueueRepository>() as AiTestCrew.Agents.Persistence.Sqlite.SqliteRunQueueRepository;
+            var config = _sp.GetRequiredService<TestEnvironmentConfig>();
+            if (queueRepo is null) return;
+
+            var deadlineSeconds = Math.Max(60, config.QueueClaimDeadlineSeconds);
+            var cutoff = DateTime.UtcNow.AddSeconds(-deadlineSeconds);
+            await queueRepo.ExpireUnclaimedAsync(cutoff,
+                $"No online agent with required role/tags claimed within {deadlineSeconds}s");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "AgentHeartbeatMonitor: queue-claim-deadline sweep failed");
+        }
+    }
+
+    /// <summary>
+    /// Emits a role-distribution log line on a 5-minute cadence so operators can see
+    /// which roles are represented among currently Online agents.
+    /// </summary>
+    private void LogRoleDistributionIfDue()
+    {
+        try
+        {
+            var now = DateTime.UtcNow;
+            if (now - _lastRoleLogAt < TimeSpan.FromMinutes(5)) return;
+            _lastRoleLogAt = now;
+
+            var agentRepo = _sp.GetService<IAgentRepository>();
+            if (agentRepo is null) return;
+
+            // Fire-and-forget inside a sync method — the log is best-effort diagnostics.
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var agents = await agentRepo.ListAllAsync();
+                    var online = agents.Where(a => a.Status == "Online" || a.Status == "Busy").ToList();
+                    var byRole = online.GroupBy(a => string.IsNullOrEmpty(a.Role) ? "Both" : a.Role)
+                        .OrderBy(g => g.Key)
+                        .Select(g => $"{g.Count()} {g.Key}");
+                    _logger.LogInformation("Agent role distribution (online): {Distribution}",
+                        string.Join(", ", byRole));
+                }
+                catch { /* non-critical */ }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "AgentHeartbeatMonitor: role-distribution log failed");
         }
     }
 

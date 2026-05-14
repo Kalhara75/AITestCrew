@@ -86,4 +86,18 @@ public class RunQueueEntry
     /// agent picks the entry back up. Null on ordinary entries.
     /// </summary>
     public string? AuthRefreshId { get; set; }
+
+    /// <summary>
+    /// When set, only the agent with this id may claim this entry.
+    /// The janitor applies <c>PreferredAgentFallbackPolicy</c> if the
+    /// preferred agent is offline past the claim deadline.
+    /// Null = any role+capability-matching agent may claim.
+    /// </summary>
+    public string? PreferredAgentId { get; set; }
+
+    /// <summary>
+    /// JSON-serialised list of pool tags that a claiming agent must supply as a superset.
+    /// Null / empty list = no tag restriction.
+    /// </summary>
+    public List<string> RequiredTags { get; set; } = new();
 }

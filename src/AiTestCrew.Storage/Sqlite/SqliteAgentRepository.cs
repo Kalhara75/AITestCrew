@@ -18,12 +18,14 @@ public sealed class SqliteAgentRepository : IAgentRepository
         using var cmd = conn.CreateCommand();
         var now = DateTime.UtcNow;
         var capsJson = JsonSerializer.Serialize(agent.Capabilities, JsonOpts.Value);
+        var tagsJson = JsonSerializer.Serialize(agent.Tags, JsonOpts.Value);
+        var role = string.IsNullOrWhiteSpace(agent.Role) ? "Both" : agent.Role;
 
         // Upsert clears force_quit_requested: a fresh registration means a fresh process,
         // so any pending force-quit signal from the previous run must not re-fire.
         cmd.CommandText = """
-            INSERT INTO agents (id, name, user_id, capabilities, version, status, last_seen_at, registered_at, force_quit_requested)
-            VALUES ($id, $name, $userId, $caps, $version, $status, $now, $registered, 0)
+            INSERT INTO agents (id, name, user_id, capabilities, version, status, last_seen_at, registered_at, force_quit_requested, role, tags)
+            VALUES ($id, $name, $userId, $caps, $version, $status, $now, $registered, 0, $role, $tags)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 user_id = excluded.user_id,
@@ -31,7 +33,9 @@ public sealed class SqliteAgentRepository : IAgentRepository
                 version = excluded.version,
                 status = excluded.status,
                 last_seen_at = excluded.last_seen_at,
-                force_quit_requested = 0
+                force_quit_requested = 0,
+                role = excluded.role,
+                tags = excluded.tags
             """;
         cmd.Parameters.AddWithValue("$id", agent.Id);
         cmd.Parameters.AddWithValue("$name", agent.Name);
@@ -41,6 +45,8 @@ public sealed class SqliteAgentRepository : IAgentRepository
         cmd.Parameters.AddWithValue("$status", agent.Status);
         cmd.Parameters.AddWithValue("$now", now.ToString("O"));
         cmd.Parameters.AddWithValue("$registered", (agent.RegisteredAt == default ? now : agent.RegisteredAt).ToString("O"));
+        cmd.Parameters.AddWithValue("$role", role);
+        cmd.Parameters.AddWithValue("$tags", tagsJson);
         await cmd.ExecuteNonQueryAsync();
 
         agent.LastSeenAt = now;
@@ -119,7 +125,7 @@ public sealed class SqliteAgentRepository : IAgentRepository
     }
 
     private const string SelectSql =
-        "SELECT id, name, user_id, capabilities, version, status, last_seen_at, registered_at, force_quit_requested FROM agents";
+        "SELECT id, name, user_id, capabilities, version, status, last_seen_at, registered_at, force_quit_requested, role, tags FROM agents";
 
     private static Agent Read(SqliteDataReader r) => new()
     {
@@ -131,6 +137,8 @@ public sealed class SqliteAgentRepository : IAgentRepository
         Status = r.GetString(5),
         LastSeenAt = DateTime.Parse(r.GetString(6)).ToUniversalTime(),
         RegisteredAt = DateTime.Parse(r.GetString(7)).ToUniversalTime(),
-        ForceQuitRequested = r.GetInt32(8) != 0
+        ForceQuitRequested = r.GetInt32(8) != 0,
+        Role = r.IsDBNull(9) ? "Both" : r.GetString(9),
+        Tags = r.IsDBNull(10) ? new() : (JsonSerializer.Deserialize<List<string>>(r.GetString(10), JsonOpts.Value) ?? new()),
     };
 }

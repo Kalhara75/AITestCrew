@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { RoleChip, TagChip } from './AgentPicker';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchAgents, forceQuitAgent } from '../api/agents';
 import type { AgentSummary } from '../types';
@@ -112,6 +113,8 @@ function AgentRow({ agent }: { agent: AgentSummary }) {
           {agent.capabilities.map(c => (
             <span key={c} style={capPill}>{c}</span>
           ))}
+          <RoleChip role={agent.role ?? 'Both'} />
+          {(agent.tags ?? []).map(t => <TagChip key={t} tag={t} />)}
         </div>
         {forceError && (
           <div style={{ fontSize: 12, color: '#991b1b', marginTop: 4 }}>{forceError}</div>

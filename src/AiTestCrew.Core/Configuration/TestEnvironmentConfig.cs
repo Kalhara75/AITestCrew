@@ -43,7 +43,7 @@ public class TestEnvironmentConfig
     // --- Authentication ---
     // Set AuthToken to inject credentials into every request automatically.
     // AuthScheme: "Bearer" (default), "Basic", or "None"
-    // AuthHeaderName: header to use — defaults to "Authorization".
+    // AuthHeaderName: header to use ï¿½ defaults to "Authorization".
     //   For API-key-style auth (e.g. X-Api-Key) change AuthScheme to "None"
     //   and set AuthHeaderName + AuthToken together.
     public string? AuthToken { get; set; }
@@ -85,7 +85,7 @@ public class TestEnvironmentConfig
     public int AgentHeartbeatTimeoutSeconds { get; set; } = 120;
 
     // --- Runner agent mode (Phase 4) ---
-    // Agent-mode identifier — persists across restarts so the same machine keeps the same id.
+    // Agent-mode identifier ï¿½ persists across restarts so the same machine keeps the same id.
     public string AgentName { get; set; } = "";
     // Target types this agent can execute (e.g. "UI_Web_Blazor,UI_Web_MVC,UI_Desktop_WinForms").
     // Empty = default to all three UI target types.
@@ -94,6 +94,20 @@ public class TestEnvironmentConfig
     public int AgentPollIntervalSeconds { get; set; } = 10;
     // Heartbeat cadence.
     public int AgentHeartbeatIntervalSeconds { get; set; } = 30;
+    // Agent role: Recording | Execution | Both (default).
+    // Recording = only claim Record/RecordSetup/RecordVerification/AuthSetup jobs.
+    // Execution = only claim Run jobs.
+    // Both = claim any job matching capability (legacy behaviour).
+    public string AgentRole { get; set; } = "Both";
+    // Comma-separated pool tags this agent carries (e.g. "ci,nightly").
+    // The queue required_tags filter must be a subset of these tags for this agent to claim.
+    public string AgentTags { get; set; } = "";
+    // Seconds a Queued job may wait without being claimed before the janitor marks it Failed.
+    public int QueueClaimDeadlineSeconds { get; set; } = 600;
+    // Policy when a preferred-agent job reaches the deadline with no claim:
+    // "Fail" (default) marks the job Failed with a descriptive error.
+    // "Release" clears the preferred_agent pin so any role-matching agent can claim.
+    public string PreferredAgentFallbackPolicy { get; set; } = "Fail";
 
     // --- Playwright browser settings ---
     public string PlaywrightBrowser { get; set; } = "chromium";  // chromium | firefox | webkit
@@ -146,7 +160,7 @@ public class TestEnvironmentConfig
     public bool DataTeardownEnabled { get; set; } = false;
 
     /// <summary>
-    /// Top-level DB connection registry — fallback when a per-env block
+    /// Top-level DB connection registry ï¿½ fallback when a per-env block
     /// (<see cref="EnvironmentConfig.DbConnections"/>) doesn't define the key.
     /// Used by <see cref="AiTestCrew.Core.Interfaces.IEnvironmentResolver.ResolveDbConnectionString"/>.
     /// Entries are keyed by logical connection name (e.g. <c>"BravoDb"</c>,
@@ -155,7 +169,7 @@ public class TestEnvironmentConfig
     public Dictionary<string, string> DbConnections { get; set; } = new();
 
     /// <summary>
-    /// Top-level Azure Service Bus namespace registry — fallback when a
+    /// Top-level Azure Service Bus namespace registry ï¿½ fallback when a
     /// per-env block (<see cref="EnvironmentConfig.ServiceBusConnections"/>)
     /// doesn't define the key. Used by
     /// <see cref="AiTestCrew.Core.Interfaces.IEnvironmentResolver.ResolveServiceBusConnection"/>.
@@ -166,7 +180,7 @@ public class TestEnvironmentConfig
     /// Stored-procedure name prefixes that teardown SQL is allowed to invoke
     /// via <c>EXEC</c>. Procs whose name does not start with one of these
     /// prefixes (case-insensitive) are rejected by <c>SqlGuardrails</c>.
-    /// Default: <c>["usp_"]</c> — pairs with the standard convention for
+    /// Default: <c>["usp_"]</c> ï¿½ pairs with the standard convention for
     /// dev-installed teardown procs shipped via the data-pack runner. Set to
     /// an empty array to disallow EXEC entirely.
     /// </summary>
@@ -269,7 +283,7 @@ public class ChatConfig
     /// <summary>
     /// How many conversations to retain per user. Older threads beyond this
     /// cap are auto-pruned on the next conversation-create. Set to 0 to disable
-    /// the cap (unbounded — not recommended).
+    /// the cap (unbounded ï¿½ not recommended).
     /// </summary>
     public int MaxConversationsPerUser { get; set; } = 20;
 
@@ -319,7 +333,7 @@ public class AseXmlConfig
 
     /// <summary>
     /// Waits = this value run synchronously on the delivery agent even when
-    /// <see cref="DeferVerifications"/> is true — the queueing/agent-hop overhead
+    /// <see cref="DeferVerifications"/> is true ï¿½ the queueing/agent-hop overhead
     /// isn't worth it for short delays.
     /// </summary>
     public int VerificationDeferThresholdSeconds { get; set; } = 30;
@@ -355,7 +369,7 @@ public class BravoDbConfig
 {
     /// <summary>
     /// SQL Server connection string for the Bravo application DB.
-    /// Stored in appsettings.json only — never in appsettings.example.json.
+    /// Stored in appsettings.json only ï¿½ never in appsettings.example.json.
     /// </summary>
     public string ConnectionString { get; set; } = "";
 }

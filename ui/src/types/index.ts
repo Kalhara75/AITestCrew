@@ -492,6 +492,9 @@ export interface TriggerRunRequest {
   verificationWaitOverride?: number;
   environmentKey?: string;
   verifyStepFilter?: VerifyStepFilter;
+  preferredAgentId?: string;
+  requiredTags?: string[];
+  fallbackToAnyAgent?: boolean;
 }
 
 export interface EnvironmentInfo {
@@ -582,6 +585,9 @@ export interface AgentSummary {
   capabilities: string[];
   version: string | null;
   status: 'Online' | 'Offline' | 'Busy' | string;
+  /** Agent role: Recording | Execution | Both */
+  role: string;
+  tags: string[];
   lastSeenAt: string;
   registeredAt: string;
   currentJob: {
@@ -648,6 +654,10 @@ export interface QueueEntry {
   // Seamless-auth pause (v8): set when this entry is parked on an outstanding
   // auth-refresh; the janitor releases the entry when the refresh terminates.
   authRefreshId?: string | null;
+
+  // Role/tag pinning (v12)
+  preferredAgentId?: string | null;
+  requiredTags?: string[];
 }
 
 export type AuthSurface = 'Api' | 'WebBlazor' | 'WebMvc';

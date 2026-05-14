@@ -100,7 +100,9 @@ public static class DatabaseMigrator
                 status                TEXT NOT NULL,
                 last_seen_at          TEXT NOT NULL,
                 registered_at         TEXT NOT NULL,
-                force_quit_requested  INTEGER NOT NULL DEFAULT 0
+                force_quit_requested  INTEGER NOT NULL DEFAULT 0,
+                role                  TEXT NOT NULL DEFAULT 'Both',
+                tags                  TEXT NOT NULL DEFAULT '[]'
             );
 
             CREATE TABLE IF NOT EXISTS run_queue (
@@ -123,7 +125,9 @@ public static class DatabaseMigrator
                 deadline_at            TEXT,
                 attempt_count          INTEGER NOT NULL DEFAULT 0,
                 parent_queue_entry_id  TEXT,
-                parent_run_id          TEXT
+                parent_run_id          TEXT,
+                required_tags          TEXT,
+                preferred_agent        TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_run_queue_claimed_by
@@ -235,7 +239,7 @@ public static class DatabaseMigrator
                 value TEXT NOT NULL
             );
 
-            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '11');
+            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '12');
             """;
         cmd.ExecuteNonQuery();
 
@@ -482,6 +486,36 @@ public static class DatabaseMigrator
             backfill.CommandText = "UPDATE users SET is_admin = 1";
             backfill.ExecuteNonQuery();
         }
+
+        // -- v11 -> v12: agent role + tags; queue preferred_agent + required_tags --
+        if (!ColumnExists(conn, "agents", "role"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE agents ADD COLUMN role TEXT NOT NULL DEFAULT 'Both'";
+            alter.ExecuteNonQuery();
+        }
+        if (!ColumnExists(conn, "agents", "tags"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE agents ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'";
+            alter.ExecuteNonQuery();
+        }
+        if (!ColumnExists(conn, "run_queue", "required_tags"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE run_queue ADD COLUMN required_tags TEXT";
+            alter.ExecuteNonQuery();
+        }
+        if (!ColumnExists(conn, "run_queue", "preferred_agent"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE run_queue ADD COLUMN preferred_agent TEXT";
+            alter.ExecuteNonQuery();
+        }
+
+        using var bump12 = conn.CreateCommand();
+        bump12.CommandText = "UPDATE schema_version SET value = '12' WHERE key = 'version' AND CAST(value AS INTEGER) < 12";
+        bump12.ExecuteNonQuery();
     }
 
     private static bool ColumnExists(SqliteConnection conn, string table, string column)

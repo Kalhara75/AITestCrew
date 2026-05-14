@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Models;
 using Microsoft.Data.Sqlite;
@@ -20,16 +21,18 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
 
         using var conn = _factory.CreateConnection();
         using var cmd = conn.CreateCommand();
+        var requiredTagsJson = entry.RequiredTags != null && entry.RequiredTags.Count > 0
+            ? System.Text.Json.JsonSerializer.Serialize(entry.RequiredTags) : null;
         cmd.CommandText = """
             INSERT INTO run_queue (id, module_id, test_set_id, objective_id, target_type, mode, job_kind,
                                    requested_by, status, claimed_by, claimed_at, completed_at, error,
                                    request_json, created_at,
                                    not_before_at, deadline_at, attempt_count, parent_queue_entry_id, parent_run_id,
-                                   auth_refresh_id)
+                                   auth_refresh_id, required_tags, preferred_agent)
             VALUES ($id, $moduleId, $tsId, $objId, $target, $mode, $jobKind, $requestedBy, $status,
                     NULL, NULL, NULL, NULL, $requestJson, $createdAt,
                     $notBeforeAt, $deadlineAt, $attemptCount, $parentQueueEntryId, $parentRunId,
-                    $authRefreshId)
+                    $authRefreshId, $requiredTags, $preferredAgent)
             """;
         cmd.Parameters.AddWithValue("$id", entry.Id);
         cmd.Parameters.AddWithValue("$moduleId", entry.ModuleId);
@@ -50,6 +53,8 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
         cmd.Parameters.AddWithValue("$parentQueueEntryId", (object?)entry.ParentQueueEntryId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$parentRunId", (object?)entry.ParentRunId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$authRefreshId", (object?)entry.AuthRefreshId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$requiredTags", (object?)requiredTagsJson ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$preferredAgent", (object?)entry.PreferredAgentId ?? DBNull.Value);
         await cmd.ExecuteNonQueryAsync();
         return entry;
     }
@@ -120,27 +125,80 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
         // against UtcNow formatted the same way is a valid chronological compare.
         var nowIso = DateTime.UtcNow.ToString("O");
 
+        // Look up the calling agent role + tags (agents table is the source of truth).
+        string agentRole = "Both";
+        List<string> agentTags = new();
+        using (var agentLookup = conn.CreateCommand())
+        {
+            agentLookup.Transaction = tx;
+            agentLookup.CommandText = "SELECT role, tags FROM agents WHERE id = $aid";
+            agentLookup.Parameters.AddWithValue("$aid", agentId);
+            using var ar = await agentLookup.ExecuteReaderAsync();
+            if (await ar.ReadAsync())
+            {
+                agentRole = ar.IsDBNull(0) ? "Both" : ar.GetString(0);
+                var tagsRaw = ar.IsDBNull(1) ? null : ar.GetString(1);
+                if (!string.IsNullOrEmpty(tagsRaw))
+                    agentTags = JsonSerializer.Deserialize<List<string>>(tagsRaw) ?? new();
+            }
+        }
+
+        // Role filter: recording-only agents skip Run jobs; execution-only agents skip recording jobs.
+        var recordKinds = new[] { "Record", "RecordSetup", "RecordVerification", "AuthSetup" };
+        bool canRecording = agentRole == "Recording" || agentRole == "Both";
+        bool canExecution = agentRole == "Execution" || agentRole == "Both";
+
+        var placeholders = string.Join(",", caps.Select((_, i) => $"$c{i}"));
         using var select = conn.CreateCommand();
         select.Transaction = tx;
-        var placeholders = string.Join(",", caps.Select((_, i) => $"$c{i}"));
         select.CommandText = $"""
-            SELECT id FROM run_queue
+            SELECT id, job_kind, required_tags, preferred_agent FROM run_queue
             WHERE status = 'Queued'
               AND target_type IN ({placeholders})
               AND (not_before_at IS NULL OR not_before_at <= $now)
             ORDER BY created_at ASC
-            LIMIT 1
             """;
         for (int i = 0; i < caps.Length; i++)
             select.Parameters.AddWithValue($"$c{i}", caps[i]);
         select.Parameters.AddWithValue("$now", nowIso);
-        var jobIdObj = await select.ExecuteScalarAsync();
-        if (jobIdObj is null or DBNull)
+
+        string? jobId = null;
+        using (var reader = await select.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                var candidateId = reader.GetString(0);
+                var jobKind = reader.IsDBNull(1) ? "Run" : reader.GetString(1);
+                var reqTagsJson = reader.IsDBNull(2) ? null : reader.GetString(2);
+                var prefAgent = reader.IsDBNull(3) ? null : reader.GetString(3);
+
+                // Preferred-agent pin: only the named agent may claim this entry.
+                if (!string.IsNullOrEmpty(prefAgent) && prefAgent != agentId)
+                    continue;
+
+                // Role filter
+                bool isRecordKind = recordKinds.Contains(jobKind, StringComparer.OrdinalIgnoreCase);
+                if (isRecordKind && !canRecording) continue;
+                if (!isRecordKind && !canExecution) continue;
+
+                // Required-tags superset filter: agent tags must contain all required tags.
+                if (!string.IsNullOrEmpty(reqTagsJson))
+                {
+                    var reqTags = JsonSerializer.Deserialize<List<string>>(reqTagsJson) ?? new();
+                    if (reqTags.Count > 0 && !reqTags.All(t => agentTags.Contains(t, StringComparer.OrdinalIgnoreCase)))
+                        continue;
+                }
+
+                jobId = candidateId;
+                break;
+            }
+        }
+
+        if (jobId is null)
         {
             tx.Rollback();
             return null;
         }
-        var jobId = (string)jobIdObj;
 
         using var update = conn.CreateCommand();
         update.Transaction = tx;
@@ -272,37 +330,62 @@ public sealed class SqliteRunQueueRepository : IRunQueueRepository
         return rows > 0;
     }
 
+    /// <summary>
+    /// Marks Queued entries older than <paramref name="cutoff"/> as Failed.
+    /// Called by the janitor to fail jobs whose claim deadline has elapsed with no agent.
+    /// </summary>
+    public async Task<int> ExpireUnclaimedAsync(DateTime cutoff, string errorMessage)
+    {
+        using var conn = _factory.CreateConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE run_queue
+            SET status = 'Failed', completed_at = $now, error = $err
+            WHERE status = 'Queued' AND created_at <= $cutoff
+            """;
+        cmd.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("O"));
+        cmd.Parameters.AddWithValue("$err", errorMessage);
+        cmd.Parameters.AddWithValue("$cutoff", cutoff.ToString("O"));
+        return await cmd.ExecuteNonQueryAsync();
+    }
+
     private const string SelectSql = """
         SELECT id, module_id, test_set_id, objective_id, target_type, mode, job_kind,
                requested_by, status, claimed_by, claimed_at, completed_at, error,
                request_json, created_at,
                not_before_at, deadline_at, attempt_count, parent_queue_entry_id, parent_run_id,
-               auth_refresh_id
+               auth_refresh_id, required_tags, preferred_agent
         FROM run_queue
         """;
 
-    private static RunQueueEntry Read(SqliteDataReader r) => new()
+    private static RunQueueEntry Read(SqliteDataReader r)
     {
-        Id = r.GetString(0),
-        ModuleId = r.GetString(1),
-        TestSetId = r.GetString(2),
-        ObjectiveId = r.IsDBNull(3) ? null : r.GetString(3),
-        TargetType = r.GetString(4),
-        Mode = r.GetString(5),
-        JobKind = r.IsDBNull(6) ? "Run" : r.GetString(6),
-        RequestedBy = r.IsDBNull(7) ? null : r.GetString(7),
-        Status = r.GetString(8),
-        ClaimedBy = r.IsDBNull(9) ? null : r.GetString(9),
-        ClaimedAt = r.IsDBNull(10) ? null : DateTime.Parse(r.GetString(10)).ToUniversalTime(),
-        CompletedAt = r.IsDBNull(11) ? null : DateTime.Parse(r.GetString(11)).ToUniversalTime(),
-        Error = r.IsDBNull(12) ? null : r.GetString(12),
-        RequestJson = r.GetString(13),
-        CreatedAt = DateTime.Parse(r.GetString(14)).ToUniversalTime(),
-        NotBeforeAt = r.IsDBNull(15) ? null : DateTime.Parse(r.GetString(15)).ToUniversalTime(),
-        DeadlineAt = r.IsDBNull(16) ? null : DateTime.Parse(r.GetString(16)).ToUniversalTime(),
-        AttemptCount = r.IsDBNull(17) ? 0 : r.GetInt32(17),
-        ParentQueueEntryId = r.IsDBNull(18) ? null : r.GetString(18),
-        ParentRunId = r.IsDBNull(19) ? null : r.GetString(19),
-        AuthRefreshId = r.IsDBNull(20) ? null : r.GetString(20),
-    };
+        var reqTagsRaw = r.IsDBNull(21) ? null : r.GetString(21);
+        return new RunQueueEntry
+        {
+            Id = r.GetString(0),
+            ModuleId = r.GetString(1),
+            TestSetId = r.GetString(2),
+            ObjectiveId = r.IsDBNull(3) ? null : r.GetString(3),
+            TargetType = r.GetString(4),
+            Mode = r.GetString(5),
+            JobKind = r.IsDBNull(6) ? "Run" : r.GetString(6),
+            RequestedBy = r.IsDBNull(7) ? null : r.GetString(7),
+            Status = r.GetString(8),
+            ClaimedBy = r.IsDBNull(9) ? null : r.GetString(9),
+            ClaimedAt = r.IsDBNull(10) ? null : DateTime.Parse(r.GetString(10)).ToUniversalTime(),
+            CompletedAt = r.IsDBNull(11) ? null : DateTime.Parse(r.GetString(11)).ToUniversalTime(),
+            Error = r.IsDBNull(12) ? null : r.GetString(12),
+            RequestJson = r.GetString(13),
+            CreatedAt = DateTime.Parse(r.GetString(14)).ToUniversalTime(),
+            NotBeforeAt = r.IsDBNull(15) ? null : DateTime.Parse(r.GetString(15)).ToUniversalTime(),
+            DeadlineAt = r.IsDBNull(16) ? null : DateTime.Parse(r.GetString(16)).ToUniversalTime(),
+            AttemptCount = r.IsDBNull(17) ? 0 : r.GetInt32(17),
+            ParentQueueEntryId = r.IsDBNull(18) ? null : r.GetString(18),
+            ParentRunId = r.IsDBNull(19) ? null : r.GetString(19),
+            AuthRefreshId = r.IsDBNull(20) ? null : r.GetString(20),
+            RequiredTags = string.IsNullOrEmpty(reqTagsRaw) ? new() : (JsonSerializer.Deserialize<List<string>>(reqTagsRaw) ?? new()),
+            PreferredAgentId = r.IsDBNull(22) ? null : r.GetString(22),
+        };
+    }
 }

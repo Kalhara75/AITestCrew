@@ -25,7 +25,9 @@ public static class AgentEndpoints
                 Version = request.Version,
                 Status = "Online",
                 LastSeenAt = DateTime.UtcNow,
-                RegisteredAt = DateTime.UtcNow
+                RegisteredAt = DateTime.UtcNow,
+                Role = string.IsNullOrWhiteSpace(request.Role) ? "Both" : request.Role,
+                Tags = request.Tags is null ? new() : request.Tags.Where(t => !string.IsNullOrWhiteSpace(t)).ToList(),
             };
             await repo.UpsertAsync(agent);
             return Results.Ok(new { agentId = agent.Id });
@@ -136,6 +138,7 @@ public static class AgentEndpoints
                     a.UserId,
                     ownerName,
                     a.Capabilities, a.Version, a.Status,
+                    a.Role, a.Tags,
                     a.LastSeenAt, a.RegisteredAt,
                     currentJob = currentJob is null ? null : new
                     {
@@ -151,7 +154,7 @@ public static class AgentEndpoints
     }
 }
 
-public record RegisterAgentRequest(string? Id, string Name, string[] Capabilities, string? Version);
+public record RegisterAgentRequest(string? Id, string Name, string[] Capabilities, string? Version, string? Role = null, string[]? Tags = null);
 
 public record HeartbeatRequest(string? Status, AuthStateFileReport[]? AuthStateFiles = null);
 

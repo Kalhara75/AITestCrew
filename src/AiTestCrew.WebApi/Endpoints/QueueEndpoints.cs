@@ -35,6 +35,8 @@ public static class QueueEndpoints
                 AttemptCount = req.AttemptCount ?? 0,
                 ParentQueueEntryId = req.ParentQueueEntryId,
                 ParentRunId = req.ParentRunId,
+                PreferredAgentId = req.PreferredAgentId,
+                RequiredTags = req.RequiredTags is null ? new() : req.RequiredTags.Where(t => !string.IsNullOrWhiteSpace(t)).ToList(),
             };
             await queueRepo.EnqueueAsync(entry);
             return Results.Created($"/api/queue/{entry.Id}", new { id = entry.Id });
@@ -159,7 +161,7 @@ public static class QueueEndpoints
         e.Status, e.ClaimedBy, e.RequestedBy, e.ClaimedAt, e.CompletedAt,
         e.CreatedAt, e.Error, e.RequestJson,
         e.NotBeforeAt, e.DeadlineAt, e.AttemptCount, e.ParentQueueEntryId, e.ParentRunId,
-        e.AuthRefreshId
+        e.AuthRefreshId, e.PreferredAgentId, e.RequiredTags
     };
 }
 
@@ -179,4 +181,6 @@ public record EnqueueRequest(
     DateTime? DeadlineAt,
     int? AttemptCount,
     string? ParentQueueEntryId,
-    string? ParentRunId);
+    string? ParentRunId,
+    string? PreferredAgentId = null,
+    string[]? RequiredTags = null);

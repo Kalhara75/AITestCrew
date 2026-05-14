@@ -33,4 +33,20 @@ public class Agent
     /// can be killed remotely from the dashboard. Cleared on the next successful registration.
     /// </summary>
     public bool ForceQuitRequested { get; set; }
+
+    /// <summary>
+    /// Agent execution role: Recording | Execution | Both (default).
+    /// Recording agents only claim Record/RecordSetup/RecordVerification/AuthSetup jobs.
+    /// Execution agents only claim Run jobs.
+    /// Both agents claim either kind.
+    /// Default 'Both' preserves current behaviour for agents registered before v12.
+    /// </summary>
+    public string Role { get; set; } = "Both";
+
+    /// <summary>
+    /// Free-form pool tags (e.g. ["ci", "linux-pool-a"]).
+    /// The queue uses these for required-tags filtering — the agent's tag set
+    /// must be a superset of any <c>RequiredTags</c> on the queue entry.
+    /// </summary>
+    public List<string> Tags { get; set; } = new();
 }

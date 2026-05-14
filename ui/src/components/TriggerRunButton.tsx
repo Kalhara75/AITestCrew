@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { triggerRun } from '../api/runs';
 import { useActiveRun } from '../contexts/ActiveRunContext';
 import { RunningIndicator } from './execution/RunningIndicator';
+import { AgentPicker } from './AgentPicker';
 
 interface Props {
   testSetId: string;
@@ -16,6 +17,7 @@ export function TriggerRunButton({ testSetId, moduleId, apiStackKey, apiModule, 
   const navigate = useNavigate();
   const { individualRun, individualRunStatus, setIndividualRun } = useActiveRun();
   const [error, setError] = useState<string | null>(null);
+  const [preferredAgentId, setPreferredAgentId] = useState<string | null>(null);
 
   // This button is "active" if the global individual run targets this test set
   const isActive = individualRun?.testSetId === testSetId;
@@ -50,6 +52,7 @@ export function TriggerRunButton({ testSetId, moduleId, apiStackKey, apiModule, 
         apiStackKey: apiStackKey ?? undefined,
         apiModule: apiModule ?? undefined,
         environmentKey: environmentKey ?? undefined,
+        preferredAgentId: preferredAgentId ?? undefined,
       });
       setIndividualRun({ runId: res.runId, testSetId, moduleId });
     } catch (err) {
@@ -96,7 +99,8 @@ export function TriggerRunButton({ testSetId, moduleId, apiStackKey, apiModule, 
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <AgentPicker value={preferredAgentId} onChange={setPreferredAgentId} />
         <button onClick={handleRun} style={btnStyle('#2563eb', '#1d4ed8')}>
           Re-run Tests
         </button>

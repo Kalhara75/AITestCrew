@@ -17,12 +17,15 @@ internal sealed class AgentRunner
     private readonly ILogger _logger;
     private readonly string _name;
     private readonly string[] _capabilities;
+    private readonly string _role;
+    private readonly string[] _tags;
     private readonly string _agentIdFilePath;
     private readonly AuthStateScanner? _authStateScanner;
 
     public AgentRunner(AgentClient client, JobExecutor executor, TestEnvironmentConfig config,
         ILogger logger, string name, string[] capabilities,
-        AuthStateScanner? authStateScanner = null)
+        AuthStateScanner? authStateScanner = null,
+        string role = "Both", string[]? tags = null)
     {
         _client = client;
         _executor = executor;
@@ -30,6 +33,8 @@ internal sealed class AgentRunner
         _logger = logger;
         _name = name;
         _capabilities = capabilities;
+        _role = string.IsNullOrWhiteSpace(role) ? "Both" : role;
+        _tags = tags ?? Array.Empty<string>();
         _authStateScanner = authStateScanner;
         _agentIdFilePath = Path.Combine(AppContext.BaseDirectory, ".agent-id");
     }
@@ -43,11 +48,12 @@ internal sealed class AgentRunner
     {
         var version = typeof(AgentRunner).Assembly.GetName().Version?.ToString() ?? "1.0.0";
         var existingId = ReadAgentId();
-        var agentId = await _client.RegisterAsync(existingId, _name, _capabilities, version);
+        var agentId = await _client.RegisterAsync(existingId, _name, _capabilities, version, _role, _tags);
         WriteAgentId(agentId);
 
         AnsiConsole.MarkupLine($"[green]Registered[/] as [bold]{Markup.Escape(agentId)}[/] ({Markup.Escape(_name)})");
         AnsiConsole.MarkupLine($"[grey]Capabilities:[/] {Markup.Escape(string.Join(", ", _capabilities))}");
+        AnsiConsole.MarkupLine($"[grey]Role:[/] {Markup.Escape(_role)}{(_tags.Length > 0 ? $"  [grey]Tags:[/] {Markup.Escape(string.Join(", ", _tags))}" : "")}");
         AnsiConsole.MarkupLine($"[grey]Server:[/] {Markup.Escape(_config.ServerUrl)}");
         AnsiConsole.MarkupLine("[grey]Polling for jobs — press Ctrl+C to stop.[/]\n");
 

@@ -3,6 +3,7 @@ import { triggerRun } from '../api/runs';
 import { useActiveRun } from '../contexts/ActiveRunContext';
 import { ConfirmDialog } from './ConfirmDialog';
 import { RunningIndicator } from './execution/RunningIndicator';
+import { AgentPicker } from './AgentPicker';
 
 interface Props {
   testSetId: string;
@@ -21,6 +22,7 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObject
   const { individualRun, individualRunStatus, setIndividualRun } = useActiveRun();
   const [error, setError] = useState<string | null>(null);
   const [showRebaselineConfirm, setShowRebaselineConfirm] = useState(false);
+  const [preferredAgentId, setPreferredAgentId] = useState<string | null>(null);
 
   // This button is "active" if the global individual run targets this specific objective
   const isActive = individualRun?.testSetId === testSetId && individualRun?.objectiveId === objectiveId;
@@ -42,6 +44,7 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObject
         apiModule: apiModule ?? undefined,
         environmentKey: environmentKey ?? undefined,
         verificationWaitOverride: mode === 'VerifyOnly' ? 0 : undefined,
+        preferredAgentId: mode === 'Reuse' ? (preferredAgentId ?? undefined) : undefined,
       });
       setIndividualRun({ runId: res.runId, testSetId, moduleId, objectiveId });
     } catch (err) {
@@ -102,7 +105,8 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObject
   }
 
   return (
-    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+      <AgentPicker value={preferredAgentId} onChange={setPreferredAgentId} disabled={disabled || anyRunning} />
       <button
         onClick={handleRun}
         disabled={disabled || anyRunning}

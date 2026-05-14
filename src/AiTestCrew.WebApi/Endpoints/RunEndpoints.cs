@@ -14,7 +14,7 @@ public static class RunEndpoints
     {
         group.MapPost("/", async (RunRequest request, IRunTracker tracker, IModuleRunTracker moduleRunTracker,
             TestOrchestrator orchestrator, ITestSetRepository tsRepo,
-            IRunQueueRepository? queueRepo, HttpContext ctx,
+            IRunQueueRepository? queueRepo, IAgentRepository? agentRepo, HttpContext ctx,
             ILogger<TestOrchestrator> logger) =>
         {
             // Validate request
@@ -85,7 +85,20 @@ public static class RunEndpoints
 
             if (agentTarget is not null && queueRepo is not null)
             {
+                // Pre-validate preferredAgentId when provided — mirrors RecordingEndpoints behaviour
+                if (!string.IsNullOrWhiteSpace(request.PreferredAgentId) && agentRepo is not null)
+                {
+                    var preferredAgent = await agentRepo.GetByIdAsync(request.PreferredAgentId);
+                    if (preferredAgent is null)
+                        return Results.BadRequest(new { error = $"Preferred agent '{request.PreferredAgentId}' is not registered" });
+                    if (!preferredAgent.Capabilities.Contains(agentTarget))
+                        return Results.BadRequest(new { error = $"Preferred agent '{preferredAgent.Name}' does not have capability '{agentTarget}'" });
+                    if (preferredAgent.Role != "Execution" && preferredAgent.Role != "Both")
+                        return Results.BadRequest(new { error = $"Preferred agent '{preferredAgent.Name}' has role '{preferredAgent.Role}' — only Execution or Both agents can execute runs" });
+                }
+
                 // Enqueue for a local agent to pick up
+                var reqTags = request.RequiredTags?.Where(t => !string.IsNullOrWhiteSpace(t)).ToList() ?? new();
                 var entry = new RunQueueEntry
                 {
                     Id = runId,
@@ -96,7 +109,9 @@ public static class RunEndpoints
                     Mode = mode.ToString(),
                     RequestedBy = user?.Id,
                     RequestJson = JsonSerializer.Serialize(request, _jsonOpts),
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = DateTime.UtcNow,
+                    PreferredAgentId = string.IsNullOrWhiteSpace(request.PreferredAgentId) ? null : request.PreferredAgentId,
+                    RequiredTags = reqTags,
                 };
                 await queueRepo.EnqueueAsync(entry);
                 tracker.Create(runId, objective, request.Mode, request.TestSetId);
@@ -304,4 +319,4 @@ public static class RunEndpoints
     };
 }
 
-public record RunRequest(string? Objective, string? ObjectiveName, string Mode, string? TestSetId, string? ModuleId, string? ObjectiveId, string? ApiStackKey = null, string? ApiModule = null, int? VerificationWaitOverride = null, string? EnvironmentKey = null, VerifyStepFilter? VerifyStepFilter = null);
+public record RunRequest(string? Objective, string? ObjectiveName, string Mode, string? TestSetId, string? ModuleId, string? ObjectiveId, string? ApiStackKey = null, string? ApiModule = null, int? VerificationWaitOverride = null, string? EnvironmentKey = null, VerifyStepFilter? VerifyStepFilter = null, string? PreferredAgentId = null, string[]? RequiredTags = null, bool FallbackToAnyAgent = false);
