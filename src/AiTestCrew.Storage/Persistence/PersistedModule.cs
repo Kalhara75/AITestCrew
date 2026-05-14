@@ -27,4 +27,9 @@ public class PersistedModule
 
     /// <summary>User ID who last modified this module.</summary>
     public string? LastModifiedBy { get; set; }
+
+    /// <summary>
+    /// Monotonic version counter for optimistic concurrency. Incremented on every write.
+    /// </summary>
+    public int Version { get; set; } = 1;
 }

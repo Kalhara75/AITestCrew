@@ -74,6 +74,15 @@ public class PersistedTestSet
     public string? LastModifiedBy { get; set; }
 
     /// <summary>
+    /// Monotonic version counter for optimistic concurrency. Incremented on every write.
+    /// Clients send this back on PUT via If-Match header. Absent in legacy JSON = treated as 1.
+    /// </summary>
+    public int Version { get; set; } = 1;
+
+    /// <summary>UTC timestamp of the most recent write. Null for pre-v10 rows.</summary>
+    public DateTime? UpdatedAt { get; set; }
+
+    /// <summary>
     /// Maps full objective text → short display name.
     /// Old JSON files without this field deserialize to an empty dictionary.
     /// </summary>
