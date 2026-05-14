@@ -2576,3 +2576,78 @@ This section complements the "Where to extend" table in `CLAUDE.md` with archite
   5. DI registration in both `Runner/Program.cs` and `WebApi/Program.cs`.
   6. Orchestrator's `BuildObjectiveFromResults` + reuse task-builder updates.
   7. Decomposer prompt update.
+
+
+---
+
+## Backup & Restore
+
+### How it works
+
+DatabaseBackupService (src/AiTestCrew.WebApi/Services/DatabaseBackupService.cs) is a BackgroundService registered alongside AgentHeartbeatMonitor. On each tick it calls the SQLite Online Backup API:
+
+    using var src = _factory.CreateConnection();   // live DB
+    using var dst = new SqliteConnection("Data Source={dest}");
+    dst.Open();
+    src.BackupDatabase(dst);                        // streams pages while DB stays writable
+
+The backup file is a fully self-contained SQLite database at the point the copy started. No WAL merge is needed -- the Online Backup API handles WAL checkpointing internally. The source DB is never locked.
+
+### Retention policy
+
+After each backup a sweep runs in-process (RunRetentionSweep). Files are sorted newest-first by filename (the timestamp encoding makes lexicographic sort equivalent to chronological sort). Three tiers:
+
+1. Keep the newest RetentionHourly files unconditionally (default 24).
+2. Keep one file per UTC calendar day for the next RetentionDaily days beyond the hourly window (default 14).
+3. Keep one file per Mon-boundary week for the next RetentionWeekly weeks beyond the daily window (default 8).
+
+Everything else is File.Delete'd. At steady state: at most 46 files.
+
+### Disk-space guard
+
+Before writing, DatabaseBackupService checks DriveInfo.AvailableFreeSpace on the backup directory's drive. If free space is below MinFreeDiskMb, the backup is skipped and a warning is logged -- the service does NOT throw. _lastError is set, so the dashboard panel turns red.
+
+### Concurrency guard
+
+Interlocked.CompareExchange on _running prevents two concurrent backups (e.g. a scheduled tick overlapping with a manual POST /api/admin/backup). The POST endpoint returns 409 if already running; the tick silently skips.
+
+### Admin endpoints
+
+- POST /api/admin/backup -- trigger an out-of-cycle backup. Returns path + sizeBytes + durationMs.
+- GET /api/admin/backup/status -- last success, size, error, next scheduled time, total files on disk, oldest backup.
+- GET /api/admin/backup/list -- directory listing (paths only).
+
+All three are behind ApiKeyAuthMiddleware. The users.is_admin column was added in schema v11 so a future roles requirement can tighten these without a schema change.
+
+### Dashboard panel (BackupHealthPanel)
+
+BackupHealthPanel polls /api/admin/backup/status every 60 s. Colour thresholds:
+
+- Green -- last success under 90 minutes ago
+- Amber -- last success between 90 min and 2 x IntervalMinutes
+- Red -- last success older than 2x interval, or lastError set in the last hour
+- Hidden -- if the status endpoint returns an error (e.g. service is disabled)
+
+### Bind-mount requirement
+
+The backup Directory config MUST be a host bind-mount in docker-compose.yml, not a path inside the named data volume. If backups live inside aitestcrew-data, they are wiped by the same volume corruption that destroys the live DB. The default docker-compose.yml includes:
+
+    volumes:
+      - ./docker-backups:c:\data-backups    # bind-mount; survives docker volume rm
+      - aitestcrew-data:c:\data              # named volume -- live DB
+
+### schema v10 -> v11 migration
+
+Added users.is_admin INTEGER NOT NULL DEFAULT 0. All existing users are backfilled to is_admin = 1 (matching the v1 "any key holder is admin" policy). Migration is idempotent (ColumnExists guard before ALTER).
+
+### Restore
+
+See docs/ops/backup-restore.md for step-by-step procedures (Windows container + Linux container, sidecar swap pattern, rollback).
+
+### Tuning backup settings
+
+- Interval: TestEnvironment.Backup.IntervalMinutes (default 30). Minimum 1.
+- Retention: RetentionHourly / RetentionDaily / RetentionWeekly (defaults 24 / 14 / 8).
+- Disk guard: MinFreeDiskMb (default 500). Set to 0 to disable.
+- Directory: must match the bind-mount target in docker-compose.yml.
+- Disable entirely: Enabled = false. No files will be written and the panel hides.

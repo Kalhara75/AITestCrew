@@ -229,3 +229,15 @@ The top-level `CLAUDE.md` keeps only the entry-point files needed to navigate th
 | `ui/src/components/chat/actions/ConfirmCreatePostStepCard.tsx` | Extended with eventAssert branch alongside the dbCheck branch |
 | `ui/src/types/index.ts` | TS types: `EventAssertStepDefinition`, `EventCriterion`, `EventCapture`, `ServiceBusEntity`, `BodyFormat`, `ReceiveMode`, `MatchMode`, `ServiceBusEntityType`; added `eventAssert?: EventAssertStepDefinition` to `PostStep` |
 | `.claude/commands/add-event-assert.md` | `/add-event-assert` skill — validates parent step, calls peek to confirm connection works, drafts entity + criteria + captures, PUTs the post-step; mirrors `/add-db-assert` for event assertions |
+
+## Backup & Restore
+
+| File | What it does |
+|---|---|
+| src/AiTestCrew.Core/Configuration/BackupConfig.cs | Config class for DatabaseBackupService -- Enabled, Directory, IntervalMinutes, RetentionHourly, RetentionDaily, RetentionWeekly, MinFreeDiskMb. Bound from TestEnvironment.Backup. |
+| src/AiTestCrew.WebApi/Services/DatabaseBackupService.cs | BackgroundService -- PeriodicTimer tick, SQLite Online Backup API, tiered retention sweep, disk-space guard, Interlocked concurrency lock, GetStatus() / ListBackupPaths() / RunBackupAsync() surface. Records LastSuccessAt / LastError / NextScheduledAt for the admin panel. |
+| src/AiTestCrew.WebApi/Endpoints/AdminBackupEndpoints.cs | POST /api/admin/backup (trigger, 409 on conflict), GET /api/admin/backup/status (BackupStatusDto), GET /api/admin/backup/list (paths array). All behind ApiKeyAuthMiddleware. |
+| ui/src/api/backupApi.ts | TypeScript clients for the three backup endpoints (fetchBackupStatus, fetchBackupList, triggerBackup). |
+| ui/src/components/BackupHealthPanel.tsx | Dashboard tile polling /api/admin/backup/status every 60 s. Green / Amber / Red thresholds. Hides when disabled. Backup Now button + Details modal. |
+| tests/AiTestCrew.WebApi.Tests/DatabaseBackupServiceTests.cs | 11 integration tests: scheduled tick produces file, Enabled=false no file, backup is restorable (write-backup-mutate-swap-verify), retention sweep keeps correct files (100 seeded files over 90 days), disk-space guard skips without throwing, ParseTimestamp round-trip tests. |
+| docs/ops/backup-restore.md | Step-by-step restore guide -- Windows container (sidecar cmd pattern) and Linux container variants, rollback, off-host export, tuning table. |
