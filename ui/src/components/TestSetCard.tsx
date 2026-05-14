@@ -73,14 +73,32 @@ export function TestSetCard({ ts, moduleId, isRunning }: Props) {
           color: '#94a3b8',
           borderTop: '1px solid #f1f5f9',
           paddingTop: 12,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 2,
         }}>
           {ts.lastRunAt && ts.lastRunAt !== '0001-01-01T00:00:00'
             ? `Last run: ${new Date(ts.lastRunAt).toLocaleString()}`
             : 'Never run'}
+          {ts.updatedAt && (
+            <span style={{ color: '#b0bec5', fontSize: 11 }}>
+              {`Edited ${formatRelative(ts.updatedAt)}${ts.updatedBy ? ` by ${ts.updatedBy}` : ''}`}
+            </span>
+          )}
         </div>
       </div>
     </Link>
   );
+}
+
+function formatRelative(isoDate: string): string {
+  const diff = Date.now() - new Date(isoDate).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return new Date(isoDate).toLocaleDateString();
 }
 
 const statPill: React.CSSProperties = {

@@ -54,11 +54,16 @@ export const moveObjective = (moduleId: string, tsId: string, request: MoveObjec
   });
 
 export const updateObjective = (
-  moduleId: string, tsId: string, objectiveId: string, objective: TestObjective
+  moduleId: string, tsId: string, objectiveId: string, objective: TestObjective,
+  version?: number
 ) =>
   apiFetch<TestSetDetail>(
     `/modules/${moduleId}/testsets/${tsId}/objectives/${objectiveId}`,
-    { method: 'PUT', body: JSON.stringify(objective) }
+    {
+      method: 'PUT',
+      body: JSON.stringify(objective),
+      headers: version != null ? { 'If-Match': String(version) } : {},
+    }
   );
 
 export const deleteObjective = (

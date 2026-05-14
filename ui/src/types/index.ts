@@ -24,6 +24,9 @@ export interface TestSetListItem {
   lastRunAt: string;
   runCount: number;
   lastRunStatus: string | null;
+  version?: number;
+  updatedBy?: string | null;
+  updatedAt?: string | null;
 }
 
 export type ApiAssertionSource = 'Status' | 'Header' | 'Body' | 'BodyText';
@@ -336,6 +339,9 @@ export interface TestSetDetail {
   lastRunStatus: string | null;
   objectiveStatuses?: Record<string, ObjectiveStatus>;
   testObjectives: TestObjective[];
+  version?: number;
+  updatedBy?: string | null;
+  updatedAt?: string | null;
 }
 
 export interface SqlTeardownStep {
