@@ -198,6 +198,7 @@ if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCas
     builder.Services.AddSingleton<IAuthRefreshRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteAuthRefreshRepository(connFactory));
     builder.Services.AddSingleton<IAgentAuthStateRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteAgentAuthStateRepository(connFactory));
     builder.Services.AddSingleton<IChatConversationRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteChatConversationRepository(connFactory));
+    builder.Services.AddSingleton<AiTestCrew.Core.Interfaces.IRecordingLockRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteRecordingLockRepository(connFactory));
 
     // Background monitor to mark agents Offline if no heartbeat
     builder.Services.AddHostedService(sp => new AgentHeartbeatMonitor(

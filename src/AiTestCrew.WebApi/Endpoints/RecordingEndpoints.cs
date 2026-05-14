@@ -17,7 +17,7 @@ public static class RecordingEndpoints
     {
         // POST /api/recordings — enqueue a recording/auth-setup job for a local agent
         group.MapPost("/", async (StartRecordingRequest request, IRunQueueRepository queueRepo,
-            IAgentRepository agentRepo, HttpContext ctx) =>
+            IAgentRepository agentRepo, IRecordingLockRepository? lockRepo, HttpContext ctx) =>
         {
             if (string.IsNullOrWhiteSpace(request.Kind))
                 return Results.BadRequest(new { error = "kind is required" });
@@ -105,6 +105,22 @@ public static class RecordingEndpoints
                 RequestJson = requestJson,
                 CreatedAt = DateTime.UtcNow
             };
+            // Acquire a recording lock when kind targets a specific objective or test set.
+            // AuthSetup jobs don't lock — they have no moduleId/testSetId.
+            if (lockRepo is not null && request.Kind is "Record" or "RecordSetup" or "RecordVerification"
+                && !string.IsNullOrEmpty(moduleIdForRow))
+            {
+                var userId = (ctx.Items["User"] as AiTestCrew.Core.Models.User)?.Name ?? "unknown";
+                try
+                {
+                    await lockRepo.AcquireAsync(moduleIdForRow, testSetIdForRow, objectiveIdForRow, entry.Id, userId);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.Conflict(new { error = ex.Message });
+                }
+            }
+
             await queueRepo.EnqueueAsync(entry);
 
             return Results.Accepted($"/api/queue/{entry.Id}", new

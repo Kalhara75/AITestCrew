@@ -571,6 +571,7 @@ else if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgno
     builder.Services.AddSingleton<IRunQueueRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteRunQueueRepository(connFactory));
     builder.Services.AddSingleton<IPendingVerificationRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqlitePendingVerificationRepository(connFactory));
     builder.Services.AddSingleton<IAuthRefreshRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteAuthRefreshRepository(connFactory));
+    builder.Services.AddSingleton<AiTestCrew.Core.Interfaces.IRecordingLockRepository>(new AiTestCrew.Agents.Persistence.Sqlite.SqliteRecordingLockRepository(connFactory));
 }
 else
 {
@@ -697,6 +698,7 @@ if (cli.AgentMode)
         host.Services.GetRequiredService<AiTestCrew.Agents.PostSteps.PostStepOrchestrator>(),
         host.Services.GetService<IAuthRefreshRepository>(),
         host.Services.GetService<IRunQueueRepository>(),
+        host.Services.GetService<AiTestCrew.Core.Interfaces.IRecordingLockRepository>(),
         host.Services.GetService<ILogger<AiTestCrew.Runner.AgentMode.JobExecutor>>());
     var authStateScanner = new AiTestCrew.Agents.Auth.AuthStateScanner(
         host.Services.GetRequiredService<IEnvironmentResolver>());

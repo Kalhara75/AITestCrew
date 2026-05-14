@@ -27,6 +27,7 @@ internal sealed class JobExecutor
     private readonly PostStepOrchestrator _postStepOrchestrator;
     private readonly IAuthRefreshRepository? _authRefreshRepo;
     private readonly IRunQueueRepository? _queueRepo;
+    private readonly IRecordingLockRepository? _lockRepo;
     private readonly ILogger<JobExecutor>? _logger;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
@@ -41,6 +42,7 @@ internal sealed class JobExecutor
         PostStepOrchestrator postStepOrchestrator,
         IAuthRefreshRepository? authRefreshRepo = null,
         IRunQueueRepository? queueRepo = null,
+        IRecordingLockRepository? lockRepo = null,
         ILogger<JobExecutor>? logger = null)
     {
         _orchestrator = orchestrator;
@@ -48,6 +50,7 @@ internal sealed class JobExecutor
         _postStepOrchestrator = postStepOrchestrator;
         _authRefreshRepo = authRefreshRepo;
         _queueRepo = queueRepo;
+        _lockRepo = lockRepo;
         _logger = logger;
     }
 
@@ -220,6 +223,7 @@ internal sealed class JobExecutor
         var req = JsonSerializer.Deserialize<RecordCaseRequest>(job.RequestJson, JsonOpts)
             ?? throw new InvalidOperationException("Invalid RecordCaseRequest JSON");
         var result = await _recording.RecordCaseAsync(req, ct);
+        await TryReleaseLockAsync(job.JobId, ct);
         return new JobOutcome(result.Success, result.Summary, result.Success ? null : result.Error);
     }
 
@@ -228,6 +232,7 @@ internal sealed class JobExecutor
         var req = JsonSerializer.Deserialize<RecordSetupRequest>(job.RequestJson, JsonOpts)
             ?? throw new InvalidOperationException("Invalid RecordSetupRequest JSON");
         var result = await _recording.RecordSetupAsync(req, ct);
+        await TryReleaseLockAsync(job.JobId, ct);
         return new JobOutcome(result.Success, result.Summary, result.Success ? null : result.Error);
     }
 
@@ -236,7 +241,18 @@ internal sealed class JobExecutor
         var req = JsonSerializer.Deserialize<RecordVerificationRequest>(job.RequestJson, JsonOpts)
             ?? throw new InvalidOperationException("Invalid RecordVerificationRequest JSON");
         var result = await _recording.RecordVerificationAsync(req, ct);
+        await TryReleaseLockAsync(job.JobId, ct);
         return new JobOutcome(result.Success, result.Summary, result.Success ? null : result.Error);
+    }
+
+    private async Task TryReleaseLockAsync(string jobId, CancellationToken ct)
+    {
+        if (_lockRepo is null) return;
+        try { await _lockRepo.ReleaseAsync(jobId, ct); }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to release recording lock for job {JobId}", jobId);
+        }
     }
 
     private async Task<JobOutcome> ExecuteAuthSetupAsync(NextJobResponse job, CancellationToken ct)

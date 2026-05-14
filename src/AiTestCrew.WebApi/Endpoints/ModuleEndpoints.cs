@@ -143,7 +143,10 @@ public static class ModuleEndpoints
                     ts.CreatedAt,
                     ts.LastRunAt,
                     RunCount = historyRepo.CountRuns(ts.Id),
-                    LastRunStatus = AggregateStatus(objStatuses, currentIds)
+                    LastRunStatus = AggregateStatus(objStatuses, currentIds),
+                    ts.Version,
+                    UpdatedBy = ts.LastModifiedBy,
+                    ts.UpdatedAt,
                 };
             });
             return Results.Ok(result);
@@ -272,11 +275,21 @@ public static class ModuleEndpoints
         // PUT /api/modules/{moduleId}/testsets/{tsId}/objectives/{objectiveId} — update a test objective's definition
         group.MapPut("/{moduleId}/testsets/{tsId}/objectives/{objectiveId}",
             async (string moduleId, string tsId, string objectiveId,
-                TestObjective updated, ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo) =>
+                TestObjective updated, ITestSetRepository tsRepo, IExecutionHistoryRepository historyRepo,
+                AiTestCrew.Core.Interfaces.IRecordingLockRepository? lockRepo, HttpContext ctx) =>
         {
             var testSet = await tsRepo.LoadAsync(moduleId, tsId);
             if (testSet is null)
                 return Results.NotFound(new { error = $"Test set '{tsId}' not found in module '{moduleId}'" });
+
+            // Recording lock check: block edits while a recording job is active on this objective.
+            if (lockRepo is not null)
+            {
+                var objLock = await lockRepo.GetLockAsync(moduleId, tsId, objectiveId);
+                var tsLock = objLock ?? await lockRepo.GetLockAsync(moduleId, tsId, null);
+                if (tsLock is not null)
+                    return Results.Conflict(new { error = $"Recording in progress on this test set by {tsLock.LockedBy}" });
+            }
 
             var idx = testSet.TestObjectives.FindIndex(o => o.Id == objectiveId);
             if (idx < 0)
@@ -289,7 +302,26 @@ public static class ModuleEndpoints
             updated.TargetType = testSet.TestObjectives[idx].TargetType;
             testSet.TestObjectives[idx] = updated;
 
-            await tsRepo.SaveAsync(testSet, moduleId);
+            // Optimistic concurrency: honour the If-Match header when present.
+            var ifMatch = ctx.Request.Headers["If-Match"].FirstOrDefault();
+            int? expectedVersion = int.TryParse(ifMatch, out var v) ? v : null;
+            var userId = (ctx.Items["User"] as AiTestCrew.Core.Models.User)?.Id;
+
+            try
+            {
+                await tsRepo.SaveAsync(testSet, moduleId, expectedVersion, userId);
+            }
+            catch (AiTestCrew.Core.Exceptions.ConcurrencyException ex)
+            {
+                return Results.Conflict(new
+                {
+                    error = "Test set was modified by another user",
+                    currentVersion = ex.CurrentVersion,
+                    yourVersion = ex.YourVersion,
+                    currentUpdatedBy = ex.CurrentUpdatedBy,
+                    currentUpdatedAt = ex.CurrentUpdatedAt,
+                });
+            }
             return Results.Ok(TestSetResponse(testSet, historyRepo));
         });
 
@@ -972,7 +1004,10 @@ public static class ModuleEndpoints
             testSet.TeardownSteps,
             LastRunStatus = AggregateStatus(objStatuses, currentIds),
             ObjectiveStatuses = objectiveStatuses,
-            testSet.TestObjectives
+            testSet.TestObjectives,
+            testSet.Version,
+            UpdatedBy = testSet.LastModifiedBy,
+            testSet.UpdatedAt,
         };
     }
 

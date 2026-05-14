@@ -53,6 +53,7 @@ public sealed class AgentHeartbeatMonitor : BackgroundService
             await SweepStaleQueueClaimsAsync();
             await SweepExpiredPendingVerificationsAsync();
             await SweepAuthRefreshesAsync();
+            await SweepStaleRecordingLocksAsync();
             SweepRateLimiterIfDue();
 
             try
@@ -260,6 +261,25 @@ public sealed class AgentHeartbeatMonitor : BackgroundService
         catch (Exception ex)
         {
             _logger.LogError(ex, "AgentHeartbeatMonitor: auth-refresh sweep failed");
+        }
+    }
+
+    /// <summary>
+    /// Removes recording locks whose owning queue job is no longer active.
+    /// Protects against crash-without-deregister scenarios where a recording agent
+    /// dies while holding a lock, leaving the objective permanently blocked.
+    /// </summary>
+    private async Task SweepStaleRecordingLocksAsync()
+    {
+        try
+        {
+            var lockRepo = _sp.GetService<AiTestCrew.Core.Interfaces.IRecordingLockRepository>();
+            if (lockRepo is null) return;
+            await lockRepo.SweepStaleLocksAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "AgentHeartbeatMonitor: recording-lock sweep failed");
         }
     }
 
