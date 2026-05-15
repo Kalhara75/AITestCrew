@@ -126,6 +126,10 @@ if ($Runner) {
     if ($ServerUrl) { $te['ServerUrl'] = $ServerUrl }
     $te['ApiKey'] = ""
 
+    # Explicitly set LlmMode=Auto so the agent routes through the proxy when no local
+    # LlmApiKey is present (the sanitiser already blanked LlmApiKey above).
+    $te['LlmMode'] = 'Auto'
+
     # Per-env sanitisation — keep URLs / display names / storage state paths,
     # blank passwords + DB / Service Bus connection strings.
     if ($te.ContainsKey('Environments') -and $te.Environments -is [hashtable]) {
@@ -173,7 +177,8 @@ ONE-TIME SETUP
    "ServerUrl" is already pre-filled, and your team's environments (URLs, AAD
    accounts, storage state paths, etc.) are baked in. All sensitive values
    (passwords, DB connection strings, Service Bus keys, LLM key) have been
-   stripped — the agent doesn't need them. It talks to the server via HTTP
+   stripped. Your LLM calls are routed through the server — you do not need
+   to configure an LLM API key. The agent talks to the server via HTTP
    and authenticates browser sessions interactively.
 
    OPTIONAL — only if you'll run desktop (WinForms) tests:
