@@ -1456,6 +1456,30 @@ Set at registration:  (CLI flag) or  in appsettings.
 
 **UI** — the  component surfaces a dropdown in the run-trigger button group: "Any execution agent" (default) or a specific online Execution/Both agent. The agents panel shows a role chip (colour-coded: Recording=purple, Execution=blue, Both=grey) and tag chips.
 
+### LLM Proxy for Distributed Agents
+
+Distributed agents run from a sanitised pack that strips `LlmApiKey` along with every other secret. Without an API key the agent fails any run that calls the LLM (generated tests, run summaries, the chat assistant). REQ-011 resolves this with a server-side proxy.
+
+**Server side — `POST /api/llm/chat`** (`src/AiTestCrew.WebApi/Endpoints/LlmEndpoints.cs`):
+- Accepts `{ model?, messages[], maxTokens?, temperature? }`.
+- Authenticated by the existing `X-Api-Key` middleware — no new auth surface.
+- Calls the server's registered `IChatCompletionService` and returns the response.
+- Logs `{userId, agentId, model, inputTokens, outputTokens, latencyMs}` at Information level for cost/usage visibility.
+
+**Agent side — `RemoteChatCompletionService`** (`src/AiTestCrew.Agents/Llm/`):
+- Implements `IChatCompletionService`; maps SK `ChatHistory` → proxy request, deserialises response.
+- `GetStreamingChatMessageContentsAsync` throws `NotSupportedException` (agents don't stream today).
+- Server errors surface `providerError` in the exception message so existing catch blocks log usefully.
+
+**Mode selection — `LlmMode` in `TestEnvironmentConfig`:**
+| Value | Behaviour |
+|---|---|
+| `Auto` (default) | Local key when `LlmApiKey` is set; `RemoteProxy` when `LlmApiKey` is blank and `ServerUrl`+`ApiKey` are set. |
+| `Local` | Always use the local key — even when a `ServerUrl` is configured. |
+| `RemoteProxy` | Always route through the proxy — useful for testing the proxy from a dev box. |
+
+The `Auto` default means **the server and dev box behaviour is unchanged** (they have `LlmApiKey` populated). Sanitised agent packs have no `LlmApiKey`, so `Auto` automatically selects `RemoteProxy`.
+
 ## Deferred Post-Delivery Verification
 
 aseXML delivery objectives frequently attach a UI verification that only becomes meaningful after Bravo has processed the uploaded file — typically a 60–180 s delay. Running that delay inline with `Task.Delay` would hold the executing agent slot open for the whole period; with `MaxParallelAgents = 4` and many concurrent deliveries, most slots would spend their time sleeping. Deferred verification decouples the wait from the executing thread: after a delivery uploads, its verifications are queued with a future claim time and the agent slot is freed immediately. When the due time arrives, any compatible agent on its existing poll loop claims and runs the verification. Failed attempts re-enqueue (instead of in-handler polling) so the agent slot is held only during an actual attempt — ~10–30 s — not across the entire wait window.

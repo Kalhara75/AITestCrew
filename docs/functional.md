@@ -1075,8 +1075,9 @@ All settings are in `src/AiTestCrew.Runner/appsettings.json` under the `TestEnvi
 | Setting | Description | Default |
 |---|---|---|
 | `LlmProvider` | `"Anthropic"` or `"OpenAI"` | `"OpenAI"` |
-| `LlmApiKey` | API key for the LLM provider | *(required)* |
+| `LlmApiKey` | API key for the LLM provider. Leave blank on agent machines — set `LlmMode` to `Auto` or `RemoteProxy` instead. | *(required on server)* |
 | `LlmModel` | Model identifier | `"gpt-4o"` |
+| `LlmMode` | How the Runner selects its LLM backend. `Auto` (default): use local key when present, proxy via `ServerUrl` when not. `Local`: always use local key. `RemoteProxy`: always call the server's `/api/llm/chat`. | `"Auto"` |
 | `ApiStacks` | Dictionary of named API stacks (see [Multi-Stack API Configuration](#multi-stack-api-configuration)) | `{}` *(required)* |
 | `DefaultApiStack` | Default stack key when not specified per-run | `null` |
 | `DefaultApiModule` | Default module key when not specified per-run | `null` |

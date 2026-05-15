@@ -41,7 +41,7 @@ The dashboard server can run API and aseXML tests on its own. **Web UI and deskt
    ```json
    "ApiKey": "atc_8f3a9b7c..."
    ```
-   That's it. `ServerUrl` is already pre-filled, every team environment (URLs, AAD accounts, storage state paths) is baked in, and all secrets the admin had locally (passwords, DB connection strings, Service Bus keys, the LLM API key) have been **stripped** before the zip was built — the agent doesn't need them. It talks to the server over HTTP and authenticates browser sessions interactively in Step 3.
+   That's it. `ServerUrl` is already pre-filled, every team environment (URLs, AAD accounts, storage state paths) is baked in, and all secrets the admin had locally (passwords, DB connection strings, Service Bus keys, LLM API keys) have been **stripped** before the zip was built. Your agent's LLM calls (test generation, run summaries) are routed through the server — **you do not need an LLM API key**. The agent talks to the server over HTTP and authenticates browser sessions interactively in Step 3.
 
    **Optional — only if you'll run desktop (WinForms) tests:** find the env you'll use under `Environments` and point `WinFormsAppPath` at where the desktop app is installed on **your** machine, e.g.:
    ```json
