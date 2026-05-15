@@ -421,19 +421,46 @@ if (cli.NoDeferVerifications)
 
 builder.Services.AddSingleton(envConfig);
 
-// Semantic Kernel — provider chosen by LlmProvider config value
+// Semantic Kernel — pick LLM backend based on LlmMode (Auto | Local | RemoteProxy)
 var kernelBuilder = Kernel.CreateBuilder();
 
-if (envConfig.LlmProvider.Equals("Anthropic", StringComparison.OrdinalIgnoreCase))
 {
-    // Use a direct IChatCompletionService wrapper to avoid MEA version-compatibility
-    // issues between Anthropic.SDK and Microsoft.SemanticKernel.
-    kernelBuilder.Services.AddSingleton<IChatCompletionService>(
-        new AnthropicChatCompletionService(envConfig.LlmApiKey, envConfig.LlmModel));
-}
-else // OpenAI (default)
-{
-    kernelBuilder.AddOpenAIChatCompletion(envConfig.LlmModel, envConfig.LlmApiKey);
+    var hasLocalKey = !string.IsNullOrWhiteSpace(envConfig.LlmApiKey);
+    var hasServer   = !string.IsNullOrWhiteSpace(envConfig.ServerUrl)
+                   && !string.IsNullOrWhiteSpace(envConfig.ApiKey);
+    var llmMode     = envConfig.LlmMode ?? "Auto";
+
+    var useRemote = llmMode switch
+    {
+        "RemoteProxy" => true,
+        "Local"       => false,
+        _             => !hasLocalKey && hasServer,  // Auto: proxy only when no local key
+    };
+
+    if (useRemote)
+    {
+        AnsiConsole.MarkupLine($"[grey]LLM: RemoteProxy → {Markup.Escape(envConfig.ServerUrl)}/api/llm/chat[/]");
+        kernelBuilder.Services.AddSingleton<IChatCompletionService>(sp =>
+            new AiTestCrew.Agents.Llm.RemoteChatCompletionService(
+                sp.GetRequiredService<IHttpClientFactory>().CreateClient("llm"),
+                envConfig.ServerUrl,
+                envConfig.ApiKey,
+                envConfig.LlmModel,
+                sp.GetRequiredService<ILogger<AiTestCrew.Agents.Llm.RemoteChatCompletionService>>()));
+    }
+    else if (envConfig.LlmProvider.Equals("Anthropic", StringComparison.OrdinalIgnoreCase))
+    {
+        AnsiConsole.MarkupLine($"[grey]LLM: Local (Anthropic / {Markup.Escape(envConfig.LlmModel)})[/]");
+        // Use a direct IChatCompletionService wrapper to avoid MEA version-compatibility
+        // issues between Anthropic.SDK and Microsoft.SemanticKernel.
+        kernelBuilder.Services.AddSingleton<IChatCompletionService>(
+            new AnthropicChatCompletionService(envConfig.LlmApiKey, envConfig.LlmModel));
+    }
+    else
+    {
+        AnsiConsole.MarkupLine($"[grey]LLM: Local (OpenAI / {Markup.Escape(envConfig.LlmModel)})[/]");
+        kernelBuilder.AddOpenAIChatCompletion(envConfig.LlmModel, envConfig.LlmApiKey);
+    }
 }
 
 var kernel = kernelBuilder.Build();
@@ -441,6 +468,7 @@ builder.Services.AddSingleton(kernel);
 
 // HttpClient factory + environment resolver + API target resolver + ApiTestAgent
 builder.Services.AddHttpClient();
+builder.Services.AddHttpClient("llm");
 builder.Services.AddSingleton<IEnvironmentResolver>(sp =>
     new AiTestCrew.Agents.Environment.EnvironmentResolver(sp.GetRequiredService<TestEnvironmentConfig>()));
 builder.Services.AddSingleton<IApiTargetResolver>(sp => new ApiTargetResolver(
