@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 using AiTestCrew.Core.Models;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
@@ -8,12 +7,6 @@ namespace AiTestCrew.WebApi.Endpoints;
 
 public static class LlmEndpoints
 {
-    private static readonly JsonSerializerOptions _camelCase = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true,
-    };
-
     public static RouteGroupBuilder MapLlmEndpoints(this RouteGroupBuilder group)
     {
         // POST /api/llm/chat — proxy LLM call from a remote agent to the server's
