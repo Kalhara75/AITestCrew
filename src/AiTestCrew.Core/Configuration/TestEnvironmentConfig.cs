@@ -17,6 +17,12 @@ public class TestEnvironmentConfig
     public string LlmEndpoint { get; set; } = "https://api.openai.com/v1";
     public string LlmApiKey { get; set; } = "";
     public string LlmModel { get; set; } = "gpt-4o";
+    // LlmMode controls which LLM backend the Runner uses at startup.
+    // "Auto" (default): use local LlmApiKey when present; fall back to RemoteProxy when
+    //   ServerUrl + ApiKey are set and LlmApiKey is empty.
+    // "Local": always use the local LlmApiKey, even when a server is configured.
+    // "RemoteProxy": always route LLM calls to the server's /api/llm/chat endpoint.
+    public string LlmMode { get; set; } = "Auto";
     // Note: For Claude, use a proxy like LiteLLM that exposes
     // an OpenAI-compatible endpoint pointing to Anthropic's API.
     // Or use the Anthropic SK connector (community package).
