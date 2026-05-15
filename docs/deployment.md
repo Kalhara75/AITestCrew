@@ -119,8 +119,8 @@ Turns each QA engineer's Runner CLI into a long-running worker that claims jobs 
 
 **On the QA machine:**
 
-1. Clone and build the Runner (same binary as the CLI — no separate install).
-2. Set `ServerUrl` + `ApiKey` in `src/AiTestCrew.Runner/appsettings.json` so the Runner talks to the shared server.
+1. Clone and build the Runner (same binary as the CLI — no separate install). **Or**, if the admin built a redistributable agent pack with `.\publish.ps1 -Runner` (see [`publish.ps1`](../publish.ps1) header — emits `AITestCrew-Agent.zip`), just unzip it; no .NET SDK or repo clone required. The pack ships a templated `appsettings.json`, a `start-agent.cmd` for auto-start, and a README.
+2. Set `ServerUrl` + `ApiKey` in `src/AiTestCrew.Runner/appsettings.json` (or the pack's `appsettings.json`) so the Runner talks to the shared server. For new QAs, hand them [`docs/qa-quickstart.md`](qa-quickstart.md) — it walks through this end-to-end.
 3. Start the agent:
 
 ```powershell
