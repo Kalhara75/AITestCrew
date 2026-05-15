@@ -322,6 +322,7 @@ app.MapGroup("/api/data-packs").MapDataPackEndpoints();
 app.MapGroup("/api/db-check").MapDbCheckEndpoints();
 app.MapGroup("/api/event-assert").MapEventAssertEndpoints();
 app.MapGroup("/api/api-step").MapApiStepEndpoints();
+app.MapGroup("/api/llm").MapLlmEndpoints();
 if (envConfig.StorageProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCase))
 {
     app.MapGroup("/api/users").MapUserEndpoints();
