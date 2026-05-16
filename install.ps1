@@ -206,6 +206,59 @@ function Test-IsPreservedEnvField([string]$fieldName, $value) {
 
 
 
+# Discovers every Playwright storage-state file path referenced by appsettings.json
+# (top-level TestEnvironment + per-env). The shipped defaults are bare filenames at
+# install root (e.g. 'bravecloud-auth-state.json') -- they live outside the auth-state/
+# folder and would otherwise be wiped on upgrade.
+
+function Get-StorageStatePaths([hashtable]$Config) {
+
+    $paths = [System.Collections.Generic.List[string]]::new()
+
+    if ($null -eq $Config -or -not $Config.ContainsKey('TestEnvironment')) { return $paths }
+
+    $te = $Config['TestEnvironment']
+
+    if ($te -isnot [hashtable]) { return $paths }
+
+    foreach ($k in @($te.Keys)) {
+
+        if ($k -match 'StorageStatePath$' -and $null -ne $te[$k] -and "$($te[$k])" -ne '') {
+
+            $paths.Add("$($te[$k])")
+
+        }
+
+    }
+
+    if ($te.ContainsKey('Environments') -and $te['Environments'] -is [hashtable]) {
+
+        foreach ($envKey in @($te['Environments'].Keys)) {
+
+            $env = $te['Environments'][$envKey]
+
+            if ($env -isnot [hashtable]) { continue }
+
+            foreach ($k in @($env.Keys)) {
+
+                if ($k -match 'StorageStatePath$' -and $null -ne $env[$k] -and "$($env[$k])" -ne '') {
+
+                    $paths.Add("$($env[$k])")
+
+                }
+
+            }
+
+        }
+
+    }
+
+    return @($paths | Select-Object -Unique)
+
+}
+
+
+
 function Copy-PackFiles([string]$From, [string]$To) {
 
     $selfPath = ''
@@ -356,6 +409,39 @@ if (-not $CleanReinstall) {
 
     }
 
+    # Playwright storage-state files referenced by the existing appsettings.json --
+    # the shipped defaults are bare filenames at install root (e.g. bravecloud-auth-state.json,
+    # legacy-auth-state.sumo.json) which are NOT under auth-state/ and would otherwise be wiped.
+    $existingCfgForStateScan = Join-Path $InstallPath 'appsettings.json'
+
+    if (Test-Path $existingCfgForStateScan) {
+
+        try {
+
+            $cfgForScan = ConvertTo-Hashtable (Get-Content $existingCfgForStateScan -Raw | ConvertFrom-Json)
+
+            foreach ($rel in (Get-StorageStatePaths $cfgForScan)) {
+
+                if ([System.IO.Path]::IsPathRooted($rel)) { continue }
+
+                $fullPath = Join-Path $InstallPath $rel
+
+                if (-not (Test-Path $fullPath -PathType Leaf)) { continue }
+
+                if ($preservedFiles | Where-Object { $_['Rel'] -eq $rel }) { continue }
+
+                $preservedFiles.Add(@{ Rel = $rel; Bytes = [System.IO.File]::ReadAllBytes($fullPath) })
+
+            }
+
+        } catch {
+
+            Write-Warn "Could not scan appsettings.json for storage-state paths: $_"
+
+        }
+
+    }
+
     $agentId = Join-Path $InstallPath 'agent-id.txt'
 
     if (Test-Path $agentId) {
@@ -459,9 +545,9 @@ if ($null -ne $mergeResult) {
 
 }
 
-$authKept  = @($preservedFiles | Where-Object { $_['Rel'] -like 'auth-state*' })
+$authKept  = @($preservedFiles | Where-Object { $_['Rel'] -like 'auth-state*' -or $_['Rel'] -like '*auth-state*.json' })
 
-$otherKept = @($preservedFiles | Where-Object { $_['Rel'] -notlike 'auth-state*' })
+$otherKept = @($preservedFiles | Where-Object { $_['Rel'] -notlike 'auth-state*' -and $_['Rel'] -notlike '*auth-state*.json' })
 
 Write-Host ''
 
