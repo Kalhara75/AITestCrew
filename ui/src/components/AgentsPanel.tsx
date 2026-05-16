@@ -173,11 +173,6 @@ const capPill: React.CSSProperties = {
   padding: '2px 8px', borderRadius: 6, fontWeight: 500,
 };
 
-const sharedChipStyle: React.CSSProperties = {
-  fontSize: 11, color: "#1e40af", background: "#dbeafe",
-  padding: "2px 8px", borderRadius: 6, fontWeight: 600,
-};
-
 const forceBtnStyle: React.CSSProperties = {
   marginTop: 6,
   background: '#fef2f2', color: '#991b1b',
