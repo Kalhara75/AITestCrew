@@ -1,0 +1,6 @@
+{
+  "TestEnvironment": {
+    "ApiKey": "atc_key",
+    "LegacyTotpSecret": "ABCD1234"
+  }
+}

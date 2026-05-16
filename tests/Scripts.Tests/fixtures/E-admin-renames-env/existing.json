@@ -1,0 +1,11 @@
+{
+  "TestEnvironment": {
+    "ApiKey": "atc_key",
+    "Environments": {
+      "OldEnv": {
+        "DisplayName": "Old",
+        "WinFormsAppPath": "C:\\old.exe"
+      }
+    }
+  }
+}

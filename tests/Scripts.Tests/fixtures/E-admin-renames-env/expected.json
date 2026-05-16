@@ -1,0 +1,10 @@
+{
+  "TestEnvironment": {
+    "ApiKey": "atc_key",
+    "Environments": {
+      "NewEnv": {
+        "DisplayName": "New"
+      }
+    }
+  }
+}

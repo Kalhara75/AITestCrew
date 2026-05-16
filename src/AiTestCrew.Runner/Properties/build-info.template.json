@@ -1,0 +1,6 @@
+{
+  "version": "{{VERSION}}",
+  "buildDate": "{{BUILD_DATE}}",
+  "commit": "{{COMMIT}}",
+  "branch": "{{BRANCH}}"
+}

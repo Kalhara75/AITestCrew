@@ -1,0 +1,12 @@
+{
+  "TestEnvironment": {
+    "ApiKey": "",
+    "Environments": {
+      "TASN": {
+        "DisplayName": "TASN",
+        "WinFormsAppPath": "",
+        "BraveCloudUiUrl": "https://tasn-new.example.com"
+      }
+    }
+  }
+}

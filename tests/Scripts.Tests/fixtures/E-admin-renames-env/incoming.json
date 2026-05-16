@@ -1,0 +1,10 @@
+{
+  "TestEnvironment": {
+    "ApiKey": "",
+    "Environments": {
+      "NewEnv": {
+        "DisplayName": "New"
+      }
+    }
+  }
+}

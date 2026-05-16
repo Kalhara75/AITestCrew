@@ -1,0 +1,12 @@
+{
+  "TestEnvironment": {
+    "ApiKey": "atc_key",
+    "Environments": {
+      "TASN": {
+        "DisplayName": "TASN",
+        "WinFormsAppPath": "C:\\Bravo\\BravoWin.exe",
+        "BraveCloudUiUrl": "https://tasn-new.example.com"
+      }
+    }
+  }
+}

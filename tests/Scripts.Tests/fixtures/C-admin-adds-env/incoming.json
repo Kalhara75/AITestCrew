@@ -1,0 +1,13 @@
+{
+  "TestEnvironment": {
+    "ApiKey": "",
+    "Environments": {
+      "TASN": {
+        "DisplayName": "TASN"
+      },
+      "NEMA": {
+        "DisplayName": "NEMA"
+      }
+    }
+  }
+}

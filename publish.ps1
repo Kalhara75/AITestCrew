@@ -170,9 +170,24 @@ AITestCrew QA Agent Pack
 This folder turns your machine into a worker that the AITestCrew dashboard can
 dispatch Web UI, Desktop UI, and recording jobs onto.
 
-ONE-TIME SETUP
---------------
-1. Open appsettings.json and set ONE field:
+INSTALL / UPGRADE
+-----------------
+Run install.cmd (double-click or from cmd/PowerShell):
+
+    install.cmd
+
+The installer handles both first-time install and in-place upgrades. On upgrade
+it preserves your ApiKey, AgentName, WinFormsAppPath (and any other per-machine
+path settings) and your saved browser auth state — so you won't need to re-run
+--auth-setup after an upgrade.
+
+Default install location: %LOCALAPPDATA%\AITestCrew\Agent\
+Custom location:          install.cmd -InstallPath C:\Tools\Agent\
+Clean reinstall:          install.cmd -CleanReinstall
+
+AFTER INSTALL — ONE-TIME SETUP (first install only)
+----------------------------------------------------
+1. Open appsettings.json in the install folder and set ONE field:
      - "ApiKey": "atc_..."                          (your personal API key)
    "ServerUrl" is already pre-filled, and your team's environments (URLs, AAD
    accounts, storage state paths, etc.) are baked in. All sensitive values
@@ -184,7 +199,7 @@ ONE-TIME SETUP
    OPTIONAL — only if you'll run desktop (WinForms) tests:
      Find your env block under "Environments" and set "WinFormsAppPath" to
      where the desktop app is installed on YOUR machine, e.g.:
-       "WinFormsAppPath": "C:\\Bravo\\BravoWin.exe"
+       "WinFormsAppPath": "C:\Bravo\BravoWin.exe"
 
 2. Install the Playwright browser (only needed if you'll record/run web tests):
      powershell -ExecutionPolicy Bypass -File .\playwright.ps1 install chromium
@@ -219,18 +234,54 @@ Press Win+R, type  shell:startup  and press Enter. Drop a shortcut to
 start-agent.cmd into that folder. The agent will start the next time you log in.
 
 For desktop tests the machine must stay logged in with an interactive session.
-See docs/deployment.md → "Local Agent Setup" on the server for the full reference.
+See docs/deployment.md -> "Local Agent Setup" on the server for the full reference.
 
 TROUBLESHOOTING
 ---------------
-- "Missing X-Api-Key header"  → ApiKey in appsettings.json is wrong or blank.
-- "Failed to register agent"  → ServerUrl unreachable (firewall? VPN? typo?).
-- Playwright browser missing  → re-run step 2 above.
-- Screenshots not appearing in the dashboard on failure → check this terminal
-  for "Screenshot upload failed" — usually a stale API key.
+- "Missing X-Api-Key header"  -> ApiKey in appsettings.json is wrong or blank.
+- "Failed to register agent"  -> ServerUrl unreachable (firewall? VPN? typo?).
+- Playwright browser missing  -> re-run step 2 above.
+- Screenshots not appearing in the dashboard on failure -> check this terminal
+  for "Screenshot upload failed" -- usually a stale API key.
 
 More help: ask the team for the AITestCrew QA Quickstart (docs/qa-quickstart.md).
 '@ | Set-Content -Path $readme -Encoding UTF8
+
+    # ── build-info.json ──
+    $templatePath = Join-Path $root "src/AiTestCrew.Runner/Properties/build-info.template.json"
+    if (Test-Path $templatePath) {
+        $buildVersion = "1.0.0"
+        $buildDate    = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
+        $commitHash   = (git -C $root rev-parse --short HEAD 2>$null)
+        $branchName   = (git -C $root rev-parse --abbrev-ref HEAD 2>$null)
+        if (-not $commitHash) { $commitHash = "unknown" }
+        if (-not $branchName) { $branchName = "unknown" }
+        $buildInfoJson = (Get-Content $templatePath -Raw) `
+            -replace '\{\{VERSION\}\}',    $buildVersion `
+            -replace '\{\{BUILD_DATE\}\}', $buildDate `
+            -replace '\{\{COMMIT\}\}',     $commitHash `
+            -replace '\{\{BRANCH\}\}',     $branchName
+        Set-Content -Path (Join-Path $runnerOut "build-info.json") -Value $buildInfoJson -Encoding UTF8
+        Write-Host "Emitted build-info.json (commit=$commitHash, branch=$branchName)" -ForegroundColor Cyan
+    } else {
+        Write-Host "build-info.template.json not found — skipping build-info.json" -ForegroundColor Yellow
+    }
+
+    # ── Installer scripts ──
+    $installerPs1 = Join-Path $root "install.ps1"
+    $installerCmd = Join-Path $root "install.cmd"
+    if (Test-Path $installerPs1) {
+        Copy-Item $installerPs1 (Join-Path $runnerOut "install.ps1") -Force
+        Write-Host "Copied install.ps1" -ForegroundColor Cyan
+    } else {
+        Write-Host "install.ps1 not found in repo root — skipping" -ForegroundColor Yellow
+    }
+    if (Test-Path $installerCmd) {
+        Copy-Item $installerCmd (Join-Path $runnerOut "install.cmd") -Force
+        Write-Host "Copied install.cmd" -ForegroundColor Cyan
+    } else {
+        Write-Host "install.cmd not found in repo root — skipping" -ForegroundColor Yellow
+    }
 
     # ── Zip the pack for distribution ──
     $zipPath = Join-Path $OutputDir "AITestCrew-Agent.zip"
@@ -244,8 +295,8 @@ More help: ask the team for the AITestCrew QA Quickstart (docs/qa-quickstart.md)
     Write-Host "Folder: $runnerOut"
     Write-Host "Zip:    $zipPath"
     Write-Host ""
-    Write-Host "Hand the zip to a QA engineer along with their atc_ API key." -ForegroundColor Cyan
-    Write-Host "They unzip, edit appsettings.json (ServerUrl + ApiKey), and run start-agent.cmd."
+    Write-Host "Hand the zip to a QA engineer. They run install.cmd (or install.ps1), enter their atc_ ApiKey when prompted,"
+    Write-Host "then double-click start-agent.cmd. No manual unzip required."
     return
 }
 

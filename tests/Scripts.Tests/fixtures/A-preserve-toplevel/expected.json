@@ -1,0 +1,8 @@
+{
+  "TestEnvironment": {
+    "ServerUrl": "http://server:5050",
+    "ApiKey": "atc_qakey123",
+    "AgentName": "",
+    "LlmMode": "Auto"
+  }
+}
