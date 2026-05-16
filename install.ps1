@@ -58,6 +58,44 @@ function Get-BuildLabel([string]$folder) {
 
 
 
+# ConvertFrom-Json -AsHashtable is PS6+. Recurse manually so we work on Windows PowerShell 5.1.
+
+function ConvertTo-Hashtable($InputObject) {
+
+    if ($null -eq $InputObject) { return $null }
+
+    if ($InputObject -is [System.Collections.IDictionary]) {
+
+        $ht = @{}
+
+        foreach ($key in @($InputObject.Keys)) { $ht[[string]$key] = ConvertTo-Hashtable $InputObject[$key] }
+
+        return $ht
+
+    }
+
+    if ($InputObject -is [System.Management.Automation.PSCustomObject]) {
+
+        $ht = @{}
+
+        foreach ($prop in $InputObject.PSObject.Properties) { $ht[$prop.Name] = ConvertTo-Hashtable $prop.Value }
+
+        return $ht
+
+    }
+
+    if ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
+
+        return ,@(foreach ($item in $InputObject) { ConvertTo-Hashtable $item })
+
+    }
+
+    return $InputObject
+
+}
+
+
+
 # Merge-AppSettings: merges QA existing config on top of incoming admin layout.
 
 # Returns: @{ Merged, Preserved(List[string]), Removed(List[string]) }
@@ -70,7 +108,7 @@ function Merge-AppSettings {
 
     $removed   = [System.Collections.Generic.List[string]]::new()
 
-    $result    = $Incoming | ConvertTo-Json -Depth 100 | ConvertFrom-Json -AsHashtable
+    $result    = ConvertTo-Hashtable ($Incoming | ConvertTo-Json -Depth 100 | ConvertFrom-Json)
 
     if (-not $result.ContainsKey('TestEnvironment') -or
 
@@ -338,9 +376,9 @@ if (-not $CleanReinstall) {
 
     if ((Test-Path $existingCfgPath) -and (Test-Path $incomingCfgPath)) {
 
-        $incomingCfg = Get-Content $incomingCfgPath -Raw | ConvertFrom-Json -AsHashtable
+        $incomingCfg = ConvertTo-Hashtable (Get-Content $incomingCfgPath -Raw | ConvertFrom-Json)
 
-        $existingCfg = Get-Content $existingCfgPath -Raw | ConvertFrom-Json -AsHashtable
+        $existingCfg = ConvertTo-Hashtable (Get-Content $existingCfgPath -Raw | ConvertFrom-Json)
 
         $mergeResult = Merge-AppSettings -Incoming $incomingCfg -Existing $existingCfg
 
