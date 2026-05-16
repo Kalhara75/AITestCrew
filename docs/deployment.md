@@ -119,8 +119,8 @@ Turns each QA engineer's Runner CLI into a long-running worker that claims jobs 
 
 **On the QA machine:**
 
-1. Clone and build the Runner (same binary as the CLI — no separate install). **Or**, if the admin built a redistributable agent pack with `.\publish.ps1 -Runner` (see [`publish.ps1`](../publish.ps1) header — emits `AITestCrew-Agent.zip`), just unzip it; no .NET SDK or repo clone required. The pack ships a templated `appsettings.json`, a `start-agent.cmd` for auto-start, and a README.
-2. Set `ServerUrl` + `ApiKey` in `src/AiTestCrew.Runner/appsettings.json` (or the pack's `appsettings.json`) so the Runner talks to the shared server. For new QAs, hand them [`docs/qa-quickstart.md`](qa-quickstart.md) — it walks through this end-to-end.
+1. Obtain `AITestCrew-Agent.zip` from your admin. Run `install.cmd` (double-click or from a terminal) — it installs the agent to `%LOCALAPPDATA%\AITestCrew\Agent\` by default, or pass `-InstallPath <path>` for a custom location. No .NET SDK or repo clone required. The installer handles both first-time install and in-place upgrades (see [Upgrading an agent](#upgrading-an-agent) below).
+2. Set `ApiKey` in `appsettings.json` in the install folder. `ServerUrl` is pre-filled by the admin. For new QAs, hand them [`docs/qa-quickstart.md`](qa-quickstart.md) — it walks through this end-to-end.
 3. Start the agent:
 
 ```powershell
@@ -169,6 +169,41 @@ When a Web UI or Desktop UI step fails, the agent captures a screenshot locally,
 
 **Legacy MVC concurrency:**
 The Legacy Web UI agent (`UI_Web_MVC`) serializes objective execution inside its process via a static semaphore — only one MVC test case runs at a time even when `MaxParallelAgents > 1`. This sidesteps the single-session / shared-ASP.NET-session issues that otherwise cause 15-second Playwright timeouts when many objectives in a test set run concurrently. Blazor (`UI_Web_Blazor`), API, aseXML, and Desktop agents continue to parallelize up to `MaxParallelAgents`.
+
+---
+
+### Upgrading an agent
+
+When the admin publishes a new agent pack, hand the `AITestCrew-Agent.zip` to QA engineers. They run:
+
+```cmd
+install.cmd
+```
+
+or, for a custom install path:
+
+```powershell
+.\install.ps1 -InstallPath C:\Tools\AITestCrew-Agent
+```
+
+The installer **preserves** across the upgrade:
+- `auth-state\*` — saved browser sessions (no need to re-run `--auth-setup`)
+- `logs\*` — diagnostic logs
+- `agent-id.txt` — the agent's registered identity on the server
+- `ApiKey` and `AgentName` from `appsettings.json` (when the incoming template has them blank)
+- `WinFormsAppPath` and any other `*Path` field in per-env config blocks
+
+Admin-removed fields (fields no longer present in the new template) are silently dropped; the installer prints a summary of what was preserved and removed.
+
+If you need to wipe everything and start fresh (e.g., corrupted state):
+
+```cmd
+install.cmd -CleanReinstall
+```
+
+This prompts for confirmation before wiping, because auth-state files will be lost.
+
+**build-info.json** — each pack now ships a `build-info.json` at pack root with `version`, `buildDate`, `commit`, and `branch`. The installer displays the previous and new build labels in its output so you can confirm the right version landed.
 
 ---
 

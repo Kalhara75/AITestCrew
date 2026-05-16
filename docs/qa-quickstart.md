@@ -35,9 +35,9 @@ The browser stores your key in `localStorage` so you only paste it once per brow
 
 The dashboard server can run API and aseXML tests on its own. **Web UI and desktop UI tests need an agent on a machine with a real desktop session** — that's why your laptop becomes a worker.
 
-1. **Unzip** `AITestCrew-Agent.zip` to somewhere stable like `C:\Tools\AITestCrew-Agent\`.
+1. **Run `install.cmd`** from the zip folder (double-click or from a terminal). It installs the agent to `%LOCALAPPDATA%\AITestCrew\Agent\` by default. Custom path: `install.cmd -InstallPath C:\Tools\AITestCrew-Agent`.
 
-2. **Edit `appsettings.json`** in that folder. You only need to fill **one** field:
+2. **Edit `appsettings.json`** in the install folder. You only need to fill **one** field:
    ```json
    "ApiKey": "atc_8f3a9b7c..."
    ```
@@ -45,19 +45,21 @@ The dashboard server can run API and aseXML tests on its own. **Web UI and deskt
 
    **Optional — only if you'll run desktop (WinForms) tests:** find the env you'll use under `Environments` and point `WinFormsAppPath` at where the desktop app is installed on **your** machine, e.g.:
    ```json
-   "WinFormsAppPath": "C:\\Bravo\\BravoWin.exe"
+   "WinFormsAppPath": "C:\Bravo\BravoWin.exe"
    ```
    Most QAs leave this blank — desktop testing is a smaller slice of the work.
 
+   > **Upgrading later:** when the admin sends a new zip, just run `install.cmd` from the new zip folder. Your `ApiKey`, saved browser sessions (`auth-state/`), and `WinFormsAppPath` are automatically preserved.
+
 3. **Install the Playwright browser** (only if you'll record/run web tests — most QAs do):
    ```powershell
-   cd C:\Tools\AITestCrew-Agent
+   cd %LOCALAPPDATA%\AITestCrew\Agent
    powershell -ExecutionPolicy Bypass -File .\playwright.ps1 install chromium
    ```
    The `-ExecutionPolicy Bypass` is needed because Windows blocks scripts unzipped from the internet by default. If you'd rather fix this once instead of typing it every time, run **as your user** (not admin):
    ```powershell
    Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-   Get-ChildItem -Recurse C:\Tools\AITestCrew-Agent | Unblock-File
+   Get-ChildItem -Recurse %LOCALAPPDATA%\AITestCrew\Agent | Unblock-File
    ```
    After that, `.\playwright.ps1 install chromium` works directly. If `Set-ExecutionPolicy` errors out with *"overridden by a policy defined at a more specific scope"*, your machine is locked down by IT Group Policy — fall back to `npx playwright install chromium` (needs Node.js) or ask IT to whitelist the agent folder.
 
