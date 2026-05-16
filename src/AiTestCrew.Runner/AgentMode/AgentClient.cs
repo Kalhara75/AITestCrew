@@ -26,10 +26,10 @@ internal sealed class AgentClient
     }
 
     public async Task<string> RegisterAsync(string? id, string name, string[] capabilities, string? version,
-        string? role = null, string[]? tags = null)
+        string? role = null, string[]? tags = null, bool isShared = false)
     {
         var res = await _http.PostAsJsonAsync("api/agents/register",
-            new { id, name, capabilities, version, role, tags }, JsonOpts);
+            new { id, name, capabilities, version, role, tags, isShared }, JsonOpts);
         res.EnsureSuccessStatusCode();
         var payload = await res.Content.ReadFromJsonAsync<RegisterResponse>(JsonOpts)
             ?? throw new InvalidOperationException("Empty register response");

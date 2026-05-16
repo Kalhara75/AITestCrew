@@ -2,7 +2,7 @@ namespace AiTestCrew.Core.Models;
 
 /// <summary>
 /// A registered Runner instance that can claim and execute queued jobs.
-/// Agents are long-lived — the Runner registers on startup and sends periodic heartbeats.
+/// Agents are long-lived -- the Runner registers on startup and sends periodic heartbeats.
 /// </summary>
 public class Agent
 {
@@ -12,7 +12,7 @@ public class Agent
     /// <summary>User who owns the API key used to register this agent.</summary>
     public string? UserId { get; set; }
 
-    /// <summary>Target types this agent can execute — e.g. ["UI_Web_Blazor", "UI_Desktop_WinForms"].</summary>
+    /// <summary>Target types this agent can execute -- e.g. ["UI_Web_Blazor", "UI_Desktop_WinForms"].</summary>
     public List<string> Capabilities { get; set; } = new();
 
     /// <summary>Runner version reported on registration (diagnostics only).</summary>
@@ -29,7 +29,7 @@ public class Agent
 
     /// <summary>
     /// When true, the agent should terminate itself on the next heartbeat response.
-    /// Set by the <c>POST /api/agents/{id}/force-quit</c> endpoint so a stuck recording
+    /// Set by the POST /api/agents/{id}/force-quit endpoint so a stuck recording
     /// can be killed remotely from the dashboard. Cleared on the next successful registration.
     /// </summary>
     public bool ForceQuitRequested { get; set; }
@@ -39,14 +39,22 @@ public class Agent
     /// Recording agents only claim Record/RecordSetup/RecordVerification/AuthSetup jobs.
     /// Execution agents only claim Run jobs.
     /// Both agents claim either kind.
-    /// Default 'Both' preserves current behaviour for agents registered before v12.
+    /// Default "Both" preserves current behaviour for agents registered before v12.
     /// </summary>
     public string Role { get; set; } = "Both";
 
     /// <summary>
     /// Free-form pool tags (e.g. ["ci", "linux-pool-a"]).
-    /// The queue uses these for required-tags filtering — the agent's tag set
-    /// must be a superset of any <c>RequiredTags</c> on the queue entry.
+    /// The queue uses these for required-tags filtering -- the agent"s tag set
+    /// must be a superset of any RequiredTags on the queue entry.
     /// </summary>
     public List<string> Tags { get; set; } = new();
+
+    /// <summary>
+    /// When true, this is a shared central-execution agent (e.g. a CI VM).
+    /// Shared agents are visible to admins and AuthStewards in the auth-health panel;
+    /// regular Users do not see them. Default false = personal agent owned by UserId.
+    /// Only admins can register or mark an agent as shared.
+    /// </summary>
+    public bool IsShared { get; set; }
 }

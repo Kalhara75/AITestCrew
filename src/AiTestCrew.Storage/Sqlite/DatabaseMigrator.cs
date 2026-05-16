@@ -239,7 +239,7 @@ public static class DatabaseMigrator
                 value TEXT NOT NULL
             );
 
-            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '12');
+            INSERT OR IGNORE INTO schema_version (key, value) VALUES ('version', '13');
             """;
         cmd.ExecuteNonQuery();
 
@@ -516,6 +516,35 @@ public static class DatabaseMigrator
         using var bump12 = conn.CreateCommand();
         bump12.CommandText = "UPDATE schema_version SET value = '12' WHERE key = 'version' AND CAST(value AS INTEGER) < 12";
         bump12.ExecuteNonQuery();
+
+        // -- v12 -> v13: user role column + agent is_shared flag --
+        // users.role: fixed enum User | AuthSteward | Admin.
+        // Bootstrap: the chronologically first user is promoted to Admin so there
+        // is always at least one admin on existing deployments.
+        // Subsequent users and all future creates default to 'User'.
+        if (!ColumnExists(conn, "users", "role"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'User'";
+            alter.ExecuteNonQuery();
+
+            // Promote the chronologically first user to Admin (bootstrap admin).
+            using var backfill = conn.CreateCommand();
+            backfill.CommandText = "UPDATE users SET role = 'Admin' WHERE id = (SELECT id FROM users ORDER BY created_at ASC LIMIT 1)";
+            backfill.ExecuteNonQuery();
+        }
+
+        // agents.is_shared: 0 = personal (default), 1 = shared central-execution agent.
+        if (!ColumnExists(conn, "agents", "is_shared"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE agents ADD COLUMN is_shared INTEGER NOT NULL DEFAULT 0";
+            alter.ExecuteNonQuery();
+        }
+
+        using var bump13 = conn.CreateCommand();
+        bump13.CommandText = "UPDATE schema_version SET value = '13' WHERE key = 'version' AND CAST(value AS INTEGER) < 13";
+        bump13.ExecuteNonQuery();
     }
 
     private static bool ColumnExists(SqliteConnection conn, string table, string column)

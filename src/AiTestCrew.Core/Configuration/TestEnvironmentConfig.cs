@@ -105,6 +105,9 @@ public class TestEnvironmentConfig
     // Execution = only claim Run jobs.
     // Both = claim any job matching capability (legacy behaviour).
     public string AgentRole { get; set; } = "Both";
+    // When true, registers this agent as a shared central-execution agent (visible to admins + AuthStewards).
+    // Default false = personal agent. Only admins can register a shared agent (server enforces).
+    public bool AgentShared { get; set; } = false;
     // Comma-separated pool tags this agent carries (e.g. "ci,nightly").
     // The queue required_tags filter must be a subset of these tags for this agent to claim.
     public string AgentTags { get; set; } = "";

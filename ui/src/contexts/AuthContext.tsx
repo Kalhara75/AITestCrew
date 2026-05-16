@@ -4,12 +4,15 @@ import type { ReactNode } from 'react';
 interface AuthUser {
   id: string;
   name: string;
+  role: string;
 }
 
 interface AuthContextType {
   user: AuthUser | null;
   apiKey: string | null;
   authRequired: boolean;
+  isAdmin: boolean;
+  isAuthSteward: boolean;
   login: (apiKey: string) => Promise<boolean>;
   logout: () => void;
   isLoading: boolean;
@@ -76,7 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!res.ok) return false;
       const data = await res.json();
       if (data.valid && data.user) {
-        setUser({ id: data.user.id, name: data.user.name });
+        setUser({ id: data.user.id, name: data.user.name, role: data.user.role ?? "User" });
         return true;
       }
       return false;
@@ -100,8 +103,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem(STORAGE_KEY);
   }
 
+  const isAdmin = user?.role === "Admin";
+  const isAuthSteward = user?.role === "Admin" || user?.role === "AuthSteward";
+
   return (
-    <AuthContext.Provider value={{ user, apiKey, authRequired, login, logout, isLoading }}>
+    <AuthContext.Provider value={{ user, apiKey, authRequired, login, logout, isLoading, isAdmin, isAuthSteward }}>
       {children}
     </AuthContext.Provider>
   );

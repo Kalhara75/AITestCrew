@@ -19,13 +19,14 @@ internal sealed class AgentRunner
     private readonly string[] _capabilities;
     private readonly string _role;
     private readonly string[] _tags;
+    private readonly bool _isShared;
     private readonly string _agentIdFilePath;
     private readonly AuthStateScanner? _authStateScanner;
 
     public AgentRunner(AgentClient client, JobExecutor executor, TestEnvironmentConfig config,
         ILogger logger, string name, string[] capabilities,
         AuthStateScanner? authStateScanner = null,
-        string role = "Both", string[]? tags = null)
+        string role = "Both", string[]? tags = null, bool isShared = false)
     {
         _client = client;
         _executor = executor;
@@ -35,6 +36,7 @@ internal sealed class AgentRunner
         _capabilities = capabilities;
         _role = string.IsNullOrWhiteSpace(role) ? "Both" : role;
         _tags = tags ?? Array.Empty<string>();
+        _isShared = isShared;
         _authStateScanner = authStateScanner;
         _agentIdFilePath = Path.Combine(AppContext.BaseDirectory, ".agent-id");
     }
@@ -48,7 +50,7 @@ internal sealed class AgentRunner
     {
         var version = typeof(AgentRunner).Assembly.GetName().Version?.ToString() ?? "1.0.0";
         var existingId = ReadAgentId();
-        var agentId = await _client.RegisterAsync(existingId, _name, _capabilities, version, _role, _tags);
+        var agentId = await _client.RegisterAsync(existingId, _name, _capabilities, version, _role, _tags, isShared: _isShared);
         WriteAgentId(agentId);
 
         AnsiConsole.MarkupLine($"[green]Registered[/] as [bold]{Markup.Escape(agentId)}[/] ({Markup.Escape(_name)})");

@@ -33,7 +33,21 @@ export function AuthHealthPanel() {
 
   if (error) return null;
   const rows = tiles ?? [];
-  if (rows.length === 0) return null;
+  if (rows.length === 0) {
+    // Panel was shown last render but is now empty. Render a positive confirmation
+    // so users know the filtered scope is fresh (not that the panel failed to load).
+    // If tiles is undefined (still loading) keep null to avoid flash.
+    if (tiles !== undefined && tiles.length === 0) {
+      return (
+        <div style={freshPanelStyle}>
+          <span style={{ fontSize: 14, color: "#065f46" }}>
+            All your agents' auth states are fresh.
+          </span>
+        </div>
+      );
+    }
+    return null;
+  }
 
   const refresh = async (envKey: string, surface: AuthSurface) => {
     const created = await createAuthRefresh(envKey, surface);
@@ -216,4 +230,9 @@ const errorStyle: React.CSSProperties = {
   marginTop: 4, padding: '4px 8px',
   background: '#fee2e2', border: '1px solid #fecaca',
   color: '#7f1d1d', fontSize: 12, borderRadius: 4,
+};
+
+const freshPanelStyle: React.CSSProperties = {
+  background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10,
+  padding: '10px 14px', marginBottom: 20,
 };

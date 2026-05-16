@@ -19,18 +19,24 @@ public interface IAgentRepository
     /// <summary>Updates last_seen_at and status on each heartbeat.</summary>
     Task HeartbeatAsync(string id, string status);
 
-    /// <summary>Graceful deregister — removes the agent entirely.</summary>
+    /// <summary>Graceful deregister -- removes the agent entirely.</summary>
     Task DeleteAsync(string id);
 
     /// <summary>
-    /// Marks agents Offline when their last heartbeat is older than <paramref name="timeout"/>.
-    /// Called periodically by <c>AgentHeartbeatMonitor</c>.
+    /// Marks agents Offline when their last heartbeat is older than timeout.
+    /// Called periodically by AgentHeartbeatMonitor.
     /// </summary>
     Task<int> MarkStaleOfflineAsync(TimeSpan timeout);
 
     /// <summary>
-    /// Sets or clears the force-quit flag. When set, the agent's next heartbeat response
-    /// carries <c>shouldExit = true</c> and the Runner terminates via <c>Environment.Exit</c>.
+    /// Sets or clears the force-quit flag. When set, the agent"s next heartbeat response
+    /// carries shouldExit = true and the Runner terminates via Environment.Exit.
     /// </summary>
     Task SetForceQuitAsync(string id, bool requested);
+
+    /// <summary>
+    /// Sets or clears the is_shared flag on an existing agent.
+    /// Admin-only -- enforced at the endpoint layer, not here.
+    /// </summary>
+    Task SetSharedAsync(string id, bool isShared);
 }

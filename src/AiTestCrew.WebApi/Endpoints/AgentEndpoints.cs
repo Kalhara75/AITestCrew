@@ -7,7 +7,8 @@ public static class AgentEndpoints
 {
     public static RouteGroupBuilder MapAgentEndpoints(this RouteGroupBuilder group)
     {
-        // POST /api/agents/register — register a new agent or re-register an existing one
+        // POST /api/agents/register
+        // REQ-012: if IsShared=true, caller must be Admin.
         group.MapPost("/register", async (RegisterAgentRequest request, IAgentRepository repo,
             IRunQueueRepository queueRepo, HttpContext ctx) =>
         {
@@ -16,11 +17,20 @@ public static class AgentEndpoints
             if (request.Capabilities is null || request.Capabilities.Length == 0)
                 return Results.BadRequest(new { error = "capabilities is required" });
 
+            var me = ctx.Items["User"] as User;
+            var wantsShared = request.IsShared == true;
+
+            if (wantsShared && me is not null && me.Role != "Admin")
+                return Results.Problem(
+                    title: "Forbidden",
+                    detail: "Only admin users can register a shared agent",
+                    statusCode: 403);
+
             var agent = new Agent
             {
                 Id = string.IsNullOrWhiteSpace(request.Id) ? Guid.NewGuid().ToString("N")[..12] : request.Id!,
                 Name = request.Name,
-                UserId = (ctx.Items["User"] as User)?.Id,
+                UserId = me?.Id,
                 Capabilities = request.Capabilities.ToList(),
                 Version = request.Version,
                 Status = "Online",
@@ -28,12 +38,13 @@ public static class AgentEndpoints
                 RegisteredAt = DateTime.UtcNow,
                 Role = string.IsNullOrWhiteSpace(request.Role) ? "Both" : request.Role,
                 Tags = request.Tags is null ? new() : request.Tags.Where(t => !string.IsNullOrWhiteSpace(t)).ToList(),
+                IsShared = wantsShared,
             };
             await repo.UpsertAsync(agent);
             return Results.Ok(new { agentId = agent.Id });
         });
 
-        // POST /api/agents/{id}/heartbeat — keep-alive
+        // POST /api/agents/{id}/heartbeat
         group.MapPost("/{id}/heartbeat", async (string id, HeartbeatRequest request,
             IAgentRepository repo, IRunQueueRepository queueRepo,
             IAgentAuthStateRepository? authStateRepo) =>
@@ -41,9 +52,6 @@ public static class AgentEndpoints
             var existing = await repo.GetByIdAsync(id);
             if (existing is null) return Results.NotFound(new { error = $"Agent '{id}' not registered" });
 
-            // Pending force-quit: do NOT bump last_seen_at or status — the agent is about
-            // to call Environment.Exit on receiving shouldExit=true, and we want the
-            // dashboard to keep showing it as Offline until (or if) it re-registers.
             if (existing.ForceQuitRequested)
             {
                 return Results.Ok(new
@@ -58,9 +66,6 @@ public static class AgentEndpoints
             var status = string.IsNullOrWhiteSpace(request.Status) ? "Online" : request.Status;
             await repo.HeartbeatAsync(id, status);
 
-            // Persist the agent's current view of its cached storage-state files so
-            // the dashboard can warn about stale auth before a run kicks off.
-            // Tolerated as null for older agents that don't yet send the field.
             if (authStateRepo is not null && request.AuthStateFiles is not null)
             {
                 var entries = request.AuthStateFiles
@@ -77,7 +82,6 @@ public static class AgentEndpoints
                 await authStateRepo.ReplaceForAgentAsync(id, entries);
             }
 
-            // Include any job the server thinks this agent is actively running
             var activeJob = await queueRepo.GetActiveForAgentAsync(id);
             return Results.Ok(new
             {
@@ -88,8 +92,7 @@ public static class AgentEndpoints
             });
         });
 
-        // POST /api/agents/{id}/force-quit — flag agent to self-terminate on next heartbeat.
-        // Fails any in-flight job so the queue doesn't wedge on a dead agent.
+        // POST /api/agents/{id}/force-quit
         group.MapPost("/{id}/force-quit", async (string id, IAgentRepository repo, IRunQueueRepository queueRepo) =>
         {
             var existing = await repo.GetByIdAsync(id);
@@ -106,20 +109,18 @@ public static class AgentEndpoints
             return Results.Ok(new { forceQuitRequested = true, cancelledJobId = activeJob?.Id });
         });
 
-        // DELETE /api/agents/{id} — graceful deregister (Ctrl+C on Runner)
+        // DELETE /api/agents/{id}
         group.MapDelete("/{id}", async (string id, IAgentRepository repo,
             IAgentAuthStateRepository? authStateRepo) =>
         {
             var existing = await repo.GetByIdAsync(id);
             if (existing is null) return Results.NotFound(new { error = $"Agent '{id}' not registered" });
             await repo.DeleteAsync(id);
-            // Auth-state rows are owned by the agent — drop them so the health
-            // panel doesn't keep showing stale info for a machine that left.
             if (authStateRepo is not null) await authStateRepo.DeleteForAgentAsync(id);
             return Results.NoContent();
         });
 
-        // GET /api/agents — list all agents (for dashboard)
+        // GET /api/agents
         group.MapGet("/", async (IAgentRepository repo, IRunQueueRepository queueRepo, IUserRepository? userRepo) =>
         {
             var agents = await repo.ListAllAsync();
@@ -139,6 +140,7 @@ public static class AgentEndpoints
                     ownerName,
                     a.Capabilities, a.Version, a.Status,
                     a.Role, a.Tags,
+                    a.IsShared,
                     a.LastSeenAt, a.RegisteredAt,
                     currentJob = currentJob is null ? null : new
                     {
@@ -150,12 +152,29 @@ public static class AgentEndpoints
             return Results.Ok(result);
         });
 
+        // PUT /api/agents/{id}/shared -- Admin-only
+        group.MapPut("/{id}/shared", async (string id, SetSharedRequest request,
+            IAgentRepository repo, HttpContext ctx) =>
+        {
+            var me = ctx.Items["User"] as User;
+            if (me is not null && me.Role != "Admin")
+                return Results.Problem(title: "Forbidden", detail: "Only admins can change the shared flag", statusCode: 403);
+
+            var existing = await repo.GetByIdAsync(id);
+            if (existing is null) return Results.NotFound(new { error = $"Agent '{id}' not found" });
+
+            await repo.SetSharedAsync(id, request.IsShared);
+            return Results.Ok(new { id, isShared = request.IsShared });
+        });
+
         return group;
     }
 }
 
-public record RegisterAgentRequest(string? Id, string Name, string[] Capabilities, string? Version, string? Role = null, string[]? Tags = null);
+public record RegisterAgentRequest(string? Id, string Name, string[] Capabilities, string? Version, string? Role = null, string[]? Tags = null, bool? IsShared = null);
 
 public record HeartbeatRequest(string? Status, AuthStateFileReport[]? AuthStateFiles = null);
 
 public record AuthStateFileReport(string EnvKey, string Surface, bool FileExists, DateTime? FileMtimeUtc);
+
+public record SetSharedRequest(bool IsShared);

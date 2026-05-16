@@ -588,6 +588,8 @@ export interface AgentSummary {
   /** Agent role: Recording | Execution | Both */
   role: string;
   tags: string[];
+  /** True for shared central-execution agents (REQ-012). */
+  isShared: boolean;
   lastSeenAt: string;
   registeredAt: string;
   currentJob: {

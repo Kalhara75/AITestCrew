@@ -730,6 +730,8 @@ if (cli.AgentMode)
     var agentTagsRaw = !string.IsNullOrWhiteSpace(cli.AgentTags) ? cli.AgentTags
         : envConfig.AgentTags ?? "";
     var agentTagsList = agentTagsRaw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    // Shared: CLI flag --shared OR config AgentShared
+    var agentIsShared = cli.AgentShared || envConfig.AgentShared;
 
     var agentLogger = host.Services.GetRequiredService<ILogger<AiTestCrew.Runner.AgentMode.AgentRunner>>();
     var agentClient = new AiTestCrew.Runner.AgentMode.AgentClient(envConfig.ServerUrl, envConfig.ApiKey);
@@ -745,7 +747,7 @@ if (cli.AgentMode)
         host.Services.GetRequiredService<IEnvironmentResolver>());
     var agentRunner = new AiTestCrew.Runner.AgentMode.AgentRunner(
         agentClient, jobExecutor, envConfig, agentLogger, agentName, caps, authStateScanner,
-        role: agentRoleValue, tags: agentTagsList);
+        role: agentRoleValue, tags: agentTagsList, isShared: agentIsShared);
 
     using var shutdownCts = new CancellationTokenSource();
     Console.CancelKeyPress += (_, e) =>
@@ -1054,6 +1056,7 @@ static CliArgs ParseArgs(string[] args)
     bool agentMode = false;
     string? agentName = null, agentCapabilities = null;
     string? agentRole = null, agentTags = null;
+    bool agentShared = false;
     bool teardownDryRun = false, skipTeardown = false;
     bool noDeferVerifications = false;
     var mode = RunMode.Normal;
@@ -1240,6 +1243,9 @@ static CliArgs ParseArgs(string[] args)
                 break;
             case "--tags":
                 throw new ArgumentException("--tags requires a comma-separated list of pool tags.");
+            case "--shared":
+                agentShared = true;
+                break;
             case "--teardown-dry-run":
                 teardownDryRun = true;
                 break;
@@ -1293,6 +1299,7 @@ static CliArgs ParseArgs(string[] args)
         AgentCapabilities = agentCapabilities,
         AgentRole = agentRole,
         AgentTags = agentTags,
+        AgentShared = agentShared,
         TeardownDryRun = teardownDryRun,
         SkipTeardown = skipTeardown,
         NoDeferVerifications = noDeferVerifications,
@@ -1334,6 +1341,7 @@ class CliArgs
     public string? AgentCapabilities { get; init; }
     public string? AgentRole { get; init; }
     public string? AgentTags { get; init; }
+    public bool AgentShared { get; init; }
 
     /// <summary>
     /// --objective &lt;id&gt;. Context-dependent:

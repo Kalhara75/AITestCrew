@@ -23,9 +23,11 @@ public sealed class SqliteAgentRepository : IAgentRepository
 
         // Upsert clears force_quit_requested: a fresh registration means a fresh process,
         // so any pending force-quit signal from the previous run must not re-fire.
+        // is_shared is NOT cleared on re-registration so an admin-set shared flag survives
+        // the agent restarting. Use PUT /api/agents/{id}/shared to change it explicitly.
         cmd.CommandText = """
-            INSERT INTO agents (id, name, user_id, capabilities, version, status, last_seen_at, registered_at, force_quit_requested, role, tags)
-            VALUES ($id, $name, $userId, $caps, $version, $status, $now, $registered, 0, $role, $tags)
+            INSERT INTO agents (id, name, user_id, capabilities, version, status, last_seen_at, registered_at, force_quit_requested, role, tags, is_shared)
+            VALUES ($id, $name, $userId, $caps, $version, $status, $now, $registered, 0, $role, $tags, $isShared)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 user_id = excluded.user_id,
@@ -35,7 +37,8 @@ public sealed class SqliteAgentRepository : IAgentRepository
                 last_seen_at = excluded.last_seen_at,
                 force_quit_requested = 0,
                 role = excluded.role,
-                tags = excluded.tags
+                tags = excluded.tags,
+                is_shared = CASE WHEN excluded.is_shared = 1 THEN 1 ELSE is_shared END
             """;
         cmd.Parameters.AddWithValue("$id", agent.Id);
         cmd.Parameters.AddWithValue("$name", agent.Name);
@@ -47,6 +50,7 @@ public sealed class SqliteAgentRepository : IAgentRepository
         cmd.Parameters.AddWithValue("$registered", (agent.RegisteredAt == default ? now : agent.RegisteredAt).ToString("O"));
         cmd.Parameters.AddWithValue("$role", role);
         cmd.Parameters.AddWithValue("$tags", tagsJson);
+        cmd.Parameters.AddWithValue("$isShared", agent.IsShared ? 1 : 0);
         await cmd.ExecuteNonQueryAsync();
 
         agent.LastSeenAt = now;
@@ -124,8 +128,18 @@ public sealed class SqliteAgentRepository : IAgentRepository
         await cmd.ExecuteNonQueryAsync();
     }
 
+    public async Task SetSharedAsync(string id, bool isShared)
+    {
+        using var conn = _factory.CreateConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE agents SET is_shared = $val WHERE id = $id";
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$val", isShared ? 1 : 0);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
     private const string SelectSql =
-        "SELECT id, name, user_id, capabilities, version, status, last_seen_at, registered_at, force_quit_requested, role, tags FROM agents";
+        "SELECT id, name, user_id, capabilities, version, status, last_seen_at, registered_at, force_quit_requested, role, tags, is_shared FROM agents";
 
     private static Agent Read(SqliteDataReader r) => new()
     {
@@ -140,5 +154,6 @@ public sealed class SqliteAgentRepository : IAgentRepository
         ForceQuitRequested = r.GetInt32(8) != 0,
         Role = r.IsDBNull(9) ? "Both" : r.GetString(9),
         Tags = r.IsDBNull(10) ? new() : (JsonSerializer.Deserialize<List<string>>(r.GetString(10), JsonOpts.Value) ?? new()),
+        IsShared = !r.IsDBNull(11) && r.GetInt32(11) != 0,
     };
 }

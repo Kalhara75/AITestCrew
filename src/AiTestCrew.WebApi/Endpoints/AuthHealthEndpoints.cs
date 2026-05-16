@@ -11,14 +11,22 @@ namespace AiTestCrew.WebApi.Endpoints;
 /// environment?" with a separate refresh affordance per surface.
 ///
 /// Envs hidden via <see cref="EnvironmentConfig.AuthHealthEnabled"/> = false
-/// are filtered out — even if old <c>agent_auth_state</c> rows still exist
-/// for them — so the panel never offers refresh for an env the user has
+/// are filtered out -- even if old agent_auth_state rows still exist
+/// for them -- so the panel never offers refresh for an env the user has
 /// opted out of.
 ///
 /// Per-surface entries that are Fresh OR already covered by an active row
-/// in <c>run_auth_refreshes</c> are also dropped from the env's surface
-/// list (the reactive <c>AuthRefreshBanner</c> shows in-flight ones). A
+/// in run_auth_refreshes are also dropped from the env's surface
+/// list (the reactive AuthRefreshBanner shows in-flight ones). A
 /// tile is suppressed entirely when its surface list ends up empty.
+///
+/// Scoping (REQ-012): only agents visible to the current user are considered.
+///   User       -- sees own agents only (agent.user_id == me.id).
+///   AuthSteward -- sees own agents plus shared agents (is_shared = true).
+///   Admin      -- sees all agents (legacy behaviour).
+/// The panel renders "All your agents' auth states are fresh." when the
+/// filtered set has nothing actionable -- instead of an empty panel or
+/// confusing tiles for machines the user cannot reach.
 /// </summary>
 public static class AuthHealthEndpoints
 {
@@ -29,11 +37,24 @@ public static class AuthHealthEndpoints
             IAuthRefreshRepository refreshRepo,
             IAgentRepository agentRepo,
             IEnvironmentResolver envResolver,
-            TestEnvironmentConfig config) =>
+            TestEnvironmentConfig config,
+            HttpContext ctx) =>
         {
-            var states = await authStateRepo.ListForOnlineAgentsAsync();
+            var me = ctx.Items["User"] as User;
+
+            var allAgents = (await agentRepo.ListAllAsync()).ToDictionary(a => a.Id);
+
+            // Scope: which agent ids are visible to the current user?
+            var visibleAgentIds = allAgents.Values
+                .Where(a => IsVisibleToUser(a, me))
+                .Select(a => a.Id)
+                .ToHashSet();
+
+            var states = (await authStateRepo.ListForOnlineAgentsAsync())
+                .Where(s => visibleAgentIds.Contains(s.AgentId))
+                .ToList();
+
             var activeRefreshes = await refreshRepo.ListActiveAsync();
-            var agents = (await agentRepo.ListAllAsync()).ToDictionary(a => a.Id);
 
             var blazorTtl = Math.Max(1, config.BraveCloudUiStorageStateMaxAgeHours);
             var mvcTtl = Math.Max(1, config.LegacyWebUiStorageStateMaxAgeHours);
@@ -54,7 +75,7 @@ public static class AuthHealthEndpoints
                     var perAgent = g.Select(s => new
                     {
                         agentId = s.AgentId,
-                        agentName = agents.TryGetValue(s.AgentId, out var a) ? a.Name : s.AgentId,
+                        agentName = allAgents.TryGetValue(s.AgentId, out var a) ? a.Name : s.AgentId,
                         s.FileExists,
                         ageHours = s.FileMtimeUtc is null ? (double?)null
                             : Math.Round((now - s.FileMtimeUtc.Value).TotalHours, 2),
@@ -118,5 +139,20 @@ public static class AuthHealthEndpoints
         });
 
         return group;
+    }
+
+    /// <summary>
+    /// Returns true when the agent is visible to the given user based on role.
+    /// Null user (file-based storage mode with no auth) sees everything.
+    /// </summary>
+    public static bool IsVisibleToUser(Agent agent, User? me)
+    {
+        if (me is null) return true; // no auth mode -- show everything
+        return me.Role switch
+        {
+            "Admin" => true,
+            "AuthSteward" => agent.UserId == me.Id || agent.IsShared,
+            _ => agent.UserId == me.Id,
+        };
     }
 }
