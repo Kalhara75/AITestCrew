@@ -1465,7 +1465,7 @@ data/datapacks/{datateardown|datapreparation}/<envKey>/<NN.subfolder>/<NN.script
 }
 ```
 
-**Verify on the dashboard:** the "Startup Data Packs" panel above the modules grid shows per-env status (Ran / Skipped (opt-out) / Skipped (no DB conn) / Connection failed) and per-script ✓/✗/— with the verbatim SQL error on failures.
+**Verify on the dashboard:** navigate to the **System Health** page (`/system`) and open the "Startup Data Packs" panel, which shows per-env status (Ran / Skipped (opt-out) / Skipped (no DB conn) / Connection failed) and per-script ✓/✗/— with the verbatim SQL error on failures.
 
 **Trust boundary:** unlike per-test-set teardown, data-pack scripts are dev-authored and bypass `SqlGuardrails`. They can use `CREATE OR ALTER PROCEDURE`, `EXEC`, unbounded `DELETE`. Scripts must be idempotent (re-runnable on every WebApi start).
 
@@ -1501,13 +1501,34 @@ The home page shows all modules as cards. Each card displays:
 
 Click **+ Create Module** to add a new module.
 
-Above the module grid, status banners appear when there's something the user should act on:
+Above the module grid, action-required banners appear when there's something the user should act on:
 
 - **AuthRefreshBanner** (amber, 🔒) — surfaces auth failures from in-flight runs. One-click refresh resumes every paused run sharing the same scope. See [Seamless authentication recovery](#seamless-authentication-recovery).
-- **AuthHealthPanel** (amber/red, ⚠️) — pre-flight stale-storage-state warning, env-grouped, with a Refresh button per UI surface. Visible only when at least one env has a surface that's stale, expiring, or never recorded.
+- **AuthHealthPanel** (amber/red, ⚠️) — pre-flight stale-storage-state warning, env-grouped, with a Refresh button per UI surface. Visible only when at least one env has a surface that's stale, expiring, or never recorded. The "All fresh" green strip is suppressed here; visit the **System Health** page to see the full positive confirmation.
 - **QueueBanner** — active queued / claimed / running jobs across all agents.
-- **AgentsPanel** — registered Runner agents with status, capabilities, owner, current job, and Force-quit button.
-- **DataPacksPanel** — last startup data-pack run report (per env, per script, with stack traces on failure).
+
+Diagnostic-only panels (Agents, Startup Data Packs, Database Backup) have moved to the **[System Health page (`/system`)](#system-health-page)**. A coloured status dot on the System nav link summarises their health at a glance.
+
+### System Health Page
+
+The **System Health** page (`/system`) is the home for diagnostic-only panels that do not need to sit on the landing page. Navigate to it via the **System** link in the header nav.
+
+The System nav link displays an 8 px coloured dot summarising the aggregate health of the three panels:
+
+| Dot colour | Meaning |
+|---|---|
+| Green | All three panels report healthy: agents online, last backup under 90 min, no data-pack failures |
+| Amber | Warning condition in at least one panel: no agents online, no backup yet, or all envs skipped data packs |
+| Red | At least one panel is critical: recent backup error, or data-pack failures on last startup |
+
+Hovering the dot shows a tooltip with the per-panel breakdown, e.g. "Agents: green · Backup: amber · Data Packs: green".
+
+The page hosts, in order:
+
+1. **Agents** -- registered Runner agents with status (Online / Busy / Offline), capabilities, owner, current job, and Force-quit button.
+2. **Startup Data Packs** -- last startup data-pack run report (per env: Ran / Skipped / Connection failed; per script: success / failure with verbatim SQL error).
+3. **Database Backup** -- last backup time, size, error, and manual trigger button.
+4. **Auth Health (full view)** -- every environment's auth state including ones where all surfaces are Fresh. The green "All your agents' auth states are fresh" strip is visible here when everything is calm (it is suppressed on the Modules page).
 
 ### Module Detail
 
