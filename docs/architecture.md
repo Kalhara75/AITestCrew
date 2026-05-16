@@ -2665,7 +2665,7 @@ Interlocked.CompareExchange on _running prevents two concurrent backups (e.g. a 
 - GET /api/admin/backup/status -- last success, size, error, next scheduled time, total files on disk, oldest backup.
 - GET /api/admin/backup/list -- directory listing (paths only).
 
-All three are behind ApiKeyAuthMiddleware. The users.is_admin column was added in schema v11 so a future roles requirement can tighten these without a schema change.
+All three are behind ApiKeyAuthMiddleware. The users.is_admin column was added in schema v11 as a forward-compat landing. Role enforcement shipped in schema v13 (see the User roles + shared agents section below).
 
 ### Dashboard panel (BackupHealthPanel)
 
@@ -2699,3 +2699,76 @@ See docs/ops/backup-restore.md for step-by-step procedures (Windows container + 
 - Disk guard: MinFreeDiskMb (default 500). Set to 0 to disable.
 - Directory: must match the bind-mount target in docker-compose.yml.
 - Disable entirely: Enabled = false. No files will be written and the panel hides.
+
+
+## User roles + shared agents (REQ-012)
+
+### Problem solved
+
+In a multi-user deployment, the pre-flight auth-health panel showed every agent auth-state tile to every logged-in user. A QA on BRLAP110 would see "Expired 12d ago on Kalhara PC" tiles for machines they cannot access. The Refresh button for those tiles would enqueue a job that no available agent could claim.
+
+The orthogonal problem: a central CI VM is shared by the whole team, not owned by any one person. A simple "show only your own" filter would hide it from everyone.
+
+### Three-role model
+
+| Role | Assigned by | What they can do |
+|---|---|---|
+| User (default) | Auto-assigned on create | See and manage own agents; auth-health tiles for own agents only |
+| AuthSteward | Admin promotes | User rights plus shared agents in auth-health panel and Refresh on them |
+| Admin | Bootstrap (first user) or promotion | Everything AuthSteward does, plus: mark agents shared, promote/demote user roles, see all agents |
+
+Bootstrap rule: the first POST /api/users auto-promotes the new user to Admin. All subsequent creates default to User.
+
+### Shared agents
+
+Agent.IsShared (schema: agents.is_shared INTEGER NOT NULL DEFAULT 0) marks an agent as a shared central-execution agent (e.g. a CI VM). Shared agents are visible to admins and AuthStewards in the auth-health panel; plain Users do not see them. Only admins can register or toggle a shared agent.
+
+is_shared is sticky: re-registration without the --shared flag does NOT clear a previously-set flag. Use PUT /api/agents/{id}/shared to explicitly unshare.
+
+### Scoping predicate
+
+AuthHealthEndpoints.IsVisibleToUser(agent, me):
+
+```csharp
+return me.Role switch {
+    "Admin"        => true,
+    "AuthSteward"  => agent.UserId == me.Id || agent.IsShared,
+    _              => agent.UserId == me.Id,
+};
+```
+
+
+
+Auth-state tiles are filtered through this predicate before the grouping logic runs. A User with no actionable agents sees friendly copy: "All your agents auth states are fresh."
+
+### Defence-in-depth: 403 on refresh trigger
+
+POST /api/auth-refreshes/{id}/start re-checks visibility before enqueueing the AuthSetup job. Without this, the panel filter is cosmetic -- a crafted curl could enqueue a refresh for a machine the caller cannot access.
+
+### New endpoints
+
+| Endpoint | Auth | Behaviour |
+|---|---|---|
+| PUT /api/agents/{id}/shared | Admin | Toggle is_shared on an existing agent |
+| PUT /api/users/{id}/role | Admin | Promote / demote user role (last-admin guard) |
+| GET /api/users/me | Any | Now includes role field |
+| POST /api/users/validate | Public | Now returns role in the user payload |
+
+### CLI flag
+
+```powershell
+.\AiTestCrew.Runner.exe --agent --name "CI-VM-01" --shared --role Execution
+```
+
+Or via config: TestEnvironment.AgentShared = true. Server returns 403 if the caller is not Admin.
+
+### Schema v12 to v13
+
+```sql
+ALTER TABLE users  ADD COLUMN role      TEXT NOT NULL DEFAULT 'User';
+ALTER TABLE agents ADD COLUMN is_shared INTEGER NOT NULL DEFAULT 0;
+```
+
+Bootstrap: UPDATE users SET role = 'Admin' WHERE id = (SELECT id FROM users ORDER BY created_at ASC LIMIT 1).
+
+Both ALTERs are idempotent (ColumnExists guard). is_shared defaults to 0 so all existing agents remain personal.

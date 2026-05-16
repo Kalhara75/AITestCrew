@@ -110,6 +110,8 @@ Replace `<envKey>` with the environment your team uses (e.g. `sumo-retail`). Ask
 
 > **What if I get re-prompted later?** Storage state lives ~8 hours by default. The system also auto-recovers transparent re-logins in most cases — see `docs/architecture.md → Seamless Authentication Recovery`.
 
+> **Auth tiles are scoped to your machine.** The dashboard only shows auth-state tiles for agents you own. If you see an empty auth panel, that means all your agents have fresh sessions — not that something is broken.
+
 ---
 
 ## Step 4 — Record your first test (10 min)
