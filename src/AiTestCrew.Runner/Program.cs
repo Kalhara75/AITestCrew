@@ -440,6 +440,10 @@ var kernelBuilder = Kernel.CreateBuilder();
     if (useRemote)
     {
         AnsiConsole.MarkupLine($"[grey]LLM: RemoteProxy → {Markup.Escape(envConfig.ServerUrl)}/api/llm/chat[/]");
+        // IChatCompletionService is resolved from the Kernel's own service provider,
+        // so register HttpClient + logging on kernelBuilder.Services (not just builder.Services).
+        kernelBuilder.Services.AddHttpClient("llm");
+        kernelBuilder.Services.AddLogging();
         kernelBuilder.Services.AddSingleton<IChatCompletionService>(sp =>
             new AiTestCrew.Agents.Llm.RemoteChatCompletionService(
                 sp.GetRequiredService<IHttpClientFactory>().CreateClient("llm"),
