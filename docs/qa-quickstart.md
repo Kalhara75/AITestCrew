@@ -49,6 +49,20 @@ The dashboard server can run API and aseXML tests on its own. **Web UI and deskt
    ```
    Most QAs leave this blank — desktop testing is a smaller slice of the work.
 
+   **Also (desktop QAs only) — disable Bravo's auto-updater.** Bravo Win checks for new DLLs on every launch and, when it finds an update, pops a **Bravo Startup** dialog asking the user to **Update / Close / Launch**. That dialog blocks the agent — recordings stop at the prompt, replays time out waiting for the main window. Turn the check off **once per machine**:
+
+   1. Open `csla.config` in the same folder as `BravoWin.exe` (e.g. `C:\Bravo\csla.config`).
+   2. Find this line under `<appSettings>`:
+      ```xml
+      <add key="EnableAutoUpdate" value="true"/>
+      ```
+   3. Change `true` to `false` and save:
+      ```xml
+      <add key="EnableAutoUpdate" value="false"/>
+      ```
+
+   Launch Bravo manually once to confirm the startup dialog no longer appears — you should go straight to the login screen. Re-enable the flag (or run a regular Bravo install) when you need to pull a newer build; the test agent only cares that the dialog is absent at run time.
+
    > **Upgrading later:** when the admin sends a new zip, just run `install.cmd` from the new zip folder. Your `ApiKey`, saved browser sessions (`auth-state/`), and `WinFormsAppPath` are automatically preserved.
 
 3. **Install the Playwright browser** (only if you'll record/run web tests — most QAs do):
@@ -141,6 +155,7 @@ You've just done the simplest flow. The system has a lot more — API tests, dat
 | Agent shows Offline on dashboard | Check the agent terminal window — usually `ServerUrl` typo or firewall |
 | `Missing X-Api-Key header` | `ApiKey` in `appsettings.json` is wrong or blank |
 | Playwright browser not found | `.\playwright.ps1 install chromium` in the agent folder |
+| Desktop test hangs at "Bravo Startup" / Update dialog | Set `EnableAutoUpdate="false"` in `csla.config` next to `BravoWin.exe` — see Step 2 desktop setup |
 | Recording captured the wrong selector | [`docs/recording-troubleshooting.md`](recording-troubleshooting.md) — the recorder's known sharp edges and the diagnostic playbook |
 | "Awaiting Verification" stuck forever (aseXML) | Run `/tune-deferred-verification` in the assistant, or read [`docs/architecture.md → Deferred Post-Delivery Verification`](architecture.md) |
 | Anything else | Ping the team channel and link your assistant conversation — the admin can replay your thread |
