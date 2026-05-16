@@ -22,7 +22,7 @@ const statusCopy: Record<AuthHealthStatus, { headline: string; tone: 'amber' | '
  * users think about it: "is auth healthy for THIS customer?". Envs with
  * AuthHealthEnabled = false in config never appear here.
  */
-export function AuthHealthPanel({ hideFreshStrip }: { hideFreshStrip?: boolean } = {}) {
+export function AuthHealthPanel() {
   const qc = useQueryClient();
   const { data: tiles, error } = useQuery({
     queryKey: ['authHealth'],
@@ -38,7 +38,6 @@ export function AuthHealthPanel({ hideFreshStrip }: { hideFreshStrip?: boolean }
     // so users know the filtered scope is fresh (not that the panel failed to load).
     // If tiles is undefined (still loading) keep null to avoid flash.
     if (tiles !== undefined && tiles.length === 0) {
-      if (hideFreshStrip) return null;
       return (
         <div style={freshPanelStyle}>
           <span style={{ fontSize: 14, color: "#065f46" }}>
