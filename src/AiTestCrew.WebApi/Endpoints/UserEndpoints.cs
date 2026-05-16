@@ -107,8 +107,12 @@ public static class UserEndpoints
                         statusCode: 403);
             }
 
-            // Normalise casing to the canonical values.
-            var normalised = validRoles.Contains(request.Role) ? request.Role : request.Role;
+            // Normalise casing to the canonical values stored in the DB.
+            // validRoles uses OrdinalIgnoreCase so Contains() accepts any casing,
+            // but we must store the canonical form ("Admin" not "admin") so that
+            // exact-match role checks in middleware and endpoints work correctly.
+            var canonicalRoles = new[] { "User", "AuthSteward", "Admin" };
+            var normalised = canonicalRoles.First(r => string.Equals(r, request.Role, System.StringComparison.OrdinalIgnoreCase));
             await repo.SetRoleAsync(id, normalised);
             return Results.Ok(new { id, role = normalised });
         });
