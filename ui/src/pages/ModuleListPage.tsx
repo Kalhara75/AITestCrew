@@ -5,7 +5,6 @@ import { fetchModules } from '../api/modules';
 import { CreateModuleDialog } from '../components/CreateModuleDialog';
 import { QueueBanner } from '../components/QueueBanner';
 import { AuthRefreshBanner } from '../components/AuthRefreshBanner';
-import { AuthHealthPanel } from '../components/AuthHealthPanel';
 import { useActiveRun } from '../contexts/ActiveRunContext';
 
 export function ModuleListPage() {
@@ -23,7 +22,6 @@ export function ModuleListPage() {
   return (
     <div>
       <AuthRefreshBanner />
-      <AuthHealthPanel hideFreshStrip />
       <QueueBanner />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: '#0f172a' }}>Modules</h1>
