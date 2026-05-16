@@ -1058,7 +1058,7 @@ dotnet run --project src/AiTestCrew.Runner -- --agent --capabilities UI_Web_Blaz
 -  (default empty) -- free-form pool labels. A job enqueued with  is only claimable by agents whose tag set is a superset.
 - Both flags fall back to  /  in appsettings when not passed on the CLI.
 
-The run-trigger in the dashboard picks up online Execution/Both agents and offers a dropdown: "Any execution agent" (default) or a specific agent by name. Pre-validation at enqueue time returns 400 if the named agent isn't registered, lacks the capability, or has the wrong role.
+The run-trigger in the dashboard picks up online Execution/Both agents and offers a **Run on** dropdown. On first open, it auto-selects the current user's own online agent (most-recently-seen when there are several); if the user has no online agent, it falls back to "Any execution agent". A manually-pinned agent id (saved from a previous run or set explicitly) takes precedence over the auto-select. Pre-validation at enqueue time returns 400 if the named agent isn't registered, lacks the capability, or has the wrong role. Picker option labels show the agent name and tags only — role chips (`[Both]`, `[Execution]`) are suppressed because every entry is by definition execution-capable; a `(you)` suffix marks the current user's own machine.
 
 **Behaviour notes:**
 - **Screenshots** captured by the Web UI or Desktop UI agents (on step failure) are saved locally first, then uploaded to the server via `POST /api/screenshots` so the dashboard's execution-detail page can render them. Upload is silent on success; failures are logged as warnings but don't fail the run.

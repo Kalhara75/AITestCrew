@@ -135,7 +135,7 @@ The fastest way to learn the system is the **Assistant** — it speaks plain Eng
 6. Back in the assistant, ask:
    > *Run security/smoke*
 
-   A **Confirm run** card appears. Click **Run**. Watch the result in the Executions view.
+   A **Confirm run** card appears. The **Run on** dropdown already shows your own machine — your machine is the default; you only touch the dropdown when you want to run on someone else’s agent. Click **Run**. Watch the result in the Executions view.
 
 That's the end-to-end loop: **log in → record → run → see result**. Everything else in the system is variations on this pattern.
 
