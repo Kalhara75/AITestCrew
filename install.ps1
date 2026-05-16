@@ -363,6 +363,19 @@ if (-not $CleanReinstall) {
         $preservedFiles.Add(@{ Rel = 'agent-id.txt'; Bytes = [System.IO.File]::ReadAllBytes($agentId) })
 
     }
+    else {
+
+        # Migration: pre-fix builds wrote the id to '.agent-id' (no extension).
+        # Capture it under the canonical name so the stable identity survives this upgrade.
+        $legacyAgentId = Join-Path $InstallPath '.agent-id'
+
+        if (Test-Path $legacyAgentId) {
+
+            $preservedFiles.Add(@{ Rel = 'agent-id.txt'; Bytes = [System.IO.File]::ReadAllBytes($legacyAgentId) })
+
+        }
+
+    }
 
 }
 

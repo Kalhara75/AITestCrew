@@ -38,7 +38,7 @@ internal sealed class AgentRunner
         _tags = tags ?? Array.Empty<string>();
         _isShared = isShared;
         _authStateScanner = authStateScanner;
-        _agentIdFilePath = Path.Combine(AppContext.BaseDirectory, ".agent-id");
+        _agentIdFilePath = Path.Combine(AppContext.BaseDirectory, "agent-id.txt");
     }
 
     // Shared between the polling loop and the parallel heartbeat loop.
