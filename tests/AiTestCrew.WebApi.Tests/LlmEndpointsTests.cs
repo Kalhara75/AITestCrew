@@ -84,8 +84,17 @@ public class LlmEndpointsTests
                         services.AddRouting();
                         services.AddLogging();
                         services.AddSingleton<TestEnvironmentConfig>(new TestEnvironmentConfig());
-                        // Fake IChatCompletionService that returns a canned response
-                        services.AddSingleton<IChatCompletionService>(new FakeChatCompletionService());
+
+                        // Mirror prod wiring: register IChatCompletionService on the
+                        // Kernel's SP, then re-expose it on the main SP via factory.
+                        // Catches "UNKNOWN parameter binding" defects where prod
+                        // registers only on the Kernel's SP.
+                        var kb = Kernel.CreateBuilder();
+                        kb.Services.AddSingleton<IChatCompletionService>(new FakeChatCompletionService());
+                        var kernel = kb.Build();
+                        services.AddSingleton(kernel);
+                        services.AddSingleton(sp =>
+                            sp.GetRequiredService<Kernel>().GetRequiredService<IChatCompletionService>());
                     })
                     .Configure(app =>
                     {

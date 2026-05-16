@@ -55,6 +55,12 @@ else
 
 var kernel = kernelBuilder.Build();
 builder.Services.AddSingleton(kernel);
+// Re-expose the Kernel's IChatCompletionService on the main service provider so
+// minimal API endpoints (e.g. POST /api/llm/chat) can bind it via parameter
+// inference. Without this, the Kernel's SP holds the singleton but the main SP
+// reports IsService=false → routing matcher throws on first request to any route.
+builder.Services.AddSingleton(sp =>
+    sp.GetRequiredService<Kernel>().GetRequiredService<IChatCompletionService>());
 
 // ── HttpClient + environment resolver + API target resolver + API Agent ──
 builder.Services.AddHttpClient();
