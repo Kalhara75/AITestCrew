@@ -181,8 +181,12 @@ it preserves your ApiKey, AgentName, WinFormsAppPath (and any other per-machine
 path settings) and your saved browser auth state — so you won't need to re-run
 --auth-setup after an upgrade.
 
-Default install location: %LOCALAPPDATA%\AITestCrew\Agent\
-Custom location:          install.cmd -InstallPath C:\Tools\Agent\
+Default install location: C:\Tools\AITestCrew\
+   (If C:\Tools doesn't exist yet on this machine, the very first install needs
+   admin once -- right-click install.cmd -> Run as administrator. Subsequent
+   upgrades never need elevation. To skip the admin prompt entirely, install to
+   a per-user path:  install.cmd -InstallPath "%LOCALAPPDATA%\AITestCrew\Agent")
+Custom location:          install.cmd -InstallPath D:\Tools\AITestCrew
 Clean reinstall:          install.cmd -CleanReinstall
 
 AFTER INSTALL — ONE-TIME SETUP (first install only)

@@ -119,7 +119,7 @@ Turns each QA engineer's Runner CLI into a long-running worker that claims jobs 
 
 **On the QA machine:**
 
-1. Obtain `AITestCrew-Agent.zip` from your admin. Run `install.cmd` (double-click or from a terminal) — it installs the agent to `%LOCALAPPDATA%\AITestCrew\Agent\` by default, or pass `-InstallPath <path>` for a custom location. No .NET SDK or repo clone required. The installer handles both first-time install and in-place upgrades (see [Upgrading an agent](#upgrading-an-agent) below).
+1. Obtain `AITestCrew-Agent.zip` from your admin. Run `install.cmd` (double-click or from a terminal) — it installs the agent to `C:\Tools\AITestCrew\` by default, or pass `-InstallPath <path>` for a custom location. No .NET SDK or repo clone required. The first install on a machine that doesn't yet have `C:\Tools` needs one UAC prompt to create that folder (right-click → **Run as administrator**); every subsequent upgrade runs as the normal user with no prompt. To avoid the elevation entirely, install to a per-user location such as `%LOCALAPPDATA%\AITestCrew\Agent`. The installer handles both first-time install and in-place upgrades (see [Upgrading an agent](#upgrading-an-agent) below).
 2. Set `ApiKey` in `appsettings.json` in the install folder. `ServerUrl` is pre-filled by the admin. For new QAs, hand them [`docs/qa-quickstart.md`](qa-quickstart.md) — it walks through this end-to-end.
 3. Start the agent:
 
@@ -183,7 +183,7 @@ install.cmd
 or, for a custom install path:
 
 ```powershell
-.\install.ps1 -InstallPath C:\Tools\AITestCrew-Agent
+.\install.ps1 -InstallPath D:\Tools\AITestCrew
 ```
 
 The installer **preserves** across the upgrade:

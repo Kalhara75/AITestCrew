@@ -35,7 +35,7 @@ The browser stores your key in `localStorage` so you only paste it once per brow
 
 The dashboard server can run API and aseXML tests on its own. **Web UI and desktop UI tests need an agent on a machine with a real desktop session** — that's why your laptop becomes a worker.
 
-1. **Run `install.cmd`** from the zip folder (double-click or from a terminal). It installs the agent to `%LOCALAPPDATA%\AITestCrew\Agent\` by default. Custom path: `install.cmd -InstallPath C:\Tools\AITestCrew-Agent`.
+1. **Run `install.cmd`** from the zip folder (double-click or from a terminal). It installs the agent to `C:\Tools\AITestCrew\` by default. If `C:\Tools` doesn't yet exist on your machine, the very first install needs admin once — right-click `install.cmd` → **Run as administrator**. Subsequent upgrades never need elevation. Custom path: `install.cmd -InstallPath D:\Tools\AITestCrew`.
 
 2. **Edit `appsettings.json`** in the install folder. You only need to fill **one** field:
    ```json
@@ -53,13 +53,13 @@ The dashboard server can run API and aseXML tests on its own. **Web UI and deskt
 
 3. **Install the Playwright browser** (only if you'll record/run web tests — most QAs do):
    ```powershell
-   cd %LOCALAPPDATA%\AITestCrew\Agent
+   cd C:\Tools\AITestCrew
    powershell -ExecutionPolicy Bypass -File .\playwright.ps1 install chromium
    ```
    The `-ExecutionPolicy Bypass` is needed because Windows blocks scripts unzipped from the internet by default. If you'd rather fix this once instead of typing it every time, run **as your user** (not admin):
    ```powershell
    Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-   Get-ChildItem -Recurse %LOCALAPPDATA%\AITestCrew\Agent | Unblock-File
+   Get-ChildItem -Recurse C:\Tools\AITestCrew | Unblock-File
    ```
    After that, `.\playwright.ps1 install chromium` works directly. If `Set-ExecutionPolicy` errors out with *"overridden by a policy defined at a more specific scope"*, your machine is locked down by IT Group Policy — fall back to `npx playwright install chromium` (needs Node.js) or ask IT to whitelist the agent folder.
 

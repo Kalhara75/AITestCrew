@@ -8,13 +8,13 @@
 
 #   .\install.ps1 [-InstallPath <path>] [-CleanReinstall]
 
-# Default install path: $env:LOCALAPPDATA\AITestCrew\Agent
+# Default install path: C:\Tools\AITestCrew
 
 
 
 param(
 
-    [string]$InstallPath = (Join-Path $env:LOCALAPPDATA 'AITestCrew\Agent'),
+    [string]$InstallPath = 'C:\Tools\AITestCrew',
 
     [switch]$CleanReinstall
 
@@ -220,7 +220,39 @@ if (-not $isUpgrade -and -not $CleanReinstall) {
 
     Write-Header 'First install'
 
-    if (-not (Test-Path $InstallPath)) { New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null }
+    if (-not (Test-Path $InstallPath)) {
+
+        try { New-Item -ItemType Directory -Path $InstallPath -Force -ErrorAction Stop | Out-Null }
+
+        catch {
+
+            $parent = Split-Path $InstallPath -Parent
+
+            Write-Host ''
+
+            Write-Host "ERROR: Could not create $InstallPath." -ForegroundColor Red
+
+            Write-Host "Reason: $($_.Exception.Message)" -ForegroundColor Red
+
+            Write-Host ''
+
+            Write-Host "If '$parent' does not yet exist on this machine, Windows requires elevation to create it the first time." -ForegroundColor Yellow
+
+            Write-Host 'Fixes (pick one):' -ForegroundColor Yellow
+
+            Write-Host "  - Right-click install.cmd -> 'Run as administrator' (one-off; subsequent upgrades won't need it)." -ForegroundColor Yellow
+
+            Write-Host "  - Or, from an elevated terminal, run:  New-Item -ItemType Directory $parent" -ForegroundColor Yellow
+
+            Write-Host "    then re-run install.cmd as your normal user." -ForegroundColor Yellow
+
+            Write-Host "  - Or, install to a per-user location:  install.cmd -InstallPath `"`$env:LOCALAPPDATA\AITestCrew\Agent`"" -ForegroundColor Yellow
+
+            exit 1
+
+        }
+
+    }
 
     Copy-PackFiles $source $InstallPath
 
