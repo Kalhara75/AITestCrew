@@ -334,7 +334,7 @@ if (-not $CleanReinstall) {
 
         Copy-Item $existingCfgPath $backupFile -Force
 
-        Write-Info "Backed up appsettings.json -> .backupppsettings.json.$ts"
+        Write-Info "Backed up appsettings.json -> .backup/appsettings.json.$ts"
 
     }
 
