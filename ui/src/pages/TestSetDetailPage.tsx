@@ -21,6 +21,7 @@ import { EnvironmentParametersEditor } from '../components/EnvironmentParameters
 import { fetchEnvironments } from '../api/config';
 import { useActiveRun } from '../contexts/ActiveRunContext';
 import type { TestObjective, ObjectiveStatus, EnvironmentsResponse } from '../types';
+import { ImportFromXrayDialog } from '../components/ImportFromXrayDialog';
 
 export function TestSetDetailPage() {
   const { id, moduleId } = useParams<{ id: string; moduleId?: string }>();
@@ -34,6 +35,7 @@ export function TestSetDetailPage() {
   const [selectedObjectiveId, setSelectedObjectiveId] = useState<string | null>(null);
   const [deleteObjectiveId, setDeleteObjectiveId] = useState<string | null>(null);
   const [deletingObjective, setDeletingObjective] = useState(false);
+  const [showXrayImport, setShowXrayImport] = useState(false);
 
   const { data: module } = useQuery({
     queryKey: ['module', moduleId],
@@ -165,6 +167,12 @@ export function TestSetDetailPage() {
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexDirection: 'column' }}>
             <TriggerRunButton testSetId={testSet.id} moduleId={moduleId} apiStackKey={testSet.apiStackKey} apiModule={testSet.apiModule} environmentKey={testSet.environmentKey} />
+            <button
+              onClick={() => setShowXrayImport(true)}
+              style={{ padding: '6px 12px', fontSize: 13, background: '#7c3aed', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+            >
+              Import from Xray
+            </button>
             {isModuleScoped && (
               <button onClick={() => setShowDeleteConfirm(true)} style={deleteBtnStyle}>
                 Delete Test Set
@@ -361,6 +369,18 @@ export function TestSetDetailPage() {
           onMoved={handleObjectiveMoved}
         />
       )}
+
+      {/* Xray import dialog */}
+      <ImportFromXrayDialog
+        open={showXrayImport}
+        moduleId={moduleId ?? ''}
+        testSetId={id ?? ''}
+        onClose={() => setShowXrayImport(false)}
+        onImported={() => {
+          setShowXrayImport(false);
+          queryClient.invalidateQueries({ queryKey: ['testSet', moduleId, id] });
+        }}
+      />
     </div>
   );
 }
