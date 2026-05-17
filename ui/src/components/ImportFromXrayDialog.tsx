@@ -4,6 +4,7 @@ import {
   confirmXrayImport,
   type XrayImportPreview,
   type XrayImportResult,
+  type ProposedObjective,
 } from '../api/xray';
 
 interface Props {
@@ -16,6 +17,15 @@ interface Props {
 
 type Phase = 'input' | 'loading' | 'review' | 'confirming' | 'done';
 
+interface MergeRequest {
+  slugToMerge: string;
+  mergeIntoSlug: string;
+}
+
+function initAcceptedSlugs(objectives: ProposedObjective[]): Set<string> {
+  return new Set(objectives.map(o => o.slug));
+}
+
 export function ImportFromXrayDialog({ open, moduleId, testSetId, onClose, onImported }: Props) {
   const [phase, setPhase] = useState<Phase>('input');
   const [ticketKey, setTicketKey] = useState('');
@@ -23,6 +33,11 @@ export function ImportFromXrayDialog({ open, moduleId, testSetId, onClose, onImp
   const [preview, setPreview] = useState<XrayImportPreview | null>(null);
   const [result, setResult] = useState<XrayImportResult | null>(null);
   const [collapseToSingle, setCollapseToSingle] = useState(false);
+
+  // Per-card state -- all reset when a new Preview is fetched
+  const [acceptedSlugs, setAcceptedSlugs] = useState<Set<string>>(new Set());
+  const [titleOverrides, setTitleOverrides] = useState<Record<string, string>>({});
+  const [mergeRequests, setMergeRequests] = useState<MergeRequest[]>([]);
 
   if (!open) return null;
 
@@ -33,11 +48,27 @@ export function ImportFromXrayDialog({ open, moduleId, testSetId, onClose, onImp
     try {
       const p = await previewXrayImport({ ticketKey: ticketKey.trim(), moduleId, testSetId });
       setPreview(p);
+      setAcceptedSlugs(initAcceptedSlugs(p.proposedObjectives));
+      setTitleOverrides({});
+      setMergeRequests([]);
+      setCollapseToSingle(false);
       setPhase('review');
-    } catch (e: unknown) {
+    } catch (e) {
       setError(e instanceof Error ? e.message : 'Import preview failed');
       setPhase('input');
     }
+  };
+
+  const computeAcceptedObjectiveSlugs = () => {
+    if (!preview) return [];
+    const allSlugs = preview.proposedObjectives.map(o => o.slug);
+    const mergedSlugs = new Set(mergeRequests.map(r => r.slugToMerge));
+    const hasTouched =
+      allSlugs.some(s => !acceptedSlugs.has(s)) ||
+      mergeRequests.length > 0 ||
+      Object.keys(titleOverrides).length > 0;
+    if (!hasTouched) return [];
+    return allSlugs.filter(s => acceptedSlugs.has(s) && !mergedSlugs.has(s));
   };
 
   const handleConfirm = async () => {
@@ -46,19 +77,76 @@ export function ImportFromXrayDialog({ open, moduleId, testSetId, onClose, onImp
     try {
       const req = {
         preview,
-        acceptedObjectiveSlugs: [] as string[],
+        acceptedObjectiveSlugs: collapseToSingle ? [] : computeAcceptedObjectiveSlugs(),
         collapseToSingle,
-        titleOverrides: {},
-        mergeRequests: [],
+        titleOverrides: collapseToSingle ? {} : titleOverrides,
+        mergeRequests: collapseToSingle ? [] : mergeRequests,
       };
       const r = await confirmXrayImport(req);
       setResult(r);
       setPhase('done');
       onImported(r);
-    } catch (e: unknown) {
+    } catch (e) {
       setError(e instanceof Error ? e.message : 'Confirm failed');
       setPhase('review');
     }
+  };
+
+  const handleToggleAccepted = (slug: string, checked: boolean) => {
+    setAcceptedSlugs(prev => {
+      const next = new Set(prev);
+      if (checked) next.add(slug); else next.delete(slug);
+      return next;
+    });
+  };
+
+  const handleTitleChange = (slug: string, originalTitle: string, newTitle: string) => {
+    setTitleOverrides(prev => {
+      const next = { ...prev };
+      if (newTitle !== originalTitle) {
+        next[slug] = newTitle;
+      } else {
+        delete next[slug];
+      }
+      return next;
+    });
+  };
+
+  const handleMergeIntoAbove = (slug: string, prevSlug: string) => {
+    setMergeRequests(prev => [...prev, { slugToMerge: slug, mergeIntoSlug: prevSlug }]);
+    setAcceptedSlugs(prev => {
+      const next = new Set(prev);
+      next.delete(slug);
+      return next;
+    });
+  };
+
+  const handleUndoMerge = (slug: string) => {
+    setMergeRequests(prev => prev.filter(r => r.slugToMerge !== slug));
+    setAcceptedSlugs(prev => {
+      const next = new Set(prev);
+      next.add(slug);
+      return next;
+    });
+  };
+
+  const getImportLabel = () => {
+    if (!preview) return 'Import';
+    if (collapseToSingle) return 'Import (1 objective — collapsed)';
+    const mergedSlugs = new Set(mergeRequests.map(r => r.slugToMerge));
+    const count = preview.proposedObjectives.filter(
+      o => acceptedSlugs.has(o.slug) && !mergedSlugs.has(o.slug)
+    ).length;
+    return `Import (${count} objective${count === 1 ? '' : 's'})`;
+  };
+
+  const findPrevAcceptedSlug = (objectives: ProposedObjective[], currentIndex: number): string | null => {
+    const mergedSlugs = new Set(mergeRequests.map(r => r.slugToMerge));
+    for (let i = currentIndex - 1; i >= 0; i--) {
+      const s = objectives[i].slug;
+      if (acceptedSlugs.has(s) && !mergedSlugs.has(s)) return s;
+    }
+    return null;
   };
 
   return (
@@ -75,15 +163,15 @@ export function ImportFromXrayDialog({ open, moduleId, testSetId, onClose, onImp
             <label style={labelStyle}>Xray Ticket Key</label>
             <input
               style={inputStyle}
-              placeholder="e.g. PROJ-1234"
+              placeholder='e.g. PROJ-1234'
               value={ticketKey}
               onChange={e => setTicketKey(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handlePreview(); }}
               autoFocus
             />
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
-              <button type="button" onClick={onClose} style={cancelBtnStyle}>Cancel</button>
-              <button type="button" onClick={handlePreview} style={primaryBtnStyle} disabled={!ticketKey.trim()}>
+              <button type='button' onClick={onClose} style={cancelBtnStyle}>Cancel</button>
+              <button type='button' onClick={handlePreview} style={primaryBtnStyle} disabled={!ticketKey.trim()}>
                 Preview Import
               </button>
             </div>
@@ -111,25 +199,88 @@ export function ImportFromXrayDialog({ open, moduleId, testSetId, onClose, onImp
             )}
 
             <div style={objectiveListStyle}>
-              {preview.proposedObjectives.map((obj, i) => (
-                <div
-                  key={obj.slug}
-                  style={{
-                    padding: '10px 12px',
-                    borderBottom: i < preview.proposedObjectives.length - 1 ? '1px solid #e2e8f0' : 'none',
-                    opacity: collapseToSingle ? 0.5 : 1,
-                  }}
-                >
-                  <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{obj.title}</div>
-                  {obj.rationale && (
-                    <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>{obj.rationale}</div>
-                  )}
-                  <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
-                    {obj.mappingRows.length} step{obj.mappingRows.length === 1 ? '' : 's'}:{' '}
-                    {[...new Set(obj.mappingRows.map(r => r.kind))].join(', ')}
+              {preview.proposedObjectives.map((obj, i) => {
+                const mergedEntry = mergeRequests.find(r => r.slugToMerge === obj.slug);
+                const isMerged = !!mergedEntry;
+                const isChecked = acceptedSlugs.has(obj.slug) && !isMerged;
+                const currentTitle = titleOverrides[obj.slug] ?? obj.title;
+                const prevAcceptedSlug = findPrevAcceptedSlug(preview.proposedObjectives, i);
+
+                return (
+                  <div
+                    key={obj.slug}
+                    style={{
+                      padding: '10px 12px',
+                      borderBottom: i < preview.proposedObjectives.length - 1 ? '1px solid #e2e8f0' : 'none',
+                      opacity: isMerged ? 0.4 : (!isChecked ? 0.5 : 1),
+                      background: isMerged ? '#f1f5f9' : undefined,
+                    }}
+                  >
+                    {isMerged ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: 12, color: '#64748b', fontStyle: 'italic' }}>
+                          Merged into: {preview.proposedObjectives.find(o => o.slug === mergedEntry.mergeIntoSlug)?.title ?? mergedEntry.mergeIntoSlug}
+                        </span>
+                        <button
+                          type='button'
+                          disabled={collapseToSingle}
+                          onClick={() => handleUndoMerge(obj.slug)}
+                          style={undoMergeLinkStyle(collapseToSingle)}
+                        >
+                          Undo merge
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <input
+                            type='checkbox'
+                            checked={isChecked}
+                            disabled={collapseToSingle}
+                            onChange={e => handleToggleAccepted(obj.slug, e.target.checked)}
+                            style={{ flexShrink: 0, cursor: collapseToSingle ? 'not-allowed' : 'pointer' }}
+                          />
+                          <input
+                            type='text'
+                            value={currentTitle}
+                            disabled={collapseToSingle}
+                            onChange={e => handleTitleChange(obj.slug, obj.title, e.target.value)}
+                            onBlur={e => handleTitleChange(obj.slug, obj.title, e.target.value)}
+                            style={{
+                              ...titleInputStyle,
+                              opacity: collapseToSingle ? 0.5 : 1,
+                              cursor: collapseToSingle ? 'not-allowed' : 'text',
+                            }}
+                            aria-label={`Title for objective ${i + 1}`}
+                          />
+                        </div>
+
+                        {obj.rationale && (
+                          <div style={{ fontSize: 12, color: '#64748b', marginTop: 3, paddingLeft: 24 }}>{obj.rationale}</div>
+                        )}
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4, paddingLeft: 24 }}>
+                          <div style={{ fontSize: 11, color: '#94a3b8', flex: 1 }}>
+                            {obj.mappingRows.length} step{obj.mappingRows.length === 1 ? '' : 's'}:{' '}
+                            {[...new Set(obj.mappingRows.map(r => r.kind))].join(', ')}
+                          </div>
+                          {i > 0 && (
+                            <button
+                              type='button'
+                              disabled={collapseToSingle || !prevAcceptedSlug}
+                              onClick={() => prevAcceptedSlug && handleMergeIntoAbove(obj.slug, prevAcceptedSlug)}
+                              title={!prevAcceptedSlug ? 'No earlier objective to merge into' : 'Merge this objective into the one above'}
+                              style={mergeButtonStyle(collapseToSingle || !prevAcceptedSlug)}
+                            >
+                              Merge into above
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {preview.draftGapReqTitles.length > 0 && (
@@ -138,14 +289,14 @@ export function ImportFromXrayDialog({ open, moduleId, testSetId, onClose, onImp
                   {preview.draftGapReqTitles.length} capability gap{preview.draftGapReqTitles.length === 1 ? '' : 's'} — stub REQ file{preview.draftGapReqTitles.length === 1 ? '' : 's'} will be written:
                 </div>
                 <ul style={{ margin: 0, paddingLeft: 18 }}>
-                  {preview.draftGapReqTitles.map((t, i) => <li key={i}>{t}</li>)}
+                  {preview.draftGapReqTitles.map((t, idx) => <li key={idx}>{t}</li>)}
                 </ul>
               </div>
             )}
 
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, fontSize: 13, color: '#475569', cursor: 'pointer' }}>
               <input
-                type="checkbox"
+                type='checkbox'
                 checked={collapseToSingle}
                 onChange={e => setCollapseToSingle(e.target.checked)}
               />
@@ -153,10 +304,10 @@ export function ImportFromXrayDialog({ open, moduleId, testSetId, onClose, onImp
             </label>
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
-              <button type="button" onClick={() => setPhase('input')} style={cancelBtnStyle}>Back</button>
-              <button type="button" onClick={onClose} style={cancelBtnStyle}>Cancel</button>
-              <button type="button" onClick={handleConfirm} style={primaryBtnStyle}>
-                Import ({collapseToSingle ? 1 : preview.proposedObjectives.length} objective{collapseToSingle ? '' : (preview.proposedObjectives.length === 1 ? '' : 's')})
+              <button type='button' onClick={() => setPhase('input')} style={cancelBtnStyle}>Back</button>
+              <button type='button' onClick={onClose} style={cancelBtnStyle}>Cancel</button>
+              <button type='button' onClick={handleConfirm} style={primaryBtnStyle}>
+                {getImportLabel()}
               </button>
             </div>
           </div>
@@ -187,13 +338,13 @@ export function ImportFromXrayDialog({ open, moduleId, testSetId, onClose, onImp
                   {result.gapReqPaths.length} gap REQ stub{result.gapReqPaths.length === 1 ? '' : 's'} written:
                 </div>
                 <ul style={{ margin: 0, paddingLeft: 18, fontFamily: 'ui-monospace,Consolas,monospace', fontSize: 11, wordBreak: 'break-all' }}>
-                  {result.gapReqPaths.map((p, i) => <li key={i}>{p}</li>)}
+                  {result.gapReqPaths.map((p, idx) => <li key={idx}>{p}</li>)}
                 </ul>
               </div>
             )}
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
-              <button type="button" onClick={onClose} style={primaryBtnStyle}>Close</button>
+              <button type='button' onClick={onClose} style={primaryBtnStyle}>Close</button>
             </div>
           </div>
         )}
@@ -207,14 +358,14 @@ function Spinner() {
     <svg
       width={32}
       height={32}
-      viewBox="0 0 24 24"
-      fill="none"
+      viewBox='0 0 24 24'
+      fill='none'
       style={{ animation: 'aitc-spin 0.9s linear infinite', color: '#2563eb' }}
-      aria-hidden="true"
+      aria-hidden='true'
     >
-      <style>{`@keyframes aitc-spin { to { transform: rotate(360deg); } }`}</style>
-      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.25" strokeWidth="4" />
-      <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
+      <style>{'@keyframes aitc-spin { to { transform: rotate(360deg); } }'}</style>
+      <circle cx='12' cy='12' r='10' stroke='currentColor' strokeOpacity='0.25' strokeWidth='4' />
+      <path d='M4 12a8 8 0 018-8' stroke='currentColor' strokeWidth='4' strokeLinecap='round' />
     </svg>
   );
 }
@@ -233,6 +384,11 @@ const labelStyle: React.CSSProperties = {
 const inputStyle: React.CSSProperties = {
   width: '100%', padding: '8px 12px', fontSize: 14, border: '1px solid #e2e8f0',
   borderRadius: 8, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit',
+};
+const titleInputStyle: React.CSSProperties = {
+  flex: 1, padding: '3px 8px', fontSize: 13, fontWeight: 600, color: '#0f172a',
+  border: '1px solid #e2e8f0', borderRadius: 6, outline: 'none',
+  boxSizing: 'border-box', fontFamily: 'inherit', background: '#fff',
 };
 const cancelBtnStyle: React.CSSProperties = {
   background: '#f1f5f9', color: '#475569', border: 'none', padding: '8px 18px',
@@ -255,10 +411,28 @@ const successStyle: React.CSSProperties = {
   background: '#f0fdf4', borderRadius: 6, border: '1px solid #bbf7d0',
 };
 const objectiveListStyle: React.CSSProperties = {
-  border: '1px solid #e2e8f0', borderRadius: 8, maxHeight: 280, overflowY: 'auto',
+  border: '1px solid #e2e8f0', borderRadius: 8, maxHeight: 320, overflowY: 'auto',
   background: '#f8fafc',
 };
 const gapReqStyle: React.CSSProperties = {
   marginTop: 14, padding: '10px 12px', fontSize: 12, color: '#9a3412',
   background: '#fff7ed', borderRadius: 6, border: '1px solid #fed7aa',
 };
+
+function mergeButtonStyle(disabled: boolean): React.CSSProperties {
+  return {
+    background: '#f1f5f9', color: disabled ? '#94a3b8' : '#475569',
+    border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: 6,
+    fontSize: 11, fontWeight: 600, cursor: disabled ? 'not-allowed' : 'pointer',
+    opacity: disabled ? 0.5 : 1,
+  };
+}
+
+function undoMergeLinkStyle(disabled: boolean): React.CSSProperties {
+  return {
+    background: 'none', border: 'none', color: '#2563eb',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    fontSize: 11, textDecoration: 'underline', padding: 0,
+    opacity: disabled ? 0.5 : 1,
+  };
+}
