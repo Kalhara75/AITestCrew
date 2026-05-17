@@ -22,7 +22,6 @@ export function ImportFromXrayDialog({ open, moduleId, testSetId, onClose, onImp
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<XrayImportPreview | null>(null);
   const [result, setResult] = useState<XrayImportResult | null>(null);
-  const [acceptAll] = useState(true);
   const [collapseToSingle, setCollapseToSingle] = useState(false);
 
   if (!open) return null;
@@ -47,7 +46,7 @@ export function ImportFromXrayDialog({ open, moduleId, testSetId, onClose, onImp
     try {
       const req = {
         preview,
-        acceptedObjectiveSlugs: acceptAll ? [] : preview.proposedObjectives.map(o => o.slug),
+        acceptedObjectiveSlugs: [] as string[],
         collapseToSingle,
         titleOverrides: {},
         mergeRequests: [],
@@ -63,127 +62,203 @@ export function ImportFromXrayDialog({ open, moduleId, testSetId, onClose, onImp
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-        <h2 className="text-lg font-bold mb-4">Import from Jira Xray</h2>
+    <div style={overlayStyle} onClick={onClose}>
+      <div style={dialogStyle} onClick={e => e.stopPropagation()}>
+        <h2 style={{ margin: '0 0 20px', fontSize: 18, fontWeight: 700, color: '#0f172a' }}>
+          Import from Jira Xray
+        </h2>
 
-        {error && (
-          <div className="mb-4 rounded bg-red-50 border border-red-300 px-3 py-2 text-red-700 text-sm">
-            {error}
-          </div>
-        )}
+        {error && <div style={errorStyle}>{error}</div>}
 
         {phase === 'input' && (
-          <div className="space-y-4">
-            <label className="block text-sm font-medium text-gray-700">
-              Xray Ticket Key
-              <input
-                className="mt-1 block w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="e.g. PROJ-1234"
-                value={ticketKey}
-                onChange={e => setTicketKey(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') handlePreview(); }}
-              />
-            </label>
-            <div className="flex gap-2">
-              <button
-                className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50"
-                onClick={handlePreview}
-              >
+          <div>
+            <label style={labelStyle}>Xray Ticket Key</label>
+            <input
+              style={inputStyle}
+              placeholder="e.g. PROJ-1234"
+              value={ticketKey}
+              onChange={e => setTicketKey(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handlePreview(); }}
+              autoFocus
+            />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
+              <button type="button" onClick={onClose} style={cancelBtnStyle}>Cancel</button>
+              <button type="button" onClick={handlePreview} style={primaryBtnStyle} disabled={!ticketKey.trim()}>
                 Preview Import
               </button>
-              <button className="px-4 py-2 border rounded text-sm hover:bg-gray-50" onClick={onClose}>Cancel</button>
             </div>
           </div>
         )}
 
         {phase === 'loading' && (
-          <div className="flex flex-col items-center py-8 text-gray-500">
-            <svg className="animate-spin h-8 w-8 mb-3 text-blue-600" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z" />
-            </svg>
-            <p>Fetching and mapping ticket from Jira Xray...</p>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '32px 0', color: '#64748b' }}>
+            <Spinner />
+            <p style={{ margin: '14px 0 0', fontSize: 13 }}>Fetching and mapping ticket from Jira Xray...</p>
           </div>
         )}
 
         {phase === 'review' && preview && (
-          <div className="space-y-4">
-            <div className="text-sm text-gray-600">
-              <span className="font-medium">{preview.ticketKey}</span>{' '}
-              {preview.ticketSummary}
+          <div>
+            <div style={{ fontSize: 13, color: '#475569', marginBottom: 14 }}>
+              <span style={{ fontWeight: 700, color: '#0f172a' }}>{preview.ticketKey}</span>
+              {preview.ticketSummary && <span style={{ marginLeft: 8 }}>{preview.ticketSummary}</span>}
             </div>
+
             {preview.reviewCarefullyFlag && (
-              <div className="rounded bg-yellow-50 border border-yellow-300 px-3 py-2 text-yellow-800 text-sm">
-                More than 4 objectives proposed -- please review carefully.
+              <div style={warningStyle}>
+                More than 4 objectives proposed — please review carefully.
               </div>
             )}
-            <div className="space-y-3 max-h-64 overflow-y-auto border rounded p-3">
-              {preview.proposedObjectives.map((obj) => (
-                <div key={obj.slug} className="border-b pb-2 last:border-b-0">
-                  <p className="font-medium text-sm">{obj.title}</p>
-                  <p className="text-xs text-gray-500">{obj.rationale}</p>
-                  <p className="text-xs text-gray-400 mt-1">
-                    {obj.mappingRows.length} step(s): {' '}
+
+            <div style={objectiveListStyle}>
+              {preview.proposedObjectives.map((obj, i) => (
+                <div
+                  key={obj.slug}
+                  style={{
+                    padding: '10px 12px',
+                    borderBottom: i < preview.proposedObjectives.length - 1 ? '1px solid #e2e8f0' : 'none',
+                    opacity: collapseToSingle ? 0.5 : 1,
+                  }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{obj.title}</div>
+                  {obj.rationale && (
+                    <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>{obj.rationale}</div>
+                  )}
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                    {obj.mappingRows.length} step{obj.mappingRows.length === 1 ? '' : 's'}:{' '}
                     {[...new Set(obj.mappingRows.map(r => r.kind))].join(', ')}
-                  </p>
+                  </div>
                 </div>
               ))}
             </div>
+
             {preview.draftGapReqTitles.length > 0 && (
-              <div className="rounded bg-orange-50 border border-orange-200 px-3 py-2 text-sm">
-                <p className="font-medium text-orange-800 mb-1">
-                  {preview.draftGapReqTitles.length} capability gap(s) will create stub REQ files:
-                </p>
-                <ul className="list-disc ml-4 text-orange-700">
+              <div style={gapReqStyle}>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                  {preview.draftGapReqTitles.length} capability gap{preview.draftGapReqTitles.length === 1 ? '' : 's'} — stub REQ file{preview.draftGapReqTitles.length === 1 ? '' : 's'} will be written:
+                </div>
+                <ul style={{ margin: 0, paddingLeft: 18 }}>
                   {preview.draftGapReqTitles.map((t, i) => <li key={i}>{t}</li>)}
                 </ul>
               </div>
             )}
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={collapseToSingle} onChange={e => setCollapseToSingle(e.target.checked)} />
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, fontSize: 13, color: '#475569', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={collapseToSingle}
+                onChange={e => setCollapseToSingle(e.target.checked)}
+              />
               Collapse all objectives into one
             </label>
-            <div className="flex gap-2">
-              <button className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700" onClick={handleConfirm}>
-                Import ({preview.proposedObjectives.length} objective{preview.proposedObjectives.length !== 1 ? 's' : ''})
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
+              <button type="button" onClick={() => setPhase('input')} style={cancelBtnStyle}>Back</button>
+              <button type="button" onClick={onClose} style={cancelBtnStyle}>Cancel</button>
+              <button type="button" onClick={handleConfirm} style={primaryBtnStyle}>
+                Import ({collapseToSingle ? 1 : preview.proposedObjectives.length} objective{collapseToSingle ? '' : (preview.proposedObjectives.length === 1 ? '' : 's')})
               </button>
-              <button className="px-4 py-2 border rounded text-sm hover:bg-gray-50" onClick={() => setPhase('input')}>Back</button>
-              <button className="px-4 py-2 border rounded text-sm hover:bg-gray-50" onClick={onClose}>Cancel</button>
             </div>
           </div>
         )}
 
         {phase === 'confirming' && (
-          <div className="flex flex-col items-center py-8 text-gray-500">
-            <p>Persisting objectives and writing gap REQ files...</p>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '32px 0', color: '#64748b' }}>
+            <Spinner />
+            <p style={{ margin: '14px 0 0', fontSize: 13 }}>Persisting objectives and writing gap REQ files...</p>
           </div>
         )}
 
         {phase === 'done' && result && (
-          <div className="space-y-3">
-            <p className="text-green-700 font-medium">
-              Import complete. {result.persistedObjectiveIds.length} objective(s) added.
-            </p>
+          <div>
+            <div style={successStyle}>
+              Import complete. {result.persistedObjectiveIds.length} objective{result.persistedObjectiveIds.length === 1 ? '' : 's'} added.
+            </div>
+
             {result.placeholderStepDescriptions.length > 0 && (
-              <p className="text-sm text-gray-600">
-                {result.placeholderStepDescriptions.length} step(s) imported as placeholders -- record or fill in manually.
-              </p>
+              <div style={{ fontSize: 13, color: '#475569', marginTop: 12 }}>
+                {result.placeholderStepDescriptions.length} step{result.placeholderStepDescriptions.length === 1 ? '' : 's'} imported as placeholder{result.placeholderStepDescriptions.length === 1 ? '' : 's'} — record or fill in manually.
+              </div>
             )}
+
             {result.gapReqPaths.length > 0 && (
-              <div className="text-sm text-orange-700">
-                <p className="font-medium">{result.gapReqPaths.length} gap REQ stub(s) written:</p>
-                <ul className="list-disc ml-4 text-xs break-all">
+              <div style={gapReqStyle}>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                  {result.gapReqPaths.length} gap REQ stub{result.gapReqPaths.length === 1 ? '' : 's'} written:
+                </div>
+                <ul style={{ margin: 0, paddingLeft: 18, fontFamily: 'ui-monospace,Consolas,monospace', fontSize: 11, wordBreak: 'break-all' }}>
                   {result.gapReqPaths.map((p, i) => <li key={i}>{p}</li>)}
                 </ul>
               </div>
             )}
-            <button className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700" onClick={onClose}>Close</button>
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
+              <button type="button" onClick={onClose} style={primaryBtnStyle}>Close</button>
+            </div>
           </div>
         )}
-
       </div>
     </div>
   );
 }
 
+function Spinner() {
+  return (
+    <svg
+      width={32}
+      height={32}
+      viewBox="0 0 24 24"
+      fill="none"
+      style={{ animation: 'aitc-spin 0.9s linear infinite', color: '#2563eb' }}
+      aria-hidden="true"
+    >
+      <style>{`@keyframes aitc-spin { to { transform: rotate(360deg); } }`}</style>
+      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.25" strokeWidth="4" />
+      <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+const overlayStyle: React.CSSProperties = {
+  position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex',
+  alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+};
+const dialogStyle: React.CSSProperties = {
+  background: '#fff', borderRadius: 12, padding: 28, width: 640, maxWidth: '90vw',
+  maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.15)',
+};
+const labelStyle: React.CSSProperties = {
+  display: 'block', fontSize: 13, fontWeight: 600, color: '#475569', marginBottom: 6,
+};
+const inputStyle: React.CSSProperties = {
+  width: '100%', padding: '8px 12px', fontSize: 14, border: '1px solid #e2e8f0',
+  borderRadius: 8, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit',
+};
+const cancelBtnStyle: React.CSSProperties = {
+  background: '#f1f5f9', color: '#475569', border: 'none', padding: '8px 18px',
+  borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+};
+const primaryBtnStyle: React.CSSProperties = {
+  background: '#2563eb', color: '#fff', border: 'none', padding: '8px 18px',
+  borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+};
+const errorStyle: React.CSSProperties = {
+  color: '#dc2626', fontSize: 13, marginBottom: 16, padding: '8px 12px',
+  background: '#fef2f2', borderRadius: 6, border: '1px solid #fecaca',
+};
+const warningStyle: React.CSSProperties = {
+  color: '#92400e', fontSize: 13, marginBottom: 12, padding: '8px 12px',
+  background: '#fef3c7', borderRadius: 6, border: '1px solid #fde68a',
+};
+const successStyle: React.CSSProperties = {
+  color: '#166534', fontSize: 14, fontWeight: 600, padding: '10px 14px',
+  background: '#f0fdf4', borderRadius: 6, border: '1px solid #bbf7d0',
+};
+const objectiveListStyle: React.CSSProperties = {
+  border: '1px solid #e2e8f0', borderRadius: 8, maxHeight: 280, overflowY: 'auto',
+  background: '#f8fafc',
+};
+const gapReqStyle: React.CSSProperties = {
+  marginTop: 14, padding: '10px 12px', fontSize: 12, color: '#9a3412',
+  background: '#fff7ed', borderRadius: 6, border: '1px solid #fed7aa',
+};
