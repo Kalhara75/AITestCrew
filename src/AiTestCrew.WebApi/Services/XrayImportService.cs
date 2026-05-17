@@ -131,12 +131,18 @@ public class XrayImportService : IXrayImportService
                     XrayObjectiveSlug = obj.Slug,
                     Preconditions = obj.Preconditions,
                     TestDataNotes = obj.TestDataNotes,
-                    Source = "Generated",
+                    Source = "ImportedFromXray",
                     AgentName = ""
                 };
                 testSet.TestObjectives.Add(testObj);
             }
 
+            // Clear existing imported steps on re-import so mapping is idempotent.
+            testObj.ApiSteps.Clear();
+            testObj.WebUiSteps.Clear();
+            testObj.DesktopUiSteps.Clear();
+            testObj.AseXmlSteps.Clear();
+            testObj.AseXmlDeliverySteps.Clear();
             MapRowsToObjective(obj.MappingRows, testObj);
             persistedIds.Add(testObj.Id);
         }
@@ -152,11 +158,19 @@ public class XrayImportService : IXrayImportService
     }
     private async Task<List<ProposedObjective>> DecomposeAsync(XrayTestDto ticket, CancellationToken ct)
     {
-        var allSteps = string.Join(
-            "\n",
-            ticket.Steps.Select((s, i) =>
-                string.Format("Step {0}: Action=\"{1}\" ExpectedResult=\"{2}\"",
-                    i + 1, s.Action, s.ExpectedResult)));
+        // For description-driven tests (Steps empty), decompose using Expected Outcome bullets.
+        // For step-structured tests, use the structured Steps array.
+        var isDescriptionDriven = ticket.Steps.Count == 0;
+        var allSteps = isDescriptionDriven
+            ? string.Join(
+                "\n",
+                (ticket.ParsedDescription?.ExpectedOutcomes ?? []).Select((eo, i) =>
+                    string.Format("Expected Outcome {0}: {1}", i + 1, eo)))
+            : string.Join(
+                "\n",
+                ticket.Steps.Select((s, i) =>
+                    string.Format("Step {0}: Action=\"{1}\" ExpectedResult=\"{2}\"",
+                        i + 1, s.Action, s.ExpectedResult)));
 
         var prompt =
             "You are an expert test architect. A Jira Xray test ticket has been fetched.\n" +
@@ -198,15 +212,21 @@ public class XrayImportService : IXrayImportService
         }
     }
 
-    private static ProposedObjective DefaultObjective(XrayTestDto ticket) => new()
+    private static ProposedObjective DefaultObjective(XrayTestDto ticket)
     {
-        Slug = SlugHelper.ToSlug(ticket.Summary),
-        Title = ticket.Summary,
-        Rationale = "Single objective (LLM response fallback).",
-        AssignedFragments = ticket.Steps.Select(s => s.Action).ToList(),
-        Preconditions = ticket.ParsedDescription?.Preconditions ?? [],
-        TestDataNotes = ticket.ParsedDescription?.TestData
-    };
+        var fragments = ticket.Steps.Count > 0
+            ? ticket.Steps.Select(s => s.Action).ToList()
+            : ticket.ParsedDescription?.ExpectedOutcomes ?? [];
+        return new ProposedObjective
+        {
+            Slug = SlugHelper.ToSlug(ticket.Summary),
+            Title = ticket.Summary,
+            Rationale = "Single objective (LLM response fallback).",
+            AssignedFragments = fragments,
+            Preconditions = ticket.ParsedDescription?.Preconditions ?? [],
+            TestDataNotes = ticket.ParsedDescription?.TestData
+        };
+    }
     private async Task<List<XrayMappingRow>> MapFragmentsAsync(
         XrayTestDto ticket, ProposedObjective obj, CancellationToken ct)
     {
