@@ -2141,10 +2141,13 @@ Jira Xray credentials are configured **server-side only** — in the WebApi's `a
 Open a Test Set detail page and click the purple **Import from Xray** button. Enter an Xray ticket key (format: `PROJ-1234`), click **Preview**, review the proposed objectives and step-mapping table, then click **Confirm** to persist.
 
 The dialog shows:
-- Proposed objectives as collapsible cards with checkboxes (uncheck to skip)
-- Per-objective mapping table (source fragment, mapped step kind, confidence, notes)
+- **Per-objective cards** — each card has:
+  - A checkbox to accept or skip the objective (unchecking removes it from the import)
+  - An inline-editable title field (edited titles flow through as `TitleOverrides` — they become the persisted `TestObjective.Name`)
+  - A **Merge into above** button (cards 2+) that collapses the card's fragments into the nearest accepted objective above; an **Undo merge** link reverses it
+- **"Collapse all objectives into one" toggle** — disables per-card controls and imports everything as a single objective; per-card state is preserved if you toggle it back off
+- **Import button label** — updates in real time to reflect the count of accepted, non-merged objectives (or "1 objective — collapsed" when collapse is on)
 - Gap-REQ warnings if any steps are unsupported
-- "Import as a single objective" toggle to collapse all proposals into one
 - Success state listing persisted objective IDs and gap-REQ file paths
 
 ### Via the CLI
