@@ -421,6 +421,84 @@ if (cli.NoDeferVerifications)
 
 builder.Services.AddSingleton(envConfig);
 
+// ── Xray import (short-circuit) ──
+if (cli.ImportXrayTicketKey is not null)
+{
+    if (string.IsNullOrWhiteSpace(cli.ModuleId) || string.IsNullOrWhiteSpace(cli.TestSetId))
+    {
+        AnsiConsole.MarkupLine("[red]--import-xray requires --module <moduleId> and --testset <testSetId>.[/]");
+        return;
+    }
+    if (string.IsNullOrWhiteSpace(envConfig.JiraXray.BaseUrl))
+    {
+        AnsiConsole.MarkupLine("[red]TestEnvironment.JiraXray.BaseUrl is not configured. Add it to appsettings.json.[/]");
+        return;
+    }
+    var xrayServerUrl = envConfig.ServerUrl;
+    if (string.IsNullOrWhiteSpace(xrayServerUrl))
+    {
+        AnsiConsole.MarkupLine("[red]--import-xray requires TestEnvironment.ServerUrl (the WebApi must be running).[/]");
+        AnsiConsole.MarkupLine("[grey]Start the WebApi then re-run.[/]");
+        return;
+    }
+    // Delegate to the WebApi via HTTP -- the actual Xray client and LLM are on the server side
+    using var httpClient = new System.Net.Http.HttpClient();
+    if (!string.IsNullOrWhiteSpace(envConfig.ApiKey))
+        httpClient.DefaultRequestHeaders.Add("X-Api-Key", envConfig.ApiKey);
+
+    AnsiConsole.MarkupLine($"[cyan]Fetching and decomposing Xray ticket {cli.ImportXrayTicketKey}...[/]");
+    var previewBody = System.Text.Json.JsonSerializer.Serialize(new
+    {
+        ticketKey = cli.ImportXrayTicketKey,
+        moduleId = cli.ModuleId,
+        testSetId = cli.TestSetId
+    });
+    var previewResponse = await httpClient.PostAsync(
+        xrayServerUrl.TrimEnd("/"[0]) + "/api/xray/import",
+        new System.Net.Http.StringContent(previewBody, System.Text.Encoding.UTF8, "application/json"));
+
+    if (!previewResponse.IsSuccessStatusCode)
+    {
+        var err = await previewResponse.Content.ReadAsStringAsync();
+        AnsiConsole.MarkupLine($"[red]Import failed ({(int)previewResponse.StatusCode}): {Markup.Escape(err)}[/]");
+        return;
+    }
+
+    var previewJson = await previewResponse.Content.ReadAsStringAsync();
+    AnsiConsole.MarkupLine("[green]Preview received.[/]");
+    AnsiConsole.MarkupLine(previewJson.Length > 2000 ? Markup.Escape(previewJson[..2000]) + "..." : Markup.Escape(previewJson));
+
+    if (cli.XrayDryRun)
+    {
+        AnsiConsole.MarkupLine("[grey]--xray-dry-run: preview only, nothing persisted.[/]");
+        return;
+    }
+
+    // Auto-confirm (accept all objectives)
+    var confirmBody = System.Text.Json.JsonSerializer.Serialize(new
+    {
+        preview = System.Text.Json.JsonSerializer.Deserialize<object>(previewJson),
+        acceptedObjectiveSlugs = Array.Empty<string>(),
+        collapseToSingle = false,
+        titleOverrides = new Dictionary<string, string>(),
+        mergeRequests = Array.Empty<object>()
+    });
+    var confirmResponse = await httpClient.PostAsync(
+        xrayServerUrl.TrimEnd("/"[0]) + "/api/xray/import/confirm",
+        new System.Net.Http.StringContent(confirmBody, System.Text.Encoding.UTF8, "application/json"));
+
+    if (!confirmResponse.IsSuccessStatusCode)
+    {
+        var cErr = await confirmResponse.Content.ReadAsStringAsync();
+        AnsiConsole.MarkupLine($"[red]Confirm failed ({(int)confirmResponse.StatusCode}): {Markup.Escape(cErr)}[/]");
+        return;
+    }
+
+    var resultJson = await confirmResponse.Content.ReadAsStringAsync();
+    AnsiConsole.MarkupLine("[green]Import complete.[/] " + Markup.Escape(resultJson));
+    return;
+}
+
 // Semantic Kernel — pick LLM backend based on LlmMode (Auto | Local | RemoteProxy)
 var kernelBuilder = Kernel.CreateBuilder();
 
@@ -1059,6 +1137,8 @@ static CliArgs ParseArgs(string[] args)
     bool agentShared = false;
     bool teardownDryRun = false, skipTeardown = false;
     bool noDeferVerifications = false;
+    string? importXrayTicketKey = null;
+    bool xrayDryRun = false;
     var mode = RunMode.Normal;
 
     for (int i = 0; i < args.Length; i++)
@@ -1255,6 +1335,14 @@ static CliArgs ParseArgs(string[] args)
             case "--no-defer-verifications":
                 noDeferVerifications = true;
                 break;
+            case "--import-xray" when i + 1 < args.Length:
+                importXrayTicketKey = args[++i];
+                break;
+            case "--import-xray":
+                throw new ArgumentException("--import-xray requires a <ticketKey> argument.");
+            case "--xray-dry-run":
+                xrayDryRun = true;
+                break;
             default:
                 remaining.Add(args[i]);
                 break;
@@ -1303,6 +1391,8 @@ static CliArgs ParseArgs(string[] args)
         TeardownDryRun = teardownDryRun,
         SkipTeardown = skipTeardown,
         NoDeferVerifications = noDeferVerifications,
+        ImportXrayTicketKey = importXrayTicketKey,
+        XrayDryRun = xrayDryRun,
         VerifyStepFilter = verifyStepFilter
     };
 }
@@ -1376,6 +1466,13 @@ class CliArgs
     /// <summary>--no-defer-verifications: force synchronous post-delivery verifications
     /// for this run (overrides AseXml.DeferVerifications=true). Useful for local debugging.</summary>
     public bool NoDeferVerifications { get; init; }
+
+    // -- Xray import (REQ-017) --
+    /// <summary>--import-xray <ticketKey> imports a Jira Xray ticket into a test set.</summary>
+    public string? ImportXrayTicketKey { get; init; }
+
+    /// <summary>--xray-dry-run: preview the import without persisting anything.</summary>
+    public bool XrayDryRun { get; init; }
 
     /// <summary>--verify-step &lt;parentKind&gt;.&lt;parentIdx&gt;.&lt;postIdx&gt; — restricts a
     /// VerifyOnly run to a single post-step. Indices are 1-based on the CLI but stored
