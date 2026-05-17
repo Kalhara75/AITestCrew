@@ -17,9 +17,10 @@ Give a QA two new things:
 1. **Import an Xray test case by key.** Provide `PROJ-1234` (and a target module + test set) and AITestCrew:
    - Fetches the Xray test from Jira via REST.
    - Detects whether the test is **step-structured** (Xray `Steps[]` populated) or **description-driven** (test body lives in the free-form `Description` field with sections like Preconditions / Test Data / Expected Outcome). Both shapes are first-class inputs — the team uses each.
-   - Maps the Xray content to one or more AITestCrew steps (`ApiSteps`, `WebUiSteps`, `DesktopUiSteps`, `AseXmlSteps`, `AseXmlDeliverySteps`, DB Assert post-step, Event Assert post-step) using the same LLM-driven scaffolding the chat assistant already runs. For description-driven tests, **each "Expected Outcome" bullet typically becomes its own AITestCrew step** (UI placeholder, DB Assert, negative-permission check, UI-element-absence check, etc.) — not a single placeholder containing the whole description.
-   - Persists a new `TestObjective` in the chosen module/test set with `Source = "ImportedFromXray"` and a back-link to the ticket. Each mapped step carries the originating Xray fragment (a step line, an Expected Outcome bullet, or a Precondition) as its description so the QA knows what they're filling in when they record/extend it.
-   - Returns a per-step mapping report: *outcome 1 → WebUiStep placeholder + DB Assert post-step (confidence 0.9, partially authored)*; *outcome 2 → DB Assert post-step (confidence 0.85, fully authored)*; *outcome 3 → UNSUPPORTED (see REQ-XXX)*.
+   - **Proposes a decomposition into 1..N AITestCrew `TestObjective`s.** Xray test cases are authored for human execution; a single manual ticket frequently bundles several semantically-distinct scenarios (e.g. happy-path delete + permission-blocked-user attempt + UI-element-absence check when a guard condition differs) because a human tester reads through them sequentially. Automation benefits from splitting these into independent objectives — they can fail and retry in isolation, run in parallel, and produce clearer reports. The importer's first pass identifies whether the ticket is **cohesive** (one objective) or **multi-scenario** (N objectives) and presents the proposal in the preview before any mapping work happens. The QA either accepts the split, merges two proposals back into one, or collapses everything into a single objective.
+   - Maps the Xray content **per proposed objective** to one or more AITestCrew steps (`ApiSteps`, `WebUiSteps`, `DesktopUiSteps`, `AseXmlSteps`, `AseXmlDeliverySteps`, DB Assert post-step, Event Assert post-step) using the same LLM-driven scaffolding the chat assistant already runs. For description-driven tests, **each "Expected Outcome" bullet typically becomes its own AITestCrew step** (UI placeholder, DB Assert, negative-permission check, UI-element-absence check, etc.) within the objective it was assigned to — not a single placeholder containing the whole description, and not stuffed into a single objective when the bullets describe independent scenarios.
+   - Persists one or more new `TestObjective`s in the chosen module/test set, all with `Source = "ImportedFromXray"` and the same back-link to the ticket. Each mapped step carries the originating Xray fragment (a step line, an Expected Outcome bullet, or a Precondition) as its description so the QA knows what they're filling in when they record/extend it.
+   - Returns a per-objective mapping report: *Objective A "happy-path soft-delete" → 4 steps (1 UI placeholder + 3 DB Asserts, confidence 0.85)*; *Objective B "permission-blocked attempt" → 2 steps (UI placeholder under a different user, confidence 0.6)*; *Objective C "no delete option when NMI present" → 1 step (UNSUPPORTED, see REQ-XXX — negative UI assertion missing)*.
 
 2. **Auto-write a capability-gap REQ when a step can't be mapped.** If the LLM (or a rules check) flags an Xray step as outside AITestCrew's current capabilities — e.g. "verify PDF watermark text", "compare two Excel files cell-by-cell", "drive an SAP GUI window" — the import drops a stub `requirements/REQ-XXX-<slug>.md` in the working copy quoting the Xray ticket and step text as the source of need. The QA hands that file to the tooling team. No code change, no commit, no PR — just a populated stub on disk.
 
@@ -156,7 +157,51 @@ public async Task<XrayImportResult>  ConfirmAsync(XrayImportPreview preview, Can
 
 Re-importing the same Xray ticket key is **idempotent**: the existing objective with matching `XrayTicketKey` is updated, not duplicated. Newly-added Xray steps appear as new steps in the objective. Removed Xray steps are flagged in the preview but **not deleted** automatically — they're listed as "this step is no longer in Xray; delete manually if intended". This conservative posture protects work the QA has already recorded against a step.
 
-### 3a. Description-driven mapping (test body lives in the Description field)
+### 3a. Decomposition pass (one Xray ticket → 1..N AITestCrew objectives)
+
+Before mapping any step, the importer runs an LLM-driven decomposition pass over the Xray ticket. The LLM is given the full ticket (Summary, Description sections, Steps if any) and asked: **"Should this map to one AITestCrew `TestObjective` or several? If several, what are they, and which Xray steps / Expected Outcomes belong to each?"**
+
+The LLM returns a structured list:
+
+```
+ProposedObjectives: [
+  {
+    Slug: "happy-path-soft-delete-no-nmi",
+    Title: "Authorised user soft-deletes a Site without NMI",
+    Rationale: "Positive flow with cohesive setup + action + assertions",
+    AssignedFragments: [<Expected Outcome 1>, <Expected Outcome 2>, <Expected Outcome 6>]
+  },
+  {
+    Slug: "permission-blocked-soft-delete",
+    Title: "User without edit permission cannot soft-delete a Site",
+    Rationale: "Different actor (no-permission user) — independent failure isolation matters",
+    AssignedFragments: [<Expected Outcome 4>]
+  },
+  ...
+]
+```
+
+**Heuristics the LLM is prompted with** (these are guidance, not hard rules — the LLM applies judgment):
+
+1. **Different actor → split.** A scenario that requires a different user (no permission, read-only, admin) is its own objective. Same login + same permission set = same objective.
+2. **Different precondition data → split.** "Site without NMI" and "Site with NMI" are two starting points; they should be separate objectives even if the verifications look similar.
+3. **Negative-case verification with no positive action → split.** "Verify the delete button is absent when NMI is present" is a UI-state assertion with no action sequence; it deserves its own objective rather than being grafted onto a delete flow it doesn't share.
+4. **Different downstream system being verified → keep together unless the action diverges.** A scenario that touches UI then DB then audit-log columns is *one* objective — the UI action is what triggers all three verifications.
+5. **Repeated structure with different data → consider parameterisation, not duplication.** If the bullets describe "the same scenario, three times, with different data", the importer notes this in the proposal but **does not auto-split** — the QA decides whether to parameterise via per-env tokens or to keep one example case and add variants by hand.
+
+**Conservative posture.** The LLM is instructed to **prefer fewer objectives** when in doubt. Over-fragmentation creates more test-set noise than under-fragmentation, and the QA can always split later. A single Xray ticket producing more than 4 proposed objectives triggers a "review carefully" flag in the preview.
+
+**QA override.** The preview dialog (§6) shows the proposed objectives as a list with each one expandable to see its assigned fragments. The QA can:
+- **Accept all** — persist as proposed.
+- **Merge two** — pick two adjacent proposals and combine their fragments into one objective. (UI: drag-and-drop or a "Merge into above" button.)
+- **Collapse to one** — a top-level toggle "Import as a single objective" that overrides the decomposition entirely. Useful when the QA reads the proposal and decides the system over-fragmented.
+- **Re-title** — edit the proposed title/slug per objective inline before confirming.
+
+Splitting *more* than the LLM proposed is **out of scope for v1**. If a QA wants finer granularity, they accept the proposal and then duplicate/edit objectives via the existing test-set editor.
+
+**Idempotency under decomposition.** When re-importing the same ticket, matching is by `(XrayTicketKey, Slug)` — not just `XrayTicketKey`. So three objectives created on import 1 remain three objectives on import 2, each updated in place. If a re-import proposes a *different* decomposition (e.g. the ticket changed in Jira and now has a new scenario), new objectives are added; objectives whose slugs no longer appear in the proposal are flagged in the preview but **not** deleted — same conservative posture as removed-step handling.
+
+### 3b. Description-driven mapping (test body lives in the Description field)
 
 This is the path taken when `XrayTestDto.Steps` is empty and the whole test is encoded as prose in `Description`. The mapper:
 
@@ -188,22 +233,41 @@ Given the Description content:
 > 5. Verify there is no delete option in the Site search UI to soft delete Site records with a NMI
 > 6. Verify that soft-deleted Sites do not appear in standard search results (in UI) but can be retrieved via audit or admin queries in database
 
-The mapper produces this `TestObjective` skeleton (target env: TASN):
+**Decomposition pass output.** The §3a heuristics fire on this ticket: outcomes 1, 2, and 6 share an actor + action + setup (authorised user, performs soft-delete, verify post-state across UI + DB + admin query) — one objective. Outcome 4 has a *different actor* (no-permission user) — split. Outcome 5 has a *different precondition* (Site WITH NMI, not without) and no positive action — split. Outcome 3 is the post-deletion search; it shares the action with outcomes 1/2/6 (the deletion that happened a moment ago), so it stays with them. The LLM proposes **three objectives**:
+
+- **Objective A — "Authorised user soft-deletes a Site without NMI"** (outcomes 1, 2, 3, 6)
+- **Objective B — "User without edit permission cannot soft-delete a Site"** (outcome 4)
+- **Objective C — "No delete option in UI when the Site has an NMI"** (outcome 5)
+
+The QA sees the three proposals in the preview dialog and accepts. The mapper then produces step skeletons per objective (target env: TASN):
+
+**Objective A — Authorised user soft-deletes a Site without NMI**
 
 | # | Source bullet | AITestCrew shape | Confidence | Notes |
 |---|---|---|---|---|
-| Preconditions | "Some Site records must exist without an associated NMI" | `Preconditions[]` note + data-pack hint | — | Suggests `/add-data-pack-script` to seed Sites without NMI in TASN env if no matching pack exists |
-| Preconditions | "Different User setups (No Access / View / Edit)" | `Preconditions[]` note + permission-matrix hint | — | Flagged for QA — clone-per-role vs single objective with per-env users |
-| 1 | "Authorized user can soft-delete... IsDeleted=1" | **WebUiStep placeholder** (Bravo Web — locate Site, click Delete) + **DB Assert post-step** (`SELECT IsDeleted FROM Sites WHERE Id={{capturedSiteId}}`, assert `= 1`) | 0.85 | UI step needs recording; DB Assert auto-authored |
-| 2 | "Audit logs: ModifiedBy, ModifiedOn populated, IsDeleted=1" | **DB Assert post-step** (`SELECT ModifiedBy, ModifiedOn, IsDeleted FROM Sites WHERE Id={{capturedSiteId}}`, assert `ModifiedBy IS NOT NULL`, `ModifiedOn within last 60s`, `IsDeleted = 1`) | 0.9 | Auto-authored; QA tunes operators if needed |
-| 3 | "Soft-deleted Site no longer visible in default search (UI)" | **WebUiStep placeholder** (search by the deleted Site's identifier, assert not-present) | 0.7 | Negative UI assertion — needs recording; flagged for capability check (see below) |
-| 4 | "Users without edit/delete permissions cannot soft-delete" | **WebUiStep placeholder under a different user** | 0.6 | Permission-matrix; mapper flags this as the clearest case for either cloning the objective or using per-env user credentials |
-| 5 | "No delete option in Site search UI for Sites WITH an NMI" | **WebUiStep placeholder** (open a Site with NMI, assert delete button absent) | 0.7 | Negative UI assertion — see capability check below |
-| 6 | "Soft-deleted Sites... retrievable via audit/admin DB query" | **DB Assert post-step** (`SELECT * FROM Sites WHERE IsDeleted=1`, assert ≥ 1 row with the deleted Site's Id) | 0.85 | Auto-authored |
+| Pre | "Some Site records must exist without an associated NMI" | `Preconditions[]` + data-pack hint | — | Suggests `/add-data-pack-script` to seed Sites without NMI in TASN env if no matching pack exists |
+| 1 | EO #1 — "Authorized user can soft-delete... IsDeleted=1" | **WebUiStep placeholder** (Bravo Web — locate Site, click Delete, capture `{{siteId}}`) + **DB Assert post-step** (`SELECT IsDeleted FROM Sites WHERE Id={{siteId}}`, assert `= 1`) | 0.85 | UI step needs recording; DB Assert auto-authored |
+| 2 | EO #2 — "Audit logs: ModifiedBy, ModifiedOn populated, IsDeleted=1" | **DB Assert post-step** (`SELECT ModifiedBy, ModifiedOn, IsDeleted FROM Sites WHERE Id={{siteId}}`, assert `ModifiedBy IS NOT NULL`, `ModifiedOn within last 60s`, `IsDeleted = 1`) | 0.9 | Auto-authored |
+| 3 | EO #3 — "Soft-deleted Site no longer visible in default search (UI)" | **WebUiStep placeholder** (search by the deleted Site's identifier, assert not-present) | 0.7 | Negative UI assertion — see capability check below |
+| 4 | EO #6 — "Soft-deleted Sites... retrievable via audit/admin DB query" | **DB Assert post-step** (`SELECT * FROM Sites WHERE IsDeleted=1`, assert ≥ 1 row with `Id = {{siteId}}`) | 0.85 | Auto-authored |
 
-If the existing Bravo Web agent does not yet support **negative UI assertions** ("element should be absent" / "button should not be visible") as a first-class assertion, outcomes 3 and 5 are marked `kind: "unsupported"` and a gap REQ is generated. (As of writing, the desktop side has `assert-text` / `assert-count` but the absence-direction is not explicit in `CLAUDE.md`'s "Where to extend" table — this is exactly the kind of gap the import is designed to surface.)
+**Objective B — User without edit permission cannot soft-delete a Site**
 
-The QA opens the resulting objective in the existing editor, sees six steps with one-line descriptions quoting the Xray Expected Outcome bullets, records the UI placeholders against the TASN environment, and the DB Asserts are already authored. If gap REQs were written, they sit in `requirements/` for review.
+| # | Source bullet | AITestCrew shape | Confidence | Notes |
+|---|---|---|---|---|
+| Pre | "User configured with No Access / Read-Only role" | `Preconditions[]` + permission-matrix hint | — | Flagged for QA — needs a Read-Only-user env or per-env credentials override before this can run |
+| 1 | EO #4 — "Users without edit/delete permissions cannot soft-delete" | **WebUiStep placeholder under a different user** (locate Site without NMI; assert delete button absent OR delete attempt is rejected) | 0.6 | Hybrid: either "button absent" (negative UI assertion) or "click → expect error toast". QA decides at record-time. |
+
+**Objective C — No delete option in UI when the Site has an NMI**
+
+| # | Source bullet | AITestCrew shape | Confidence | Notes |
+|---|---|---|---|---|
+| Pre | "Site records must exist WITH an associated NMI" | `Preconditions[]` + data-pack hint | — | Different starting data than Objective A — Sites that *have* NMIs (the production-normal case) |
+| 1 | EO #5 — "No delete option in Site search UI for Sites WITH an NMI" | **WebUiStep placeholder** (open a Site with NMI, assert delete button absent) | 0.7 | Negative UI assertion — see capability check below |
+
+If the existing Bravo Web agent does not yet support **negative UI assertions** ("element should be absent" / "button should not be visible") as a first-class assertion, the relevant steps in Objectives A and C are marked `kind: "unsupported"` and a single gap REQ is generated (deduplicated — one REQ per missing capability, even when multiple imported steps trigger it). The "Where to extend" table in `CLAUDE.md` currently lists `assert-text` / `assert-count` for desktop and assorted Web assertions, but the absence-direction is not explicit — this is exactly the kind of gap the import is designed to surface.
+
+The QA opens each objective in the existing editor, sees its steps with one-line descriptions quoting the Xray bullets, records the UI placeholders against the TASN environment (Objective B needs the no-permission user wired up first), and the DB Asserts are already authored. The three objectives can run, fail, and retry independently — which is the whole point of the decomposition.
 
 ### 4. Capability-gap REQ stub generator
 
@@ -278,28 +342,46 @@ Optional `--xray-dry-run` flag returns the preview only and persists nothing —
 
 1. Single text input — Xray ticket key. Validation: must match `^[A-Z][A-Z0-9_]+-\d+$`.
 2. "Preview" button. Calls `POST /api/xray/import` (preview-only). Shows a spinner while the importer runs (typically 5-15 s — one LLM call).
-3. Renders the mapping table:
+3. Renders **the proposed decomposition first**, then the per-objective mapping. Each proposed objective is a collapsible card; clicking it expands the mapping table for that objective.
 
-   | Xray step | Mapped to | Confidence | Notes |
+   ```
+   ┌─ Proposed objectives for PROJ-1234 (3) ──────────────────────────────────┐
+   │ [✓] A. Authorised user soft-deletes a Site without NMI       (4 steps)  ▼│
+   │ [✓] B. User without edit permission cannot soft-delete       (1 step)   ▶│
+   │ [✓] C. No delete option in UI when the Site has an NMI       (1 step)   ▶│
+   │                                                                          │
+   │ [ ] Import as a single objective instead                                 │
+   └──────────────────────────────────────────────────────────────────────────┘
+   ```
+
+   - Each card has a checkbox (uncheck to skip that objective on confirm), an editable title, and a "Merge into above" button (disabled on the first card).
+   - The "Import as a single objective" toggle at the bottom collapses all proposals into one objective using the union of their fragments. The proposal cards grey out when this is checked.
+   - Expanding a card shows that objective's mapping table:
+
+   | Xray fragment | Mapped to | Confidence | Notes |
    |---|---|---|---|
-   | 1. "Open Customer screen and search by ID" | WebUiStep placeholder (UI_Web_Blazor) | 0.95 | Needs recording |
-   | 2. "Verify customer name = data.expectedName" | DB Assert post-step | 0.88 | Auto-authored |
-   | 3. "Generate PDF invoice and verify watermark" | UNSUPPORTED | n/a | Will write REQ-018 — PDF Content Assert |
+   | EO #1 — "Authorized user can soft-delete... IsDeleted=1" | WebUiStep placeholder + DB Assert | 0.85 | UI step needs recording |
+   | EO #2 — "Audit logs..." | DB Assert post-step | 0.9 | Auto-authored |
+   | EO #3 — "Soft-deleted Site no longer visible..." | UNSUPPORTED | n/a | Will write REQ-018 — Negative UI assertion |
+   | EO #6 — "Retrievable via admin DB query" | DB Assert post-step | 0.85 | Auto-authored |
 
-4. "Confirm" button — calls `POST /api/xray/import/confirm`, persists the objective, writes the gap REQ stubs, and closes the dialog with a success toast listing what was created.
+4. "Confirm" button — calls `POST /api/xray/import/confirm` with the (possibly QA-edited) decomposition + mappings, persists each accepted objective, writes the gap REQ stubs (deduplicated across objectives — one REQ per missing capability), and closes the dialog with a success toast listing what was created.
 
 Existing chat assistant prompts (`docs/qa-assistant-curriculum.md`) get a new "Import from Xray" lesson under the Orient stage.
 
 ### 7. Persistence + schema
 
-`TestObjective` gains four optional fields:
+`TestObjective` gains five optional fields:
 
 - `Source = "ImportedFromXray"` — new allowed value (lenient enum read; existing data unaffected).
-- `XrayTicketKey?: string` — null for non-imported objectives.
+- `XrayTicketKey?: string` — null for non-imported objectives. **Multiple objectives may share the same `XrayTicketKey`** when the decomposition pass split one ticket into several — this is by design and is the mechanism the test-set page uses to group them visually.
+- `XrayObjectiveSlug?: string` — populated only when `XrayTicketKey` is set. Stable identifier for the decomposed slice (e.g. `"happy-path-soft-delete-no-nmi"`). Re-import idempotency keys off `(XrayTicketKey, XrayObjectiveSlug)`.
 - `Preconditions?: List<string>` — bullet list lifted from the Xray Description's Preconditions section (also usable on non-imported objectives — there's no reason to gate this behind the importer). Surfaced as a read-only note panel in the existing edit dialog so the QA sees the assumed context when authoring/recording steps.
 - `TestDataNotes?: string` — free-form text lifted from the Xray Description's "Test Data" section, if any. Same treatment as `Preconditions` in the editor.
 
-All four fields are additive — no migration helper needed (the existing lenient deserialisation pattern handles missing fields).
+All five fields are additive — no migration helper needed (the existing lenient deserialisation pattern handles missing fields).
+
+The test-set page UI groups objectives sharing an `XrayTicketKey` under a single header (collapsible, with a link to the Jira ticket) so a QA can see at a glance that three objectives all originated from one Xray ticket. This grouping is purely visual; the underlying objectives are independent for run/edit/delete purposes.
 
 The `--rebaseline` flow is **not** allowed for `ImportedFromXray` objectives. Rebaseline already only runs for `Source = "Generated"`. Imported objectives are treated like recorded ones — the source of truth is Xray + the user's recording, not the LLM that mapped them.
 
@@ -313,6 +395,7 @@ The `--rebaseline` flow is **not** allowed for `ImportedFromXray` objectives. Re
 - **No customer-environment selection in the import flow.** The imported objective inherits the test set's existing default environment + allowed-environments list. Per-env parameters are filled in by the QA after import using the existing editor.
 - **No retro-fitting old test sets.** Existing AITestCrew objectives that *happen* to correspond to an Xray ticket do not get the `XrayTicketKey` field back-filled. Future work; not blocking.
 - **No re-running of the LLM mapper at confirm time.** The mapping computed by `PreviewAsync` is the mapping that gets persisted. If the QA wants a different mapping, they re-run Preview.
+- **No finer-grained decomposition than the LLM proposes.** v1 supports the QA *merging* proposed objectives or *collapsing* everything into one, but not *splitting* a proposed objective into more. If a QA wants finer granularity than the LLM offered, they accept the proposal as-is and then duplicate/edit objectives via the existing test-set editor. Adding in-dialog splitting is reasonable future work once we see whether the LLM consistently under-fragments.
 
 ## Acceptance criteria
 
@@ -326,8 +409,10 @@ The `--rebaseline` flow is **not** allowed for `ImportedFromXray` objectives. Re
 8. The UI dialog renders the mapping table from §6, confidence values, and a "Confirm" button. Confirming shows a toast listing the persisted objective + the gap REQs written. Errors (auth failure, ticket not found, LLM timeout) render as inline error states with a retry button.
 9. An imported objective shows up in the existing editor dialogs unchanged. `--rebaseline` refuses to run on it with a clear error: "Imported objectives cannot be rebaselined — re-import from Xray instead."
 10. No new react-query keys beyond `xrayPreview` and `capabilities`. No new background polling. No agent-side dependency on Jira — the import runs server-side in WebApi only; agent boxes never see Xray credentials.
-11. **Description-driven import works end-to-end.** Given an Xray ticket with empty `Steps[]` whose Description matches the structure in §3a's worked example ("soft-delete Site without NMI"), the preview returns: a `Preconditions[]` list quoting the four precondition bullets, a permission-matrix note flagged for QA decision, a data-setup note suggesting `/add-data-pack-script` if no matching pack covers TASN, and **one mapping row per Expected Outcome bullet** (not a single placeholder swallowing all six). At least the two DB-assert outcomes (1's IsDeleted check, 2's audit-log check, 6's admin-query check) are auto-authored as DB Assert post-steps. The two negative-UI outcomes (3, 5) are either authored as supported assertion shapes OR flagged `unsupported` with corresponding REQ stubs written for the missing negative-assertion primitive — never silently scaffolded as plain placeholders.
-12. **Preconditions and Test Data round-trip.** After confirm, the persisted `TestObjective` has populated `Preconditions[]` and (where applicable) `TestDataNotes`, and the existing editor dialog renders both as a read-only note panel above the step list. Re-importing does not duplicate precondition entries.
+11. **Description-driven import works end-to-end.** Given an Xray ticket with empty `Steps[]` whose Description matches the structure in §3b's worked example ("soft-delete Site without NMI"), the preview returns: a `Preconditions[]` list quoting the precondition bullets per objective, a permission-matrix note flagged for QA decision on Objective B, a data-setup note suggesting `/add-data-pack-script` per objective if no matching pack covers TASN, and **one mapping row per Expected Outcome bullet** (not a single placeholder swallowing all six). At least the three DB-assert outcomes (1's IsDeleted check, 2's audit-log check, 6's admin-query check) are auto-authored as DB Assert post-steps within Objective A. The two negative-UI outcomes (3, 5) are either authored as supported assertion shapes OR flagged `unsupported` with **a single deduplicated REQ stub** written for the missing negative-assertion primitive — never silently scaffolded as plain placeholders, and never duplicated as two separate REQs.
+12. **Preconditions and Test Data round-trip.** After confirm, each persisted `TestObjective` has populated `Preconditions[]` and (where applicable) `TestDataNotes` for the fragments assigned to it, and the existing editor dialog renders both as a read-only note panel above the step list. Re-importing does not duplicate precondition entries.
+13. **Decomposition into multiple objectives.** Given the soft-delete-Site-without-NMI ticket in §3b, the preview proposes **3 objectives** (A: happy-path delete with verifications, B: permission-blocked attempt, C: no-delete-when-NMI-present), shown as collapsible cards. Accepting the proposal persists three `TestObjective`s sharing the same `XrayTicketKey` but with distinct slugs. Re-importing the same ticket updates all three in place (matched by `(XrayTicketKey, Slug)`), does not duplicate them. Checking "Import as a single objective" instead persists one objective containing the union of all six Expected Outcomes as steps. Unchecking any proposal card and confirming skips that objective entirely (no orphan persisted, no gap REQ written for skipped fragments).
+14. **Decomposition is conservative.** A simple Xray ticket with one actor, one action, and one verification (e.g. "POST /customers with valid payload, verify 201") produces exactly **one** proposed objective — never multiple. A ticket producing more than 4 proposed objectives carries a "review carefully" flag in the preview header, prompting the QA to consider whether the system over-fragmented.
 
 ## Out of scope (future work)
 
