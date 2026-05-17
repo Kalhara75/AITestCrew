@@ -1,13 +1,95 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
 import { useChat } from '../contexts/ChatContext';
 import { ChatDrawer } from './chat/ChatDrawer';
+import { fetchAgents } from '../api/agents';
+import { fetchBackupStatus } from '../api/backupApi';
+import type { BackupStatus } from '../api/backupApi';
+import { fetchDataPackReport } from '../api/dataPacks';
+import { fetchAuthHealth } from '../api/authHealth';
+import type { AgentSummary, DataPackStartupReport, AuthHealthEntry } from '../types';
+
+// System health dot tone helpers
+type DotTone = 'green' | 'amber' | 'red';
+
+function agentsTone(agents: AgentSummary[] | undefined): DotTone {
+  if (!agents || agents.length === 0) return 'amber';
+  if (agents.some(x => x.status === 'Online' || x.status === 'Busy')) return 'green';
+  return 'amber';
+}
+
+function backupTone(s: BackupStatus | undefined): DotTone {
+  if (!s || !s.enabled) return 'amber';
+  const now = Date.now();
+  const amberMs = 90 * 60 * 1000;
+  const redMs = 2 * 30 * 60 * 1000;
+  const lastErrMs = s.lastErrorAt ? now - new Date(s.lastErrorAt).getTime() : null;
+  const lastOkMs = s.lastSuccessAt ? now - new Date(s.lastSuccessAt).getTime() : null;
+  if (
+    lastErrMs !== null &&
+    lastErrMs < 60 * 60 * 1000 &&
+    (lastOkMs === null || s.lastErrorAt! > (s.lastSuccessAt ?? ''))
+  ) return 'red';
+  if (lastOkMs === null) return 'amber';
+  if (lastOkMs < amberMs) return 'green';
+  if (lastOkMs < redMs) return 'amber';
+  return 'red';
+}
+
+function dataPacksTone(r: DataPackStartupReport | null | undefined): DotTone {
+  if (!r) return 'amber';
+  const totalFailures = r.envs.reduce((acc, e) => acc + e.failures, 0);
+  if (totalFailures > 0) return 'red';
+  const ranCount = r.envs.filter(e => e.status === 'Ran').length;
+  if (ranCount === 0) return 'amber';
+  return 'green';
+}
+
+function authTone(entries: AuthHealthEntry[] | undefined): DotTone {
+  if (!entries) return 'green'; // still loading — don't alarm
+  const statuses = entries.flatMap(e => e.surfaces.map(s => s.status));
+  if (statuses.some(s => s === 'Stale' || s === 'Missing')) return 'red';
+  if (statuses.some(s => s === 'ExpiringSoon')) return 'amber';
+  return 'green';
+}
 
 export function Layout() {
   const location = useLocation();
   const isHome = location.pathname === '/';
+  const isSystem = location.pathname === '/system';
   const { user, authRequired, logout } = useAuth();
   const { isOpen: chatOpen, toggle: toggleChat } = useChat();
+
+  const { data: agents } = useQuery({
+    queryKey: ['agents'],
+    queryFn: fetchAgents,
+    refetchInterval: 5000,
+    retry: false,
+  });
+  const { data: backupStatus } = useQuery({
+    queryKey: ['backupStatus'],
+    queryFn: fetchBackupStatus,
+    refetchInterval: 60_000,
+    retry: false,
+  });
+  const { data: dataPackReport } = useQuery({
+    queryKey: ['dataPackReport'],
+    queryFn: fetchDataPackReport,
+    refetchInterval: 30_000,
+    retry: false,
+  });
+  const { data: authHealth } = useQuery({
+    queryKey: ['authHealth'],
+    queryFn: fetchAuthHealth,
+    refetchInterval: 30_000,
+    retry: false,
+  });
+
+  const tones: DotTone[] = [agentsTone(agents), backupTone(backupStatus), dataPacksTone(dataPackReport), authTone(authHealth)];
+  const worstTone: DotTone = tones.includes('red') ? 'red' : tones.includes('amber') ? 'amber' : 'green';
+  const dotColour = worstTone === 'red' ? '#ef4444' : worstTone === 'amber' ? '#f59e0b' : '#10b981';
+  const dotTooltip = `Agents: ${agentsTone(agents)} · Backup: ${backupTone(backupStatus)} · Data Packs: ${dataPacksTone(dataPackReport)} · Auth: ${authTone(authHealth)}`;
 
   return (
     <div style={{ minHeight: '100vh', background: '#f8fafc' }}>
@@ -47,6 +129,61 @@ export function Layout() {
         </Link>
         <nav style={{ display: 'flex', gap: 8 }}>
           <NavLink to="/" label="Modules" active={isHome} />
+          <Link
+            to="/system"
+            style={{
+              color: isSystem ? '#fff' : '#94a3b8',
+              textDecoration: 'none',
+              fontSize: 14,
+              fontWeight: 500,
+              padding: '6px 14px',
+              borderRadius: 6,
+              background: isSystem ? 'rgba(255,255,255,0.1)' : 'transparent',
+              transition: 'background 0.15s, color 0.15s',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            System
+            {worstTone === 'green' ? (
+              <span
+                title={dotTooltip}
+                style={{
+                  display: 'inline-block',
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  background: dotColour,
+                  flexShrink: 0,
+                }}
+              />
+            ) : (
+              <span
+                title={dotTooltip}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                  color: dotColour,
+                  fontSize: 12,
+                  lineHeight: 1,
+                }}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" />
+                </svg>
+              </span>
+            )}
+          </Link>
         </nav>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12, fontSize: 13 }}>
           <button

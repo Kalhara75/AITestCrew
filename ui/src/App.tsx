@@ -5,6 +5,7 @@ import { ModuleDetailPage } from './pages/ModuleDetailPage';
 import { TestSetDetailPage } from './pages/TestSetDetailPage';
 import { ExecutionDetailPage } from './pages/ExecutionDetailPage';
 import { AssistantPage } from './pages/AssistantPage';
+import { SystemHealthPage } from './pages/SystemHealthPage';
 import { LoginPage } from './pages/LoginPage';
 import { useAuth } from './contexts/AuthContext';
 
@@ -27,6 +28,9 @@ export default function App() {
 
         {/* Full-page assistant (pop-out from the drawer) */}
         <Route path="/assistant" element={<AssistantPage />} />
+
+        {/* System health page */}
+        <Route path="/system" element={<SystemHealthPage />} />
 
         {/* Legacy routes (for backward-compat bookmarks) */}
         <Route path="/testsets/:id" element={<TestSetDetailPage />} />

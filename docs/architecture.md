@@ -594,13 +594,14 @@ ui/src/
                                      checks GET /api/auth/status on mount to determine if auth is enabled
   pages/
     ModuleListPage.tsx             — Module card grid (root page)
+    SystemHealthPage.tsx           — System Health page (`/system`) — Agents, Data Packs, Backup, Auth Health summary
     ModuleDetailPage.tsx           — Test sets within a module + search/sort/status-filter toolbar,
                                      progressive card loading (IntersectionObserver), create/run dialogs
     TestSetDetailPage.tsx          — Test cases table + run history + trigger button (module-aware)
     ExecutionDetailPage.tsx        — Objective results with expandable step details (module-aware)
     LoginPage.tsx                  — API key login form (shown when auth is enabled and no key stored)
   components/
-    Layout.tsx                     — Header, nav, content area, user name display + logout button
+    Layout.tsx                     — Header, nav (Modules + System links with 4-source health status dot/triangle — agents, backup, data packs, auth), content area, user name display + logout button
     StatusBadge.tsx                — Re-export shim; source of truth is execution/StatusBadge.tsx
     execution/                     — Execution design system (REQ-001)
       StatusBadge.tsx              — Canonical status pill (Passed/Failed/Running/AwaitingVerification/…); STATUS_COLORS exported

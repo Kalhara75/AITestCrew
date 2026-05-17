@@ -166,7 +166,7 @@ Envs run **sequentially**. Other envs continue even if one env aborts on a faile
 
 ## Verifying it ran — the dashboard panel
 
-Open the WebApi dashboard (`http://<host>:5050`). Above the modules grid is a **Startup Data Packs** panel:
+Open the WebApi dashboard (`http://<host>:5050`) and navigate to the **System Health** page (`/system`). The **Startup Data Packs** panel shows:
 
 | Status pill | Meaning | What to do |
 |---|---|---|
