@@ -53,7 +53,7 @@ export function ImportFromXrayDialog({ open, moduleId, testSetId, onClose, onImp
       setMergeRequests([]);
       setCollapseToSingle(false);
       setPhase('review');
-    } catch (e) {
+    } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Import preview failed');
       setPhase('input');
     }
@@ -86,7 +86,7 @@ export function ImportFromXrayDialog({ open, moduleId, testSetId, onClose, onImp
       setResult(r);
       setPhase('done');
       onImported(r);
-    } catch (e) {
+    } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Confirm failed');
       setPhase('review');
     }
