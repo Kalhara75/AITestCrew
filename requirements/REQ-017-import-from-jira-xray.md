@@ -1,0 +1,339 @@
+---
+id: REQ-017
+title: Import test cases from Jira Xray and auto-write capability-gap requirements
+status: Proposed
+created: 2026-05-17
+author: Kalhara Samarasinghe
+author-note: QAs already maintain test cases in Jira Xray. Today they hand-translate each Xray ticket into an AITestCrew objective by typing the steps into the chat assistant or the editor. That work is duplicate, brittle, and silently drops detail (preconditions, expected results, data tables). We want the QA to paste an Xray ticket key and get back a scaffolded `TestObjective` ready to record/extend. **Critically, the import has to handle *both* shapes of Xray test the team actually writes**: (a) structured tests with a `Steps[]` array (Manual / Cucumber / Generic test types), and (b) description-driven tests where the entire test body — preconditions, data, expected outcomes — lives as free-form prose in the Jira Description field with no structured steps at all. The second shape is common: e.g. a "soft-delete Site without NMI" test that lists six expected outcomes (UI behaviour, DB `IsDeleted` flag, audit-log columns, permission-gating, UI-element absence) as bullets under "Expected Outcome". The importer must parse that prose into separate AITestCrew steps, not collapse it into one placeholder. And when an Xray step describes something AITestCrew genuinely cannot do, the system should write a stub requirement file the QA can hand to tooling — instead of silently scaffolding a placeholder that no one knows is broken.
+area: orchestrator + ui + tooling
+---
+
+# REQ-017 — Import test cases from Jira Xray and auto-write capability-gap requirements
+
+## Goal
+
+Give a QA two new things:
+
+1. **Import an Xray test case by key.** Provide `PROJ-1234` (and a target module + test set) and AITestCrew:
+   - Fetches the Xray test from Jira via REST.
+   - Detects whether the test is **step-structured** (Xray `Steps[]` populated) or **description-driven** (test body lives in the free-form `Description` field with sections like Preconditions / Test Data / Expected Outcome). Both shapes are first-class inputs — the team uses each.
+   - Maps the Xray content to one or more AITestCrew steps (`ApiSteps`, `WebUiSteps`, `DesktopUiSteps`, `AseXmlSteps`, `AseXmlDeliverySteps`, DB Assert post-step, Event Assert post-step) using the same LLM-driven scaffolding the chat assistant already runs. For description-driven tests, **each "Expected Outcome" bullet typically becomes its own AITestCrew step** (UI placeholder, DB Assert, negative-permission check, UI-element-absence check, etc.) — not a single placeholder containing the whole description.
+   - Persists a new `TestObjective` in the chosen module/test set with `Source = "ImportedFromXray"` and a back-link to the ticket. Each mapped step carries the originating Xray fragment (a step line, an Expected Outcome bullet, or a Precondition) as its description so the QA knows what they're filling in when they record/extend it.
+   - Returns a per-step mapping report: *outcome 1 → WebUiStep placeholder + DB Assert post-step (confidence 0.9, partially authored)*; *outcome 2 → DB Assert post-step (confidence 0.85, fully authored)*; *outcome 3 → UNSUPPORTED (see REQ-XXX)*.
+
+2. **Auto-write a capability-gap REQ when a step can't be mapped.** If the LLM (or a rules check) flags an Xray step as outside AITestCrew's current capabilities — e.g. "verify PDF watermark text", "compare two Excel files cell-by-cell", "drive an SAP GUI window" — the import drops a stub `requirements/REQ-XXX-<slug>.md` in the working copy quoting the Xray ticket and step text as the source of need. The QA hands that file to the tooling team. No code change, no commit, no PR — just a populated stub on disk.
+
+The point isn't to fully automate Xray → runnable test. The point is to **eliminate the typing step** and **make capability gaps visible the moment they're hit**, instead of three days later when a tester gives up and writes a manual case.
+
+## Why now
+
+- QA team already maintains test cases in Xray as the system of record. AITestCrew duplicates that content into its own JSON test sets. Today the translation is manual and lossy — preconditions, datasets, and "Expected Result" fields get summarised into a single chat-assistant prompt.
+- The chat assistant + `/add-api-step` / `/add-db-assert` / `/add-event-assert` skills already do most of the mechanical work (NL → structured step). Xray just needs to be plumbed in as another input source. The hard part — turning English into typed steps — is solved.
+- Capability gaps are currently invisible. A QA who hits "verify PDF" today either fakes it with an `assert-text` against the surrounding page, skips the step with a TODO comment, or escalates verbally. None of those produce a tracked piece of work for the tooling team. Auto-writing a REQ stub at the point of pain is the cheapest possible feedback loop.
+- The existing five-agent pipeline (`docs/agentic-development-team.md`) takes a `requirements/REQ-*.md` file and turns it into a feature branch. Closing the loop — Xray ticket → REQ stub → agentic implementation → recordable AITestCrew objective — turns a multi-day human-coordinated task into one that runs largely on its own.
+
+## Current-state findings (audit — do NOT redo these)
+
+✅ **Already in place — extend, don't rebuild:**
+
+| Component | Path | Status |
+|---|---|---|
+| `TestObjective` carrier | `src/AiTestCrew.Agents/Persistence/TestObjective.cs` | Wraps `ApiSteps`, `WebUiSteps`, `DesktopUiSteps`, `AseXmlSteps`, `AseXmlDeliverySteps`. `Source` field already exists with values `"Generated"` / `"Recorded"` — needs a new `"ImportedFromXray"` value (additive, lenient deserialisation handles old data). |
+| Chat NL → step scaffolding | `src/AiTestCrew.WebApi/Services/ChatIntentService.cs` | Already maps NL descriptions to `apiAssertions`, `captures`, `dbAssertions`, `eventCriteria`, etc. The Xray importer reuses this service rather than duplicating prompt-engineering work. |
+| `/add-api-step` / `/add-db-assert` / `/add-event-assert` skills | `.claude/agents/add-*.md` | Pattern for "scaffold a typed step from a single English sentence under a chosen parent". The importer iterates these patterns per Xray step. |
+| LLM proxy (so agents don't need API keys) | REQ-011 already shipped | The importer runs server-side in WebApi, so it uses the same in-process LLM the chat assistant uses; agent boxes don't need Jira creds either. |
+| Editor dialogs | `ui/src/components/EditTestCaseDialog.tsx` + `EditWebUiTestCaseDialog.tsx` + `EditDbCheckStepDialog.tsx` + `EditEventAssertStepDialog.tsx` | Already render any `TestObjective`. An imported objective shows up unchanged — no UI work to *display* an Xray-imported objective. |
+| Recording flow | `--record --module <m> --testset <ts> --case-name "<name>" --target <UI_*>` | A placeholder `WebUiStep` (or `DesktopUiStep`) from the import lands as an empty case the user records against. No new recorder code needed. |
+| `requirements/` directory + REQ template | `requirements/REQ-NNN-*.md` (REQ-001..REQ-016) | All existing REQs share a frontmatter + section structure. The gap-REQ generator emits a file matching the same shape so it's hand-editable. |
+
+❌ **Genuinely missing — this REQ adds:**
+
+- A `JiraXrayClient` that talks to the Xray Cloud REST API (or Xray Server, see §3 below).
+- A `XrayImportService` in WebApi that orchestrates `fetch ticket → call LLM mapper → build TestObjective → write gap REQs`.
+- A `CapabilityRegistry` — a structured catalog of "what AITestCrew can do" that the LLM mapper consults. Today this knowledge is scattered across `CLAUDE.md`'s "Where to extend" table, the `ApiAssertionSource` enum, `AssertionOperator` enum, `MatchMode` enum, etc. The registry is the single document the LLM is given as ground truth so its "supported / unsupported" verdict is consistent.
+- New endpoint `POST /api/xray/import` (preview) and `POST /api/xray/import/confirm` (apply).
+- New CLI flag `--import-xray <ticketKey>` on the Runner.
+- A new "Import from Xray" button on the test-set page, opening a dialog that calls the preview endpoint and shows the per-step mapping report before the QA hits Confirm.
+
+## Scope — what's in
+
+### 1. Capability Registry (the foundation)
+
+A new file `src/AiTestCrew.Core/Capabilities/CapabilityRegistry.cs` (or JSON resource) enumerating, in a single LLM-readable document, what AITestCrew supports today. Categories:
+
+- **Top-level step types**: `ApiStep`, `WebUiStep` (Bravo Web, Brave Cloud), `DesktopUiStep` (WinForms), `AseXmlStep`, `AseXmlDeliveryStep`.
+- **Post-step types**: API post-step, DB Assert post-step, Event Assert post-step, aseXML post-delivery verification.
+- **Assertion primitives per category** (sourced from the enums that already exist — `ApiAssertionSource`, `AssertionOperator`, `MatchMode`, desktop assertion actions). The registry is generated from those enums + hand-written one-liners, not duplicated.
+- **What is *not* supported today**, with hints — e.g. "PDF content inspection (no primitive; would need a new agent type)", "Excel file diff (not supported)", "image comparison beyond exact pixel sampling", and (likely) "negative UI assertions — *element should not be visible* / *button should be absent*" if a survey of the Web + Desktop agents confirms this is missing. The importer in §3a relies on this entry to decide whether outcomes like "no delete option in UI" are mappable or gap-REQ-worthy; getting the registry honest about negative assertions is part of this REQ's scope.
+
+The registry is loaded once at WebApi startup and exposed via `GET /api/capabilities` for both the UI (Xray import dialog) and the LLM mapper (system-prompt context).
+
+This is **not** a marketing document. It is the LLM's ground truth — its job is to look at an Xray step and decide which entry in the registry covers it. If nothing covers it, the step is marked unsupported and a gap REQ is generated.
+
+### 2. Jira Xray client
+
+`src/AiTestCrew.Integrations.JiraXray/JiraXrayClient.cs` — a typed REST client.
+
+**Auth model** (config-only via `appsettings.json → JiraXray`):
+
+```json
+"JiraXray": {
+  "Mode": "Cloud",
+  "BaseUrl": "https://yourtenant.atlassian.net",
+  "XrayClientId": "...",
+  "XrayClientSecret": "...",
+  "JiraEmail": "tooling@yourdomain",
+  "JiraApiToken": "..."
+}
+```
+
+Two flavours behind one interface:
+- **Xray Cloud**: token exchange against `https://xray.cloud.getxray.app/api/v2/authenticate` → JWT → call `GET /api/v2/test/<key>` for steps.
+- **Xray Server / DC**: Basic auth (Jira API token) against `/rest/raven/2.0/api/test/<key>`.
+
+The mode is picked from config; both expose the same `IJiraXrayClient.GetTestAsync(string ticketKey, CancellationToken ct)` returning a normalised `XrayTestDto`:
+
+```
+XrayTestDto {
+  Key, Summary, Description (raw markup/ADF — full body),
+  Labels[], TestType ("Manual"|"Cucumber"|"Generic"),
+  Steps: [ XrayStep { Index, Action, Data, ExpectedResult } ]  // may be EMPTY for description-driven tests,
+  CucumberScenario?: string,
+  GenericDefinition?: string,
+  // Parsed from Description when Steps is empty (see §3a):
+  ParsedDescription?: {
+    Preconditions[]: string,        // bullet list
+    TestData?: string,
+    ExpectedOutcomes[]: string,     // bullet list — each typically maps to one AITestCrew step
+    OtherSections: { sectionName: string => body: string }  // anything not in the known set
+  }
+}
+```
+
+Jira's Cloud REST returns the description in Atlassian Document Format (ADF); Xray Server returns wiki markup. The client normalises both to plain text + a section-tagged bullet structure via a small Markdown/ADF parser. Section names recognised by exact-match (case-insensitive) **and** common variants:
+
+- `Description` / `Summary` (free-form lead-in)
+- `Preconditions` / `Pre-conditions` / `Setup`
+- `Test Data` / `Data` / `Inputs`
+- `Expected Outcome` / `Expected Outcomes` / `Expected Result` / `Expected Results` / `Acceptance Criteria` / `Verifications`
+- Anything else falls into `OtherSections` verbatim and is included in the LLM prompt as context.
+
+If both `Steps[]` is populated AND `Description` contains an Expected-Outcome section, the importer uses **both**: Steps become the action sequence, Expected Outcomes become additional assertions/verifications post-step. The LLM is told which is which.
+
+Errors map cleanly: 404 → `XrayTicketNotFoundException`, 401 → `XrayAuthException`, 5xx → `XrayUpstreamException`. The importer surfaces these as actionable error toasts on the UI dialog.
+
+The client lives in a new project `AiTestCrew.Integrations.JiraXray` so its `Atlassian.SDK` (or HTTP-only) dependency doesn't leak into `Core`. Dependency direction: `WebApi → Integrations.JiraXray → Core`. No project references upward.
+
+### 3. Xray Import Service (the orchestrator)
+
+`src/AiTestCrew.WebApi/Services/XrayImportService.cs`:
+
+```
+public async Task<XrayImportPreview> PreviewAsync(string ticketKey, string moduleId, string testSetId, CancellationToken ct);
+public async Task<XrayImportResult>  ConfirmAsync(XrayImportPreview preview, CancellationToken ct);
+```
+
+`PreviewAsync` does **everything except persist**:
+
+1. Call `IJiraXrayClient.GetTestAsync(ticketKey)`.
+2. Pass the steps + capability registry to the LLM with a prompt that:
+   - Tells it the available step types and their carriers.
+   - Asks it to emit, per Xray step, one of:
+     - `{ "kind": "api"|"webUi"|"desktopUi"|"asexml"|"asexmlDelivery", "definition": { ... }, "confidence": 0.0-1.0, "rationale": "..." }`
+     - `{ "kind": "postStep", "parent": <index>, "type": "db"|"event"|"api", "definition": { ... }, "confidence": ..., "rationale": "..." }`
+     - `{ "kind": "placeholder", "target": "UI_Web_Blazor"|"UI_Web_MVC"|"UI_Desktop_WinForms", "description": "...", "confidence": ..., "rationale": "..." }` — for steps that are *supported in principle* but need recording (e.g. "Click the Save button on the customer form").
+     - `{ "kind": "unsupported", "description": "...", "rationale": "...", "suggestedReqTitle": "...", "suggestedExtensionPoint": "..." }` — for steps that genuinely have no path forward in AITestCrew today.
+3. Build (in memory, do not persist) a draft `TestObjective` from the supported entries.
+4. Build (in memory, do not write to disk) a list of draft REQ stubs from the `unsupported` entries.
+5. Return both, plus a per-step mapping table, as `XrayImportPreview`.
+
+`ConfirmAsync`:
+
+1. Re-validate the preview against the current state of the module/test set (concurrency guard — see REQ-008 pattern).
+2. **Persist the `TestObjective`** to `modules/{moduleId}/{testSetId}.json` via the existing test-set repository. Set `TestObjective.Source = "ImportedFromXray"` and `TestObjective.XrayTicketKey = "PROJ-1234"`.
+3. **Write the gap REQ stubs** to `requirements/REQ-XXX-<slug>.md` on the working copy. Numbering: scan `requirements/` for the highest existing REQ number and increment per stub. The stubs are *not* committed and *not* PR'd — just written to disk for the QA to review. (Optional: print the file path so the QA can `git status` and find them.)
+4. Return a structured result: persisted objective id, list of gap REQ paths written, list of placeholder steps that still need recording.
+
+Re-importing the same Xray ticket key is **idempotent**: the existing objective with matching `XrayTicketKey` is updated, not duplicated. Newly-added Xray steps appear as new steps in the objective. Removed Xray steps are flagged in the preview but **not deleted** automatically — they're listed as "this step is no longer in Xray; delete manually if intended". This conservative posture protects work the QA has already recorded against a step.
+
+### 3a. Description-driven mapping (test body lives in the Description field)
+
+This is the path taken when `XrayTestDto.Steps` is empty and the whole test is encoded as prose in `Description`. The mapper:
+
+1. **Preconditions** become **comments on the persisted objective** (a new optional `TestObjective.Preconditions: List<string>` field) — they're not executable steps, but they need to survive the import so the QA sees them in the editor and so a future reviewer understands what the test assumed. Two recognised patterns also trigger automatic scope hints:
+   - "Different user setups with NO Access / Read-Only / Edit permissions" → the mapper notes that the objective is a **permission-matrix test** in the import preview's notes column. The objective is created once; the QA decides whether to clone it per role or use a single objective with per-environment user credentials (existing `EnvironmentParameters` feature). The mapper does **not** auto-duplicate the objective into N variants — too aggressive without human input.
+   - "X records must exist" (e.g. "Some Site records must exist without an associated NMI") → the mapper notes this as a data-setup requirement. If a matching startup data-pack exists for the target env, it references it; otherwise it suggests `/add-data-pack-script` in the preview notes.
+
+2. **Test Data** content is attached to the objective's `Preconditions` block (or `TestData` field if non-empty), and made available to per-step `{{Token}}` substitution where the LLM can identify named values.
+
+3. **Each "Expected Outcome" bullet is mapped independently** to one (or more) AITestCrew steps. The mapper does **not** collapse the outcomes into a single placeholder — that loses the point of having separate verifications.
+
+#### Worked example — the user's "soft-delete Site without NMI" test
+
+Given the Description content:
+
+> **Preconditions:**
+> - Access to the TASN Environment and Database
+> - Different User setups with NO Access, Read Only (View) and Edit (Create/Update/Soft delete). Must have required permissions
+> - The UI must be available
+> - Some Site records must exist without an associated NMI
+>
+> **Test Data:** None
+>
+> **Expected Outcome:**
+> 1. Verify authorized user (with proper permission) can soft-delete existing Site records that do not have an associated NMI and deleted Sites are flagged in the database using an IsDeleted flag i.e. IsDeleted flag is set to true (1)
+> 2. Verify that soft deletion actions are captured in the database audit logs (ModifiedBy, ModifiedOn fields populated with correct details and IsDeleted flag is updated as 1)
+> 3. Verify that a soft-deleted Site is no longer visible in the default search results (UI)
+> 4. Verify that users without edit/delete permissions cannot perform soft deletion, even if the record has no NMI
+> 5. Verify there is no delete option in the Site search UI to soft delete Site records with a NMI
+> 6. Verify that soft-deleted Sites do not appear in standard search results (in UI) but can be retrieved via audit or admin queries in database
+
+The mapper produces this `TestObjective` skeleton (target env: TASN):
+
+| # | Source bullet | AITestCrew shape | Confidence | Notes |
+|---|---|---|---|---|
+| Preconditions | "Some Site records must exist without an associated NMI" | `Preconditions[]` note + data-pack hint | — | Suggests `/add-data-pack-script` to seed Sites without NMI in TASN env if no matching pack exists |
+| Preconditions | "Different User setups (No Access / View / Edit)" | `Preconditions[]` note + permission-matrix hint | — | Flagged for QA — clone-per-role vs single objective with per-env users |
+| 1 | "Authorized user can soft-delete... IsDeleted=1" | **WebUiStep placeholder** (Bravo Web — locate Site, click Delete) + **DB Assert post-step** (`SELECT IsDeleted FROM Sites WHERE Id={{capturedSiteId}}`, assert `= 1`) | 0.85 | UI step needs recording; DB Assert auto-authored |
+| 2 | "Audit logs: ModifiedBy, ModifiedOn populated, IsDeleted=1" | **DB Assert post-step** (`SELECT ModifiedBy, ModifiedOn, IsDeleted FROM Sites WHERE Id={{capturedSiteId}}`, assert `ModifiedBy IS NOT NULL`, `ModifiedOn within last 60s`, `IsDeleted = 1`) | 0.9 | Auto-authored; QA tunes operators if needed |
+| 3 | "Soft-deleted Site no longer visible in default search (UI)" | **WebUiStep placeholder** (search by the deleted Site's identifier, assert not-present) | 0.7 | Negative UI assertion — needs recording; flagged for capability check (see below) |
+| 4 | "Users without edit/delete permissions cannot soft-delete" | **WebUiStep placeholder under a different user** | 0.6 | Permission-matrix; mapper flags this as the clearest case for either cloning the objective or using per-env user credentials |
+| 5 | "No delete option in Site search UI for Sites WITH an NMI" | **WebUiStep placeholder** (open a Site with NMI, assert delete button absent) | 0.7 | Negative UI assertion — see capability check below |
+| 6 | "Soft-deleted Sites... retrievable via audit/admin DB query" | **DB Assert post-step** (`SELECT * FROM Sites WHERE IsDeleted=1`, assert ≥ 1 row with the deleted Site's Id) | 0.85 | Auto-authored |
+
+If the existing Bravo Web agent does not yet support **negative UI assertions** ("element should be absent" / "button should not be visible") as a first-class assertion, outcomes 3 and 5 are marked `kind: "unsupported"` and a gap REQ is generated. (As of writing, the desktop side has `assert-text` / `assert-count` but the absence-direction is not explicit in `CLAUDE.md`'s "Where to extend" table — this is exactly the kind of gap the import is designed to surface.)
+
+The QA opens the resulting objective in the existing editor, sees six steps with one-line descriptions quoting the Xray Expected Outcome bullets, records the UI placeholders against the TASN environment, and the DB Asserts are already authored. If gap REQs were written, they sit in `requirements/` for review.
+
+### 4. Capability-gap REQ stub generator
+
+`src/AiTestCrew.WebApi/Services/GapRequirementWriter.cs`:
+
+Given an `unsupported` entry from the LLM, emit a REQ stub matching the existing house style. Template:
+
+```markdown
+---
+id: REQ-XXX
+title: <suggestedReqTitle from the LLM, cleaned up>
+status: Proposed
+created: <today>
+author: Auto-generated from Xray import
+area: <suggestedExtensionPoint>
+source-ticket: <ticketKey>
+---
+
+# REQ-XXX — <title>
+
+## Goal
+
+<one paragraph generated from the Xray step text + the LLM's rationale>
+
+## Source of need
+
+This requirement was auto-generated by the Xray importer (REQ-017) when importing **<ticketKey>** ("<ticket summary>") on <date>. The Xray step below was identified as outside AITestCrew's current capabilities:
+
+> **Step <index>:** <Xray step action>
+> **Data:** <Xray step data>
+> **Expected result:** <Xray step expected result>
+
+## Why now
+
+<LLM-generated paragraph linking the gap to the broader test scenario>
+
+## Proposed direction (sketch — to be refined by tooling team)
+
+<LLM-suggested extension point, e.g. "New post-step type — PDF Content Assert. Mirror the DB Assert pattern: data model in `Storage/PdfAgent/`, evaluator + agent in `Agents/PdfAgent/`, NL skill `/add-pdf-assert`. JSONPath-equivalent for PDFs is unresolved — consider iText7 text extraction + regex.">
+
+## Acceptance criteria (skeleton)
+
+1. <empty bullets for the human to fill in>
+2. <empty bullets for the human to fill in>
+
+## Out of scope
+
+- <LLM-suggested boundary>
+
+---
+
+*This stub was auto-generated. A human must review the goal, refine the proposed direction, and fill in acceptance criteria before this requirement is workable.*
+```
+
+The footer is mandatory — the stub is explicitly marked as *unfinished* so it's obvious in code review that the human owner skipped the polish step if they did.
+
+### 5. CLI flag
+
+`src/AiTestCrew.Runner/Program.cs` gains:
+
+```
+dotnet run --project src/AiTestCrew.Runner -- --import-xray <ticketKey> --module <m> --testset <ts>
+```
+
+The CLI path calls `XrayImportService.PreviewAsync` then immediately `ConfirmAsync` (no interactive prompt — CI-friendly). Output is a Spectre-rendered table mirroring the UI's preview dialog plus the list of REQ stub paths.
+
+Optional `--xray-dry-run` flag returns the preview only and persists nothing — useful for CI smoke tests.
+
+### 6. UI surface
+
+`ui/src/pages/TestSetPage.tsx` (or wherever objectives are listed for a test set) gains an **"Import from Xray"** button next to the existing "Add objective" / "Record" buttons. Clicking it opens a new `ImportFromXrayDialog.tsx`:
+
+1. Single text input — Xray ticket key. Validation: must match `^[A-Z][A-Z0-9_]+-\d+$`.
+2. "Preview" button. Calls `POST /api/xray/import` (preview-only). Shows a spinner while the importer runs (typically 5-15 s — one LLM call).
+3. Renders the mapping table:
+
+   | Xray step | Mapped to | Confidence | Notes |
+   |---|---|---|---|
+   | 1. "Open Customer screen and search by ID" | WebUiStep placeholder (UI_Web_Blazor) | 0.95 | Needs recording |
+   | 2. "Verify customer name = data.expectedName" | DB Assert post-step | 0.88 | Auto-authored |
+   | 3. "Generate PDF invoice and verify watermark" | UNSUPPORTED | n/a | Will write REQ-018 — PDF Content Assert |
+
+4. "Confirm" button — calls `POST /api/xray/import/confirm`, persists the objective, writes the gap REQ stubs, and closes the dialog with a success toast listing what was created.
+
+Existing chat assistant prompts (`docs/qa-assistant-curriculum.md`) get a new "Import from Xray" lesson under the Orient stage.
+
+### 7. Persistence + schema
+
+`TestObjective` gains four optional fields:
+
+- `Source = "ImportedFromXray"` — new allowed value (lenient enum read; existing data unaffected).
+- `XrayTicketKey?: string` — null for non-imported objectives.
+- `Preconditions?: List<string>` — bullet list lifted from the Xray Description's Preconditions section (also usable on non-imported objectives — there's no reason to gate this behind the importer). Surfaced as a read-only note panel in the existing edit dialog so the QA sees the assumed context when authoring/recording steps.
+- `TestDataNotes?: string` — free-form text lifted from the Xray Description's "Test Data" section, if any. Same treatment as `Preconditions` in the editor.
+
+All four fields are additive — no migration helper needed (the existing lenient deserialisation pattern handles missing fields).
+
+The `--rebaseline` flow is **not** allowed for `ImportedFromXray` objectives. Rebaseline already only runs for `Source = "Generated"`. Imported objectives are treated like recorded ones — the source of truth is Xray + the user's recording, not the LLM that mapped them.
+
+## Scope — what's out
+
+- **No two-way sync.** AITestCrew does not push runs back to Xray as test executions (yet). Read-only import only. A future REQ can add the execution-write-back side once the import side is steady.
+- **No Xray webhook integration.** Imports are user-triggered (CLI / UI button / chat). Auto-detecting "ticket changed in Jira → re-import here" is out of scope. Re-importing is a one-button action; that's good enough for v1.
+- **No support for Xray test sets / test plans / test executions.** Only individual test cases (`Test` issue type). Bulk import by JQL is a future step.
+- **No auto-commit / auto-PR for gap REQ stubs.** The stubs land in the working copy. The QA reviews them and decides whether to commit. (Auto-committing pre-approved stubs to a branch is plausible future work but breaks the "humans own shared state" rule today.)
+- **No mapping for AI-generated objectives.** If the QA wants AI to dream up a test from scratch, the chat assistant already covers that. Xray import specifically operates on a real ticket.
+- **No customer-environment selection in the import flow.** The imported objective inherits the test set's existing default environment + allowed-environments list. Per-env parameters are filled in by the QA after import using the existing editor.
+- **No retro-fitting old test sets.** Existing AITestCrew objectives that *happen* to correspond to an Xray ticket do not get the `XrayTicketKey` field back-filled. Future work; not blocking.
+- **No re-running of the LLM mapper at confirm time.** The mapping computed by `PreviewAsync` is the mapping that gets persisted. If the QA wants a different mapping, they re-run Preview.
+
+## Acceptance criteria
+
+1. Given a valid Xray Cloud configuration in `appsettings.json` and a ticket `PROJ-1234` whose test type is `Manual` with three steps, calling `POST /api/xray/import { ticketKey: "PROJ-1234", moduleId: "billing", testSetId: "invoicing" }` returns a preview within 30 seconds. The preview contains exactly three mapping rows, each with a `kind`, a `confidence`, and either a `definition` or a `rationale` for placeholder/unsupported.
+2. `POST /api/xray/import/confirm` on that preview persists a new `TestObjective` in `modules/billing/invoicing.json` with `Source = "ImportedFromXray"` and `XrayTicketKey = "PROJ-1234"`. The objective contains the mapped steps in the right carriers (e.g. an API step in `ApiSteps`, a DB Assert post-step under the right parent).
+3. If one of the three steps was `kind: "unsupported"`, the confirm call writes `requirements/REQ-<next>-<slug>.md` to the working copy. The file matches the existing REQ frontmatter + section structure and contains the Xray step text under "Source of need" and the LLM's suggested extension point. The file is **not** committed.
+4. Re-running the same import overwrites the existing objective (matched by `XrayTicketKey`) rather than creating a duplicate. The `Modules` page never shows two objectives for the same Xray ticket.
+5. Running `dotnet run --project src/AiTestCrew.Runner -- --import-xray PROJ-1234 --module billing --testset invoicing` performs the same import non-interactively and prints (a) the path of the persisted objective, (b) the list of gap REQ paths written.
+6. With `--xray-dry-run`, the CLI prints the preview table without persisting and without writing any REQ stubs. `git status` is clean afterward.
+7. Calling `GET /api/capabilities` returns the capability registry as JSON. The registry covers every existing top-level step type, every existing post-step type, and every assertion operator currently shipped. Adding a new step type elsewhere in the codebase forces a registry update via a unit test that asserts every `TestTargetType` enum value appears in the registry.
+8. The UI dialog renders the mapping table from §6, confidence values, and a "Confirm" button. Confirming shows a toast listing the persisted objective + the gap REQs written. Errors (auth failure, ticket not found, LLM timeout) render as inline error states with a retry button.
+9. An imported objective shows up in the existing editor dialogs unchanged. `--rebaseline` refuses to run on it with a clear error: "Imported objectives cannot be rebaselined — re-import from Xray instead."
+10. No new react-query keys beyond `xrayPreview` and `capabilities`. No new background polling. No agent-side dependency on Jira — the import runs server-side in WebApi only; agent boxes never see Xray credentials.
+11. **Description-driven import works end-to-end.** Given an Xray ticket with empty `Steps[]` whose Description matches the structure in §3a's worked example ("soft-delete Site without NMI"), the preview returns: a `Preconditions[]` list quoting the four precondition bullets, a permission-matrix note flagged for QA decision, a data-setup note suggesting `/add-data-pack-script` if no matching pack covers TASN, and **one mapping row per Expected Outcome bullet** (not a single placeholder swallowing all six). At least the two DB-assert outcomes (1's IsDeleted check, 2's audit-log check, 6's admin-query check) are auto-authored as DB Assert post-steps. The two negative-UI outcomes (3, 5) are either authored as supported assertion shapes OR flagged `unsupported` with corresponding REQ stubs written for the missing negative-assertion primitive — never silently scaffolded as plain placeholders.
+12. **Preconditions and Test Data round-trip.** After confirm, the persisted `TestObjective` has populated `Preconditions[]` and (where applicable) `TestDataNotes`, and the existing editor dialog renders both as a read-only note panel above the step list. Re-importing does not duplicate precondition entries.
+
+## Out of scope (future work)
+
+- **Bulk import via JQL** — "import all tickets in this Xray test set". Trivial extension once single-ticket import is steady.
+- **Write-back of execution results to Xray** — closes the loop with QA tooling. Separate REQ; needs decisions about how AITestCrew run IDs map to Xray test execution issues.
+- **Auto-running the agentic development team on generated gap REQs.** Today the QA reads the stub and hands it to a human (or `feature-coordinator`). Auto-triggering the pipeline is plausible once the stubs are reliable enough to trust, but premature now.
+- **Mapping non-test Xray issues** (User Story → AITestCrew objective). The import path is specific to `Test` issue types.
+- **TestRail / Zephyr / qTest connectors.** Same shape, different upstream. Build them on top of the same `XrayImportService` / `CapabilityRegistry` interfaces once those are stable.
+- **A "what changed in Xray since last import?" diff view.** Useful but separable. The conservative re-import policy in §3 already prevents work loss; a diff view is a quality-of-life improvement on top.
