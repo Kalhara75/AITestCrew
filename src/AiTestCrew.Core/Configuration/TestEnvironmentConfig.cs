@@ -229,6 +229,9 @@ public class TestEnvironmentConfig
     /// host bind-mount). Disabled by default — opt-in in your production config.
     /// </summary>
     public BackupConfig Backup { get; set; } = new();
+
+    // --- Jira Xray integration (optional -- leave Mode empty to disable) ---
+    public JiraXrayConfig JiraXray { get; set; } = new();
 }
 
 /// <summary>
