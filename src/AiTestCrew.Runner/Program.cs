@@ -429,16 +429,11 @@ if (cli.ImportXrayTicketKey is not null)
         AnsiConsole.MarkupLine("[red]--import-xray requires --module <moduleId> and --testset <testSetId>.[/]");
         return;
     }
-    if (string.IsNullOrWhiteSpace(envConfig.JiraXray.BaseUrl))
-    {
-        AnsiConsole.MarkupLine("[red]TestEnvironment.JiraXray.BaseUrl is not configured. Add it to appsettings.json.[/]");
-        return;
-    }
     var xrayServerUrl = envConfig.ServerUrl;
     if (string.IsNullOrWhiteSpace(xrayServerUrl))
     {
         AnsiConsole.MarkupLine("[red]--import-xray requires TestEnvironment.ServerUrl (the WebApi must be running).[/]");
-        AnsiConsole.MarkupLine("[grey]Start the WebApi then re-run.[/]");
+        AnsiConsole.MarkupLine("[grey]Start the WebApi then re-run. Jira Xray credentials are configured server-side only.[/]");
         return;
     }
     // Delegate to the WebApi via HTTP -- the actual Xray client and LLM are on the server side

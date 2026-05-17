@@ -2105,7 +2105,7 @@ QA teams that maintain test cases in Jira Xray can import them directly into AIT
 
 ### Prerequisites
 
-Add a `JiraXray` section to `appsettings.json` (see `appsettings.example.json` for a template):
+Jira Xray credentials are configured **server-side only** — in the WebApi's `appsettings.json`. The Runner (`--import-xray`) and agent boxes never hold Jira credentials; they delegate to the WebApi over HTTP. Add a `JiraXray` section to `src/AiTestCrew.WebApi/appsettings.json` (see that project's `appsettings.example.json` for a template):
 
 ```json
 "JiraXray": {
