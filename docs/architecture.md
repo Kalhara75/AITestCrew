@@ -2775,7 +2775,7 @@ Bootstrap: UPDATE users SET role = 'Admin' WHERE id = (SELECT id FROM users ORDE
 Both ALTERs are idempotent (ColumnExists guard). is_shared defaults to 0 so all existing agents remain personal.
 
 
-## Jira Xray Import (REQ-017)
+## Jira Xray Import (REQ-017, REQ-019)
 
 ### Overview
 
@@ -2800,17 +2800,36 @@ POST /api/xray/import            ← preview only, nothing persisted
   |
   +--> XrayImportService.MapFragmentsAsync()  (per objective)
          LLM call with CapabilityRegistry markdown as system context
-         → List<XrayMappingRow>  { kind, confidence, definition | rationale }
+         (registry now includes "Pairing rules for post-steps" section — REQ-019)
+         → List<XrayMappingRow>  { kind, confidence, rationale,
+                                    parentFragmentIndex?, parentKind? }
          kind ∈ { api, webUi, desktopUi, asexml, asexmlDelivery,
                   postStep, placeholder, unsupported }
+         postStep rows also carry: postStepType ∈ { dbAssert, eventAssert,
+                                                     apiPostStep, uiVerification }
 
-QA reviews preview → calls POST /api/xray/import/confirm
+QA reviews preview (post-steps shown nested under parent row) →
+  calls POST /api/xray/import/confirm
 
   +--> FilterAndMerge (QA-accepted slugs + merge requests)
   +--> ITestSetRepository.LoadAsync()
   +--> foreach accepted objective:
   |      find existing by (XrayTicketKey, XrayObjectiveSlug) or create new TestObjective
-  |      MapRowsToObjective: kind → ApiSteps / WebUiSteps / AseXmlSteps / etc.
+  |      MapRowsToObjectiveAsync (two-phase build — REQ-019):
+  |        Phase 1 — parent steps:
+  |          webUi/placeholder → WebUiTestDefinition (stub/empty)
+  |          api               → IApiStepAuthoringService → populated ApiTestDefinition
+  |          desktopUi/asexml/asexmlDelivery → TargetType only (stub, same as before)
+  |        Phase 2 — post-steps:
+  |          postStep/dbAssert      → IDbCheckAuthoringService → DbCheckStepDefinition
+  |                                    VerificationStep { Target="Db_SqlServer" }
+  |          postStep/eventAssert   → IEventAssertAuthoringService → EventAssertStepDefinition
+  |                                    VerificationStep { Target="Event_AzureServiceBus" }
+  |          postStep/apiPostStep   → IApiStepAuthoringService → ApiTestDefinition
+  |                                    VerificationStep { Target="API_REST" }
+  |          postStep/uiVerification → empty WebUiTestDefinition placeholder
+  |                                    VerificationStep { Target=<parent TargetType> }
+  |          invalid parentFragmentIndex → demote to placeholder WebUiTestDefinition
   |      ITestSetRepository.SaveAsync()
   |
   +--> foreach unsupported row:
@@ -2830,9 +2849,29 @@ QA reviews preview → calls POST /api/xray/import/confirm
 
 The registry must be kept in sync with new step types and post-step types. Adding a new `TestTargetType` without updating the registry causes the LLM to misclassify Xray steps for that target — update `CapabilityRegistry.cs` when extending.
 
+### Post-step authoring services (REQ-019)
+
+Three thin LLM wrapper services live in `src/AiTestCrew.WebApi/Services/`:
+
+| Service | Interface | Fallback on failure |
+|---|---|---|
+| `ApiStepAuthoringService` | `IApiStepAuthoringService` | Empty `ApiTestDefinition` with `Status=200` assertion |
+| `DbCheckAuthoringService` | `IDbCheckAuthoringService` | Empty `DbCheckStepDefinition` with fragment as `Name` |
+| `EventAssertAuthoringService` | `IEventAssertAuthoringService` | Empty `EventAssertStepDefinition` with `MatchMode=AnyMessage` |
+
+Each service:
+- Takes the NL fragment, optional stack/module/env keys, and a cancellation token.
+- Calls `IChatCompletionService` directly with a focused prompt (the same strategy the chat assistant uses for step authoring).
+- Wraps the result in the correct `VerificationStep` shape before returning.
+- Catches all exceptions, logs a warning, and returns the fallback — the import never fails due to authoring errors.
+
+All three are registered as `Singleton` in `WebApi/Program.cs` and injected into `XrayImportService`. They are also registered in `Runner/Program.cs` for consistency, although the Runner delegates import to the WebApi over HTTP and does not call them directly.
+
 ### Idempotency
 
 Re-importing the same ticket does not create duplicates. The idempotency key is `(TestObjective.XrayTicketKey, TestObjective.XrayObjectiveSlug)`. If an existing objective matches, it is updated in place. Objectives whose slugs are no longer in the proposal are flagged in the preview but not deleted (conservative posture — protects recorded steps).
+
+Re-import also clears each parent step's `PostSteps` list before re-attaching post-steps (REQ-019). This ensures post-steps from a prior import are replaced rather than duplicated.
 
 ### Gap-REQ stub generator
 
