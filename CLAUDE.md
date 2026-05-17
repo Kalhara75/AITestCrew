@@ -43,6 +43,10 @@ These are entry points — start here when navigating the codebase. For the full
 | `src/AiTestCrew.Runner/AgentMode/JobExecutor.cs` | Agent-mode dequeue → `TestOrchestrator.RunAsync` bridge; deferred-verification + auth-refresh routing |
 | `ui/src/contexts/ActiveRunContext.tsx` | Frontend run state: module + individual run tracking, polling, page-refresh recovery |
 | `src/AiTestCrew.Core/Models/` | `TestTask`, `TestStep`, `TestResult`, `TestSuiteResult`, `RunMode` |
+| `src/AiTestCrew.Core/Capabilities/CapabilityRegistry.cs` | Static catalog of AITestCrew step types, post-step types, assertion primitives + known-unsupported examples. Used as LLM ground truth in Xray import. Exposed via `GET /api/capabilities`. |
+| `src/AiTestCrew.WebApi/Services/XrayImportService.cs` | Two-pass Xray import: decompose ticket into N objectives (LLM), map each fragment to a step kind (LLM + capability registry), persist via `ConfirmAsync`. |
+| `src/AiTestCrew.WebApi/Services/GapRequirementWriter.cs` | Scans `requirements/` for the highest REQ number, writes stub `.md` files for unsupported Xray steps — not committed, for QA review. |
+| `src/AiTestCrew.WebApi/Integrations/JiraXray/` | `IJiraXrayClient` + Cloud/Server implementations. Normalises Jira Xray REST response (ADF or wiki markup) to `XrayTestDto` with `ParsedDescription`. |
 
 ## Test organisation
 
@@ -179,6 +183,9 @@ Adding a ___ is → ___
 | A new Azure Service Bus namespace | Manual — config-only | `Environments.<key>.ServiceBusConnections.<connectionKey>` (or top-level `TestEnvironment.ServiceBusConnections.<connectionKey>` fallback). Choose `AuthMode: ConnectionString` or `AuthMode: AzureAd` (DefaultAzureCredential — Azure CLI locally, managed identity in prod). Zero code changes. |
 | A new event match mode (beyond Any/All/ExactlyOne/count-bounded) | Manual — enum + evaluator branch | Add to `src/AiTestCrew.Storage/EventAssertAgent/MatchMode.cs`; branch in `src/AiTestCrew.Agents/EventAssertAgent/MatchModeEvaluator.cs` (both `Evaluate` and `CanShortCircuit`). Update editor dropdown in `EditEventAssertStepDialog.tsx` + chat prompt examples in `ChatIntentService.cs`. |
 | A new event-body format (e.g. Avro, Protobuf) | Manual — enum + extractor + sniff | Add to `src/AiTestCrew.Storage/EventAssertAgent/BodyFormat.cs`; new `<Format>BodyExtractor.cs` under `Body/`; route in `MessageFieldResolver.cs`; extend `BodyFormatDetector.cs`'s sniff logic. Update editor dropdown + chat prompt body-format guidance. |
+| Updating the Xray capability registry (after adding a new step type or post-step type) | Manual — one file | Add entries to the appropriate list in `src/AiTestCrew.Core/Capabilities/CapabilityRegistry.cs` (`StepTypes`, `PostStepTypes`, `AssertionPrimitives`, or `UnsupportedExamples`). REQ-017 acceptance criterion 7 requires registry coverage of every `TestTargetType` enum value. |
+| Switching Jira Xray from Cloud to Server (self-hosted) | Config-only | Set `TestEnvironment.JiraXray.Mode = "Server"` + provide `JiraEmail` + `JiraApiToken`. The Cloud flavour uses an Xray JWT (`XrayClientId` + `XrayClientSecret`); the Server flavour uses Basic auth. Zero code changes. |
+| Adding a new upstream for Xray-style import (e.g. TestRail, Zephyr) | Manual — implement `IJiraXrayClient` | New class in `src/AiTestCrew.WebApi/Integrations/`; switch in `Program.cs` DI on a new `Mode` value. `XrayImportService` is agnostic to the upstream — it only depends on `IJiraXrayClient.GetTestAsync`. |
 
 ## Documentation
 
@@ -190,5 +197,6 @@ Adding a ___ is → ___
 - `docs/qa-assistant-curriculum.md` — staged prompts (Orient → UI → API + assertions → DB / Service Bus orchestration → aseXML) for learning AITestCrew incrementally through the in-app assistant.
 - `docs/agentic-development-team.md` — five-agent pipeline (`feature-coordinator` → `implementation-planner` → `implementer` → `doc-writer` → `code-reviewer`) that turns a `requirements/REQ-*.md` file into a review-ready feature branch. Hand a requirement to `feature-coordinator` for hands-off implementation.
 - Phase 3 decision: the aseXML feature is feature-complete through **Generate → Deliver → Wait → Verify**. Future work is extension (new transaction types, new protocols, richer wait strategies, desktop edit dialog, Phase 1.5 UI edit for non-verification aseXML steps) rather than new phases.
+- REQ-017: Jira Xray import is v1-complete (single-ticket import, Cloud + Server, two-LLM-pass decompose + map, gap-REQ stub writer, CLI flag, UI dialog). Future work: bulk JQL import, Xray execution write-back, TestRail/Zephyr connectors.
 
 Keep docs updated when behaviour or structure changes. The `/add-*` skills codify the "right way" to extend — reach for them first before hand-editing.

@@ -2773,3 +2773,84 @@ ALTER TABLE agents ADD COLUMN is_shared INTEGER NOT NULL DEFAULT 0;
 Bootstrap: UPDATE users SET role = 'Admin' WHERE id = (SELECT id FROM users ORDER BY created_at ASC LIMIT 1).
 
 Both ALTERs are idempotent (ColumnExists guard). is_shared defaults to 0 so all existing agents remain personal.
+
+
+## Jira Xray Import (REQ-017)
+
+### Overview
+
+The Xray import subsystem lets QAs bring Jira Xray test cases into AITestCrew without manual re-entry. It lives entirely in the WebApi layer — agent boxes never touch Jira credentials.
+
+### Data flow
+
+```
+QA (UI or CLI)
+  |
+  v
+POST /api/xray/import            ← preview only, nothing persisted
+  |
+  +--> IJiraXrayClient.GetTestAsync(ticketKey)
+  |      |- JiraXrayCloudClient  (Xray JWT + Jira REST v3, ADF description)
+  |      |- JiraXrayServerClient (Basic auth, Jira REST v2, plain-text description)
+  |         XrayDescriptionParser: ADF JSON → ParsedXrayDescription (sections)
+  |
+  +--> XrayImportService.DecomposeAsync()
+  |      LLM call: ticket summary + steps → List<ProposedObjective>
+  |      (prefer 1-2; >4 sets reviewCarefullyFlag)
+  |
+  +--> XrayImportService.MapFragmentsAsync()  (per objective)
+         LLM call with CapabilityRegistry markdown as system context
+         → List<XrayMappingRow>  { kind, confidence, definition | rationale }
+         kind ∈ { api, webUi, desktopUi, asexml, asexmlDelivery,
+                  postStep, placeholder, unsupported }
+
+QA reviews preview → calls POST /api/xray/import/confirm
+
+  +--> FilterAndMerge (QA-accepted slugs + merge requests)
+  +--> ITestSetRepository.LoadAsync()
+  +--> foreach accepted objective:
+  |      find existing by (XrayTicketKey, XrayObjectiveSlug) or create new TestObjective
+  |      MapRowsToObjective: kind → ApiSteps / WebUiSteps / AseXmlSteps / etc.
+  |      ITestSetRepository.SaveAsync()
+  |
+  +--> foreach unsupported row:
+         GapRequirementWriter.Write(GapReqSpec)
+         → requirements/REQ-<next>-<slug>.md  (NOT committed)
+```
+
+### Capability registry
+
+`CapabilityRegistry` (static, `AiTestCrew.Core.Capabilities`) is the LLM's ground truth. It lists:
+- **StepTypes** — every `TestTargetType` supported today with a one-line description
+- **PostStepTypes** — DB Assert, Event Assert (Service Bus), API post-step, aseXML post-delivery verification
+- **AssertionPrimitives** — sourced from existing enums (`ApiAssertionSource`, `AssertionOperator`, `MatchMode`, desktop action strings)
+- **UnsupportedExamples** — canonical "what AITestCrew cannot do" examples that guide the LLM's `unsupported` verdict
+
+`GET /api/capabilities` returns the registry as `CapabilityRegistryDto` (JSON). The import LLM prompt includes `CapabilityRegistry.GetMarkdown()` as inline context.
+
+The registry must be kept in sync with new step types and post-step types. Adding a new `TestTargetType` without updating the registry causes the LLM to misclassify Xray steps for that target — update `CapabilityRegistry.cs` when extending.
+
+### Idempotency
+
+Re-importing the same ticket does not create duplicates. The idempotency key is `(TestObjective.XrayTicketKey, TestObjective.XrayObjectiveSlug)`. If an existing objective matches, it is updated in place. Objectives whose slugs are no longer in the proposal are flagged in the preview but not deleted (conservative posture — protects recorded steps).
+
+### Gap-REQ stub generator
+
+`GapRequirementWriter` scans `requirements/*.md` for the highest `REQ-NNN` number, increments, and writes a stub file matching the house frontmatter + section structure. The stub is never committed automatically — it lands on disk for the QA to review and commit when ready. The agentic development pipeline (`feature-coordinator`) can then implement it.
+
+### Persistence schema additions (additive, no migration needed)
+
+`TestObjective` gains five optional fields:
+- `Source = "ImportedFromXray"` — new allowed value alongside `"Generated"` / `"Recorded"`
+- `XrayTicketKey` — back-link to the originating Jira ticket
+- `XrayObjectiveSlug` — stable slug for the decomposed slice (idempotency key with `XrayTicketKey`)
+- `Preconditions: List<string>` — bullet list from the Xray Description's Preconditions section
+- `TestDataNotes: string?` — from the Xray Description's Test Data section
+
+All fields are additive; missing fields on old objectives deserialise as null/empty.
+
+### Layer constraints
+
+- `JiraXrayConfig` is in `AiTestCrew.Core.Configuration` (not WebApi) so `TestEnvironmentConfig` can reference it without violating the dependency direction rule.
+- The client implementations are in `src/AiTestCrew.WebApi/Integrations/JiraXray/` — accessible to WebApi, not referenced from Agents or Core.
+- No agent, Orchestrator, or Runner code depends on Jira types. The CLI `--import-xray` flag in the Runner calls the WebApi's `/api/xray/import` endpoint over HTTP, the same way the UI does.

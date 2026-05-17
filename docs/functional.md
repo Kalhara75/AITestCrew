@@ -2099,6 +2099,91 @@ Desktop test steps can be edited in the React web portal just like web UI steps.
 
 ---
 
+## Importing from Jira Xray (REQ-017)
+
+QA teams that maintain test cases in Jira Xray can import them directly into AITestCrew rather than re-typing each step.
+
+### Prerequisites
+
+Add a `JiraXray` section to `appsettings.json` (see `appsettings.example.json` for a template):
+
+```json
+"JiraXray": {
+  "Mode": "Cloud",
+  "BaseUrl": "https://yourtenant.atlassian.net",
+  "XrayClientId": "...",
+  "XrayClientSecret": "...",
+  "JiraEmail": "tooling@yourdomain",
+  "JiraApiToken": "..."
+}
+```
+
+`Mode` is `"Cloud"` (Xray Cloud JWT authentication) or `"Server"` (Jira Server / Data Centre — Basic auth with `JiraEmail` + `JiraApiToken`). The Cloud mode additionally requires `XrayClientId` and `XrayClientSecret` from the Xray API Keys page.
+
+### What gets imported
+
+1. **Ticket fetch.** The importer calls Jira REST to retrieve the ticket's summary, description, and structured steps (if any). Both step-structured tests (`Steps[]` populated) and description-driven tests (test body as prose in the `Description` field with sections like Preconditions / Test Data / Expected Outcome) are supported.
+
+2. **Decomposition.** An LLM pass proposes how many AITestCrew `TestObjective`s the ticket should decompose into. Heuristics prefer fewer objectives — one ticket typically produces one or two objectives. Tickets producing more than four objectives get a "review carefully" flag.
+
+3. **Mapping.** A second LLM pass maps each step fragment to an AITestCrew step kind:
+   - `api` / `webUi` / `desktopUi` / `asexml` / `asexmlDelivery`
+   - `postStep` — DB Assert, Event Assert, or API post-step attached to a parent
+   - `placeholder` — supported in principle but needs recording (creates a stub WebUiStep or DesktopUiStep)
+   - `unsupported` — outside AITestCrew's current capabilities (triggers a gap-REQ stub)
+
+4. **Preview.** The result is returned as a preview — nothing is persisted until the QA confirms.
+
+5. **Confirm.** On confirmation, `TestObjective`s are persisted with `Source = "ImportedFromXray"`, `XrayTicketKey`, and `XrayObjectiveSlug` set. For unsupported steps, stub requirement files are written to `requirements/REQ-<next>-<slug>.md` on disk (not committed — for QA review).
+
+### Via the UI
+
+Open a Test Set detail page and click the purple **Import from Xray** button. Enter an Xray ticket key (format: `PROJ-1234`), click **Preview**, review the proposed objectives and step-mapping table, then click **Confirm** to persist.
+
+The dialog shows:
+- Proposed objectives as collapsible cards with checkboxes (uncheck to skip)
+- Per-objective mapping table (source fragment, mapped step kind, confidence, notes)
+- Gap-REQ warnings if any steps are unsupported
+- "Import as a single objective" toggle to collapse all proposals into one
+- Success state listing persisted objective IDs and gap-REQ file paths
+
+### Via the CLI
+
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --import-xray PROJ-1234 --module billing --testset invoicing
+```
+
+Performs the import non-interactively (preview + confirm in one pass) and prints the persisted objective path and gap-REQ file paths.
+
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --import-xray PROJ-1234 --module billing --testset invoicing --xray-dry-run
+```
+
+Returns the preview only — nothing is persisted and no REQ stubs are written. `git status` is clean afterward.
+
+### Re-importing
+
+Re-importing the same ticket is idempotent: objectives are matched by `(XrayTicketKey, XrayObjectiveSlug)` and updated in place rather than duplicated. Removed Xray steps are flagged in the preview but not deleted automatically (to protect work already recorded against a step).
+
+### Capability-gap REQ stubs
+
+When an Xray step is outside AITestCrew's current capabilities, the importer writes a stub requirement file:
+
+```
+requirements/REQ-<next>-<slug>.md
+```
+
+The stub includes the Xray ticket key and step text as "Source of need", the LLM's suggested extension point, and skeleton acceptance criteria. It is written to disk only — the QA reviews and commits it when ready. The five-agent development pipeline (`docs/agentic-development-team.md`) can then implement the gap.
+
+### Imported objectives in the editor
+
+Imported objectives appear in the existing editor dialogs unchanged. The `Preconditions` list and `TestDataNotes` from the Xray description are shown as read-only notes above the step list.
+
+`--rebaseline` refuses to run on imported objectives: the source of truth is Xray + the user's recording, not the LLM that mapped them. Re-import from Xray instead.
+
+
+---
+
 ## Planned Future Capabilities
 
 The following are scaffolded in the codebase but not yet active:
