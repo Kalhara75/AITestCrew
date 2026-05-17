@@ -14,6 +14,16 @@ public class XrayMappingRow
     public string Kind { get; set; } = "";
     public string? Target { get; set; }
     public string? PostStepType { get; set; }
+    /// <summary>
+    /// For postStep kind: the 0-based index into the same objective's MappingRows of
+    /// the parent step this post-step attaches to. Null for non-postStep kinds.
+    /// </summary>
+    public int? ParentFragmentIndex { get; set; }
+    /// <summary>
+    /// For postStep kind: the expected kind of the parent row (api | webUi | desktopUi | asexml | asexmlDelivery).
+    /// Used to validate the pairing before attaching.
+    /// </summary>
+    public string? ParentKind { get; set; }
     public double Confidence { get; set; }
     public string Rationale { get; set; } = "";
     public string? SuggestedReqTitle { get; set; }

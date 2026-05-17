@@ -275,6 +275,9 @@ builder.Services.AddSingleton<IJiraXrayClient>(sp =>
         ? (IJiraXrayClient)new JiraXrayServerClient(xrayHttp, xrayCfg)
         : new JiraXrayCloudClient(xrayHttp, xrayCfg, xrayLogFac.CreateLogger<JiraXrayCloudClient>());
 });
+builder.Services.AddSingleton<IApiStepAuthoringService, ApiStepAuthoringService>();
+builder.Services.AddSingleton<IDbCheckAuthoringService, DbCheckAuthoringService>();
+builder.Services.AddSingleton<IEventAssertAuthoringService, EventAssertAuthoringService>();
 builder.Services.AddSingleton<IXrayImportService, XrayImportService>();
 
 // ── CORS ──

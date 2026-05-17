@@ -2,6 +2,8 @@ using AiTestCrew.Core.Configuration;
 using System.Text.Json;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
+using AiTestCrew.Agents.ApiAgent;
+using AiTestCrew.Agents.AseXmlAgent;
 using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Agents.Shared;
 using AiTestCrew.Core.Capabilities;
@@ -22,6 +24,9 @@ public class XrayImportService : IXrayImportService
     private readonly IChatCompletionService _chat;
     private readonly ITestSetRepository _testSetRepo;
     private readonly GapRequirementWriter _gapWriter;
+    private readonly IApiStepAuthoringService _apiAuthoring;
+    private readonly IDbCheckAuthoringService _dbAuthoring;
+    private readonly IEventAssertAuthoringService _eventAuthoring;
     private readonly ILogger<XrayImportService> _logger;
 
     public XrayImportService(
@@ -29,12 +34,18 @@ public class XrayImportService : IXrayImportService
         IChatCompletionService chat,
         ITestSetRepository testSetRepo,
         GapRequirementWriter gapWriter,
+        IApiStepAuthoringService apiAuthoring,
+        IDbCheckAuthoringService dbAuthoring,
+        IEventAssertAuthoringService eventAuthoring,
         ILogger<XrayImportService> logger)
     {
         _xrayClient = xrayClient;
         _chat = chat;
         _testSetRepo = testSetRepo;
         _gapWriter = gapWriter;
+        _apiAuthoring = apiAuthoring;
+        _dbAuthoring = dbAuthoring;
+        _eventAuthoring = eventAuthoring;
         _logger = logger;
     }
 
@@ -143,7 +154,8 @@ public class XrayImportService : IXrayImportService
             testObj.DesktopUiSteps.Clear();
             testObj.AseXmlSteps.Clear();
             testObj.AseXmlDeliverySteps.Clear();
-            MapRowsToObjective(obj.MappingRows, testObj);
+            // Post-steps live on parent steps -- clearing parent step lists also clears PostSteps.
+            await MapRowsToObjectiveAsync(obj.MappingRows, testObj, testSet.ApiStackKey, testSet.ApiModule, testSet.EnvironmentKey, ct);
             persistedIds.Add(testObj.Id);
         }
 
@@ -234,24 +246,38 @@ public class XrayImportService : IXrayImportService
         var fragments = string.Join(
             "\n",
             obj.AssignedFragments.Select((f, i) =>
-                string.Format("[{0}] {1}", i + 1, f)));
+                string.Format("[{0}] {1}", i, f)));
 
-        var prompt =
-            "You are mapping Xray test steps to AITestCrew step types.\n\n" +
-            "AITestCrew capabilities:\n" + capMd + "\n\n" +
-            "Objective: " + obj.Title + "\n" +
-            "Fragments to map:\n" + fragments + "\n\n" +
-            "For each fragment return a JSON object with:\n" +
-            "  sourceFragment (string),\n" +
-            "  kind (one of: api | webUi | desktopUi | asexml | asexmlDelivery | postStep | placeholder | unsupported),\n" +
-            "  target (string or null),\n" +
-            "  postStepType (string or null),\n" +
-            "  confidence (float 0-1),\n" +
-            "  rationale (string),\n" +
-            "  suggestedReqTitle (string or null -- only when kind=unsupported),\n" +
-            "  suggestedExtensionPoint (string or null -- only when kind=unsupported)\n" +
-            "Use placeholder for vague steps. Use unsupported for missing capabilities.\n" +
-            "Return a JSON array only.";
+        var sb2 = new System.Text.StringBuilder();
+        sb2.AppendLine("You are mapping Xray test steps to AITestCrew step types.");
+        sb2.AppendLine();
+        sb2.AppendLine("AITestCrew capabilities:");
+        sb2.AppendLine(capMd);
+        sb2.AppendLine();
+        sb2.AppendLine("Pairing rules for post-steps:");
+        sb2.AppendLine("  - Post-steps MUST attach to a parent. Valid parent kinds: api, webUi, desktopUi, asexml, asexmlDelivery.");
+        sb2.AppendLine("  - postStepType must be: dbAssert | eventAssert | apiPostStep | uiVerification.");
+        sb2.AppendLine("  - A postStep row MUST set parentFragmentIndex (0-based index of parent fragment in this list).");
+        sb2.AppendLine("  - A postStep row MUST set parentKind to the parent fragment's kind.");
+        sb2.AppendLine();
+        sb2.AppendLine("Objective: " + obj.Title);
+        sb2.AppendLine("Fragments to map (0-indexed):");
+        sb2.AppendLine(fragments);
+        sb2.AppendLine();
+        sb2.AppendLine("For each fragment return a JSON object with:");
+        sb2.AppendLine("  sourceFragment (string),");
+        sb2.AppendLine("  kind (api|webUi|desktopUi|asexml|asexmlDelivery|postStep|placeholder|unsupported),");
+        sb2.AppendLine("  target (string or null),");
+        sb2.AppendLine("  postStepType (dbAssert|eventAssert|apiPostStep|uiVerification or null),");
+        sb2.AppendLine("  parentFragmentIndex (integer or null -- REQUIRED for postStep kind),");
+        sb2.AppendLine("  parentKind (string or null -- REQUIRED for postStep kind),");
+        sb2.AppendLine("  confidence (float 0-1),");
+        sb2.AppendLine("  rationale (string),");
+        sb2.AppendLine("  suggestedReqTitle (string or null -- only when kind=unsupported),");
+        sb2.AppendLine("  suggestedExtensionPoint (string or null -- only when kind=unsupported)");
+        sb2.AppendLine("Use placeholder for vague steps. Use unsupported for missing capabilities.");
+        sb2.Append("Return a JSON array only.");
+        var prompt = sb2.ToString();
 
         var history = new ChatHistory();
         history.AddUserMessage(prompt);
@@ -277,46 +303,193 @@ public class XrayImportService : IXrayImportService
                 .ToList();
         }
     }
-    private static void MapRowsToObjective(List<XrayMappingRow> rows, TestObjective obj)
+    /// <summary>
+    /// Two-phase build: Phase 1 materialises parent steps (webUi, api, desktopUi, etc.).
+    /// Phase 2 iterates postStep rows and attaches authored post-steps to parents.
+    /// Invalid parentFragmentIndex demotes to placeholder so no description is lost.
+    /// Authoring failures fall back to empty shell -- import never throws. (REQ-019 AC#1-#8)
+    /// </summary>
+    private async Task MapRowsToObjectiveAsync(
+        List<XrayMappingRow> rows,
+        TestObjective obj,
+        string? stackKey,
+        string? moduleKey,
+        string? envKey,
+        CancellationToken ct)
     {
-        foreach (var row in rows)
+        // parentStepListIndex[i] = 0-based index of rows[i] in the relevant step list after Phase 1.
+        // -1 = not materialised (postStep, TargetType-only, unsupported).
+        var parentStepListIndex = new int[rows.Count];
+        for (var i = 0; i < rows.Count; i++)
+            parentStepListIndex[i] = -1;
+
+        // Phase 1: materialise parent steps
+        for (var i = 0; i < rows.Count; i++)
         {
+            var row = rows[i];
             switch (row.Kind)
             {
                 case "webUi":
                 case "placeholder":
-                    var webDef = new WebUiTestDefinition
+                    parentStepListIndex[i] = obj.WebUiSteps.Count;
+                    obj.WebUiSteps.Add(new WebUiTestDefinition
                     {
                         Description = row.SourceFragment,
                         StartUrl = "",
                         Steps = []
-                    };
-                    obj.WebUiSteps.Add(webDef);
+                    });
                     if (string.IsNullOrEmpty(obj.TargetType) || obj.TargetType == "API_REST")
                     {
                         obj.TargetType = row.Target ?? "UI_Web_Blazor";
                         obj.AgentName = "";
                     }
                     break;
+
                 case "api":
-                    obj.TargetType = row.Target ?? "API_REST";
+                {
+                    if (string.IsNullOrEmpty(obj.TargetType))
+                        obj.TargetType = row.Target ?? "API_REST";
+                    var apiDef = await _apiAuthoring.AuthorApiStepAsync(row.SourceFragment, stackKey, moduleKey, envKey, ct);
+                    parentStepListIndex[i] = obj.ApiSteps.Count;
+                    obj.ApiSteps.Add(apiDef);
                     break;
+                }
+
                 case "desktopUi":
-                    obj.TargetType = row.Target ?? "UI_Desktop_WinForms";
+                    if (string.IsNullOrEmpty(obj.TargetType))
+                        obj.TargetType = row.Target ?? "UI_Desktop_WinForms";
+                    parentStepListIndex[i] = obj.DesktopUiSteps.Count;
+                    obj.DesktopUiSteps.Add(new DesktopUiTestDefinition
+                    {
+                        Description = row.SourceFragment,
+                        Steps = []
+                    });
                     break;
+
                 case "asexml":
-                    obj.TargetType = row.Target ?? "AseXml_Generate";
+                    if (string.IsNullOrEmpty(obj.TargetType))
+                        obj.TargetType = row.Target ?? "AseXml_Generate";
                     break;
+
                 case "asexmlDelivery":
-                    obj.TargetType = row.Target ?? "AseXml_Deliver";
+                    if (string.IsNullOrEmpty(obj.TargetType))
+                        obj.TargetType = row.Target ?? "AseXml_Deliver";
                     break;
+
+                case "postStep":
+                    // Handled in Phase 2.
+                    break;
+
                 default:
+                    // unsupported / unknown -- gap REQ handling done in ConfirmAsync.
                     break;
             }
         }
+
         if (string.IsNullOrEmpty(obj.TargetType))
             obj.TargetType = "API_REST";
+
+        // Phase 2: attach post-steps to their parents
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var row = rows[i];
+            if (row.Kind != "postStep") continue;
+
+            var pIdx = row.ParentFragmentIndex;
+
+            if (pIdx is null || pIdx < 0 || pIdx >= rows.Count)
+            {
+                _logger.LogWarning(
+                    "postStep at index {I} has invalid parentFragmentIndex {PIdx}; demoting to placeholder.", i, pIdx);
+                DemoteToPlaceholder(row, obj);
+                continue;
+            }
+
+            var parentRow = rows[(int)pIdx];
+            var parentCanCarry = parentRow.Kind is "webUi" or "api" or "desktopUi" or "asexml" or "asexmlDelivery" or "placeholder";
+
+            if (!parentCanCarry)
+            {
+                _logger.LogWarning(
+                    "postStep at index {I}: parent kind {PKind} cannot carry post-steps; demoting.", i, parentRow.Kind);
+                DemoteToPlaceholder(row, obj);
+                continue;
+            }
+
+            VerificationStep? postStep = null;
+            try
+            {
+                postStep = row.PostStepType?.ToLowerInvariant() switch
+                {
+                    "dbassert" => await _dbAuthoring.AuthorDbCheckPostStepAsync(row.SourceFragment, envKey, ct),
+                    "eventassert" => await _eventAuthoring.AuthorEventAssertPostStepAsync(row.SourceFragment, envKey, ct),
+                    "apipoststep" => await _apiAuthoring.AuthorApiPostStepAsync(row.SourceFragment, stackKey, moduleKey, envKey, ct),
+                    "uiverification" => BuildUiVerificationPostStep(row, parentRow, obj),
+                    _ => BuildUiVerificationPostStep(row, parentRow, obj)
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Post-step authoring threw for {Fragment}; falling back to placeholder.", row.SourceFragment);
+                postStep = BuildUiVerificationPostStep(row, parentRow, obj);
+            }
+
+            if (postStep is null) continue;
+
+            var pStepListIndex = parentStepListIndex[(int)pIdx];
+            switch (parentRow.Kind)
+            {
+                case "api":
+                    if (pStepListIndex >= 0 && pStepListIndex < obj.ApiSteps.Count)
+                        obj.ApiSteps[pStepListIndex].PostSteps.Add(postStep);
+                    break;
+                case "webUi":
+                case "placeholder":
+                    if (pStepListIndex >= 0 && pStepListIndex < obj.WebUiSteps.Count)
+                        obj.WebUiSteps[pStepListIndex].PostSteps.Add(postStep);
+                    break;
+                case "desktopUi":
+                    if (pStepListIndex >= 0 && pStepListIndex < obj.DesktopUiSteps.Count)
+                        obj.DesktopUiSteps[pStepListIndex].PostSteps.Add(postStep);
+                    break;
+                default:
+                    // asexml/asexmlDelivery are TargetType-only; no step object to attach to.
+                    DemoteToPlaceholder(row, obj);
+                    break;
+            }
+        }
     }
+
+    private static void DemoteToPlaceholder(XrayMappingRow row, TestObjective obj)
+    {
+        obj.WebUiSteps.Add(new WebUiTestDefinition
+        {
+            Description = row.SourceFragment,
+            StartUrl = "",
+            Steps = []
+        });
+        if (string.IsNullOrEmpty(obj.TargetType) || obj.TargetType == "API_REST")
+        {
+            obj.TargetType = "UI_Web_Blazor";
+            obj.AgentName = "";
+        }
+    }
+
+    private static VerificationStep BuildUiVerificationPostStep(XrayMappingRow row, XrayMappingRow parentRow, TestObjective obj)
+    {
+        var target = parentRow.Target ?? obj.TargetType ?? "UI_Web_Blazor";
+        return new VerificationStep
+        {
+            Description = row.SourceFragment,
+            Target = target,
+            WaitBeforeSeconds = 0,
+            Role = "Verification",
+            WebUi = target.StartsWith("UI_Web", StringComparison.OrdinalIgnoreCase)
+                ? new WebUiTestDefinition { Description = row.SourceFragment, StartUrl = "", Steps = [] }
+                : null
+        };
+    }
+
 
     private static List<ProposedObjective> FilterAndMerge(
         List<ProposedObjective> all, XrayImportConfirmRequest request)

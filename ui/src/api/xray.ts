@@ -11,6 +11,10 @@ export interface XrayMappingRow {
   kind: string;
   target?: string | null;
   postStepType?: string | null;
+  /** 0-based index of the parent fragment in the same objective. Required when kind=postStep. */
+  parentFragmentIndex?: number | null;
+  /** Kind of the parent fragment (api|webUi|desktopUi|asexml|asexmlDelivery). Required when kind=postStep. */
+  parentKind?: string | null;
   confidence: number;
   rationale: string;
   suggestedReqTitle?: string | null;

@@ -62,6 +62,15 @@ public static class CapabilityRegistry
         ## Event Match Modes
         Any, All, ExactlyOne, MinCount, MaxCount
 
+        ## Post-Step Pairing Rules
+
+        Post-steps attach to a parent step. When mapping an Xray fragment as a post-step:
+        - Valid parent kinds: api, webUi, desktopUi, asexml, asexmlDelivery.
+        - postStepType must be one of: dbAssert, eventAssert, apiPostStep, uiVerification.
+        - A postStep row MUST include parentFragmentIndex (0-based index of the parent fragment
+          in the same objective) and parentKind (the parent's kind string).
+        - Typical pairing: a webUi parent (user action) with dbAssert post-steps (data verifications).
+
         ## NOT Supported Today (generate a gap REQ for these)
         - PDF content inspection (no primitive; would need a PdfContentAssert post-step)
         - Excel / CSV file diff (no file-comparison primitive)
