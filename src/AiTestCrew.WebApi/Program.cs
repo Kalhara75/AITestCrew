@@ -1,3 +1,5 @@
+using AiTestCrew.Core.Capabilities;
+using AiTestCrew.WebApi.Integrations.JiraXray;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using AiTestCrew.Agents.ApiAgent;
@@ -12,6 +14,7 @@ using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Agents.Teardown;
 using AiTestCrew.Agents.WinFormsUiAgent;
 using AiTestCrew.Core.Configuration;
+using AiTestCrew.Core.Models;
 using AiTestCrew.Core.Interfaces;
 using AiTestCrew.Core.Services;
 using AiTestCrew.Orchestrator;
@@ -256,6 +259,24 @@ builder.Services.AddSingleton<IChatIntentService, ChatIntentService>();
 builder.Services.AddSingleton<DbDryRunRateLimiter>(_ => new DbDryRunRateLimiter());
 builder.Services.AddSingleton<EventAssertPeekRateLimiter>(_ => new EventAssertPeekRateLimiter());
 
+// ── Jira Xray integration ──
+// GapRequirementWriter scans the requirements/ folder for the highest REQ number
+var reqsDir = Path.GetFullPath(Path.Combine(runnerDir, "..", "..", "requirements"));
+if (!Directory.Exists(reqsDir))
+    reqsDir = Path.Combine(AppContext.BaseDirectory, "requirements");
+builder.Services.AddSingleton(sp => new GapRequirementWriter(
+    reqsDir, sp.GetRequiredService<ILogger<GapRequirementWriter>>()));
+builder.Services.AddSingleton<IJiraXrayClient>(sp =>
+{
+    var xrayCfg = sp.GetRequiredService<TestEnvironmentConfig>().JiraXray;
+    var xrayHttp = sp.GetRequiredService<IHttpClientFactory>().CreateClient();
+    var xrayLogFac = sp.GetRequiredService<ILoggerFactory>();
+    return xrayCfg.Mode.Equals("Server", StringComparison.OrdinalIgnoreCase)
+        ? (IJiraXrayClient)new JiraXrayServerClient(xrayHttp, xrayCfg)
+        : new JiraXrayCloudClient(xrayHttp, xrayCfg, xrayLogFac.CreateLogger<JiraXrayCloudClient>());
+});
+builder.Services.AddSingleton<IXrayImportService, XrayImportService>();
+
 // ── CORS ──
 builder.Services.AddCors(options =>
 {
@@ -438,6 +459,16 @@ app.MapGet("/api/config/asexml-verification", (TestEnvironmentConfig cfg) =>
         deferVerifications = cfg.AseXml.DeferVerifications,
         verificationDeferThresholdSeconds = cfg.AseXml.VerificationDeferThresholdSeconds,
     }));
+
+app.MapGroup("/api/xray").MapXrayEndpoints();
+
+// ── Capability registry (GET /api/capabilities) ──
+app.MapGet("/api/capabilities", (HttpContext ctx) =>
+{
+    var user = ctx.Items["User"] as User;
+    if (user is null) return Results.Unauthorized();
+    return Results.Ok(CapabilityRegistry.GetDto());
+});
 
 // ── SPA fallback — serve index.html for client-side routes ──
 app.MapFallbackToFile("index.html");
