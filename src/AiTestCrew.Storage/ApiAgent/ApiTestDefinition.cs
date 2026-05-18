@@ -16,6 +16,14 @@ namespace AiTestCrew.Agents.ApiAgent;
 /// </summary>
 public class ApiTestDefinition
 {
+    // REQ-022: per-step description for inner-table display
+    /// <summary>
+    /// Optional human-readable label for this API test step.
+    /// Rendered as the Test Name cell in TestCaseTable; falls back to the
+    /// parent objective name when blank (same rule applied across all five inner tables).
+    /// </summary>
+    public string Description { get; set; } = "";
+
     public string Method { get; set; } = "GET";
     public string Endpoint { get; set; } = "";
     public Dictionary<string, string> Headers { get; set; } = [];

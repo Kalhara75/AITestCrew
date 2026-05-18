@@ -98,7 +98,7 @@ export function TestCaseTable({ objectives, objectiveStatuses, moduleId, testSet
                 })()}
               </td>
               <td style={{ ...tdStyle, fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 13, color: '#334155' }}>{tc.endpoint}</td>
-              <td style={{ ...tdStyle, color: '#475569' }}>{tc.objectiveName}</td>
+              <td style={{ ...tdStyle, color: '#475569' }}>{(tc.description ?? "").trim() || tc.objectiveName}</td>
               <td style={tdStyle}>
                 <span style={{
                   fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 13, fontWeight: 600,

@@ -52,6 +52,7 @@ export interface ApiCapture {
 }
 
 export interface ApiTestDefinition {
+  description?: string;
   method: string;
   endpoint: string;
   headers: Record<string, string>;

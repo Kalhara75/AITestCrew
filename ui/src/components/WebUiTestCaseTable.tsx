@@ -88,7 +88,7 @@ export function WebUiTestCaseTable({ objectives, objectiveStatuses, moduleId, te
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
               onClick={editable ? () => setEditing({ objective: tc.objective, stepIndex: tc.stepIndex }) : undefined}
             >
-              <td style={tdStyle}>{tc.objectiveName}</td>
+              <td style={tdStyle}>{(tc.description ?? "").trim() || tc.objectiveName}</td>
               <td style={{ ...tdStyle, fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 13, color: '#334155' }}>
                 {tc.startUrl || '/'}
               </td>

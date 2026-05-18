@@ -99,7 +99,7 @@ export function DesktopUiTestCaseTable({ objectives, objectiveStatuses, moduleId
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
               onClick={editable ? () => setEditing({ objective: tc.objective, stepIndex: tc.stepIndex }) : undefined}
             >
-              <td style={tdStyle}>{tc.objectiveName}</td>
+              <td style={tdStyle}>{(tc.description ?? "").trim() || tc.objectiveName}</td>
               <td style={tdStyle}>
                 <span style={{
                   display: 'inline-flex', alignItems: 'center', gap: 4,

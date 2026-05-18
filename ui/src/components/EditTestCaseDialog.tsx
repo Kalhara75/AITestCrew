@@ -121,6 +121,8 @@ export function EditTestCaseDialog({
         <div style={{ maxHeight: 'calc(80vh - 120px)', overflowY: 'auto', paddingRight: 8 }}>
           <label style={labelStyle}>Name</label>
           <input style={inputStyle} value={name} onChange={e => setName(e.target.value)} />
+          <label style={{ ...labelStyle, marginTop: 12 }}>Description</label>
+          <input style={inputStyle} placeholder="Optional step description — shown as Test Name in the inner table" value={form.description ?? ''} onChange={e => set('description', e.target.value)} />
           <div style={{ display: 'flex', gap: 12, marginTop: 14 }}>
             <div style={{ width: 120 }}>
               <label style={labelStyle}>Method</label>

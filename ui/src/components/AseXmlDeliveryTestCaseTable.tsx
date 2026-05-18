@@ -47,12 +47,7 @@ export function AseXmlDeliveryTestCaseTable({ objectives, objectiveStatuses, mod
         <tbody>
           {allCases.map(tc => (
             <tr key={tc.key} style={{ borderBottom: '1px solid #f1f5f9' }}>
-              <td style={tdStyle}>
-                <div>{tc.objectiveName}</div>
-                {tc.step.description && tc.step.description !== tc.objectiveName && (
-                  <div style={{ color: '#64748b', fontSize: 12, marginTop: 2 }}>{tc.step.description}</div>
-                )}
-              </td>
+              <td style={tdStyle}>{(tc.step.description ?? "").trim() || tc.objectiveName}</td>
               <td style={tdStyle}>
                 <span style={{
                   fontFamily: 'ui-monospace, Consolas, monospace',
