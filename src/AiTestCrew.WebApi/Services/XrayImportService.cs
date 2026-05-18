@@ -149,9 +149,15 @@ public class XrayImportService : IXrayImportService
             }
 
             // Clear existing imported steps on re-import so mapping is idempotent.
+            // AC#8 (REQ-020): skip clearing UI step lists when the placeholder has already
+            // been filled by a recording — we preserve the recorded steps and their post-steps.
+            var hasRecordedWebUi = testObj.Source.EndsWith("+Recorded", StringComparison.Ordinal)
+                && testObj.WebUiSteps.Count > 0 && testObj.WebUiSteps.Any(s => s.Steps.Count > 0);
+            var hasRecordedDesktop = testObj.Source.EndsWith("+Recorded", StringComparison.Ordinal)
+                && testObj.DesktopUiSteps.Count > 0 && testObj.DesktopUiSteps.Any(s => s.Steps.Count > 0);
             testObj.ApiSteps.Clear();
-            testObj.WebUiSteps.Clear();
-            testObj.DesktopUiSteps.Clear();
+            if (!hasRecordedWebUi)     testObj.WebUiSteps.Clear();
+            if (!hasRecordedDesktop)   testObj.DesktopUiSteps.Clear();
             testObj.AseXmlSteps.Clear();
             testObj.AseXmlDeliverySteps.Clear();
             // Post-steps live on parent steps -- clearing parent step lists also clears PostSteps.

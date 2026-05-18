@@ -100,6 +100,26 @@ public class TestObjective
         + AseXmlSteps.Count + AseXmlDeliverySteps.Count;
 
     /// <summary>
+    /// Returns true when this objective is an Xray-imported placeholder that has
+    /// not yet been filled by a recording. Source starts with "ImportedFromXray"
+    /// (not yet ending in "+Recorded"), and the relevant step list is empty or
+    /// contains a single entry with zero steps.
+    /// </summary>
+    /// <param name="isDesktop">When true, inspects DesktopUiSteps; otherwise WebUiSteps.</param>
+    public bool IsImportedPlaceholder(bool isDesktop = false)
+    {
+        if (!Source.StartsWith("ImportedFromXray", StringComparison.Ordinal))
+            return false;
+        if (Source.EndsWith("+Recorded", StringComparison.Ordinal))
+            return false;
+        if (isDesktop)
+            return DesktopUiSteps.Count == 0
+                || (DesktopUiSteps.Count == 1 && DesktopUiSteps[0].Steps.Count == 0);
+        return WebUiSteps.Count == 0
+            || (WebUiSteps.Count == 1 && WebUiSteps[0].Steps.Count == 0);
+    }
+
+    /// <summary>
     /// Environment keys this objective is allowed to run on (e.g. "sumo-retail").
     /// Empty list means "default environment only" â€” legacy objectives created
     /// before the multi-env feature are treated this way by the orchestrator.

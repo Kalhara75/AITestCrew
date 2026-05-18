@@ -91,23 +91,48 @@ public class RecordingService : IRecordingService
                 return Fail("No steps were captured. Test case not saved.");
 
             var step = DesktopUiTestDefinition.FromTestCase(recorded);
-            var existingIdx = testSet.TestObjectives.FindIndex(o => o.Id == objectiveId);
-            if (existingIdx >= 0)
+
+            // Two-step lookup: (1) find an imported placeholder with matching slug;
+            // (2) fall back to the recorded-{slug} id (existing re-record path).
+            var caseSlug = SlugHelper.ToSlug(r.CaseName);
+            var importedPlaceholderIdx = testSet.TestObjectives.FindIndex(o =>
+                o.Id == caseSlug && o.IsImportedPlaceholder(isDesktop: true));
+
+            if (importedPlaceholderIdx >= 0)
             {
-                testSet.TestObjectives[existingIdx].DesktopUiSteps.Add(step);
+                // Fill the imported placeholder in-place, preserving PostSteps.
+                var placeholder = testSet.TestObjectives[importedPlaceholderIdx];
+                var existingPostSteps = placeholder.DesktopUiSteps.Count == 1
+                    ? placeholder.DesktopUiSteps[0].PostSteps
+                    : new List<AiTestCrew.Agents.AseXmlAgent.VerificationStep>();
+                step.PostSteps.AddRange(existingPostSteps);
+                placeholder.DesktopUiSteps.Clear();
+                placeholder.DesktopUiSteps.Add(step);
+                placeholder.Source = "ImportedFromXray+Recorded";
+                _logger.LogInformation(
+                    "Filled imported desktop placeholder '{Id}' in-place; preserved {N} post-step(s).",
+                    placeholder.Id, existingPostSteps.Count);
             }
             else
             {
-                testSet.TestObjectives.Add(new TestObjective
+                var existingIdx = testSet.TestObjectives.FindIndex(o => o.Id == objectiveId);
+                if (existingIdx >= 0)
                 {
-                    Id              = objectiveId,
-                    Name            = r.CaseName,
-                    ParentObjective = r.CaseName,
-                    AgentName       = "WinForms Desktop UI Agent",
-                    TargetType      = target,
-                    Source          = "Recorded",
-                    DesktopUiSteps  = [step]
-                });
+                    testSet.TestObjectives[existingIdx].DesktopUiSteps.Add(step);
+                }
+                else
+                {
+                    testSet.TestObjectives.Add(new TestObjective
+                    {
+                        Id              = objectiveId,
+                        Name            = r.CaseName,
+                        ParentObjective = r.CaseName,
+                        AgentName       = "WinForms Desktop UI Agent",
+                        TargetType      = target,
+                        Source          = "Recorded",
+                        DesktopUiSteps  = [step]
+                    });
+                }
             }
             if (!testSet.Objectives.Contains(r.CaseName, StringComparer.OrdinalIgnoreCase))
                 testSet.Objectives.Add(r.CaseName);
@@ -147,23 +172,48 @@ public class RecordingService : IRecordingService
                         ? "Brave Cloud UI Agent" : "Legacy Web UI Agent";
         var uiStep = WebUiTestDefinition.FromTestCase(webRecorded);
 
-        var webExistingIdx = testSet.TestObjectives.FindIndex(o => o.Id == objectiveId);
-        if (webExistingIdx >= 0)
+        // Two-step lookup: (1) find an imported placeholder with matching slug;
+        // (2) fall back to the recorded-{slug} id (existing re-record path).
+        var webCaseSlug = SlugHelper.ToSlug(r.CaseName);
+        var webImportedPlaceholderIdx = testSet.TestObjectives.FindIndex(o =>
+            o.Id == webCaseSlug && o.IsImportedPlaceholder(isDesktop: false));
+
+        if (webImportedPlaceholderIdx >= 0)
         {
-            testSet.TestObjectives[webExistingIdx].WebUiSteps.Add(uiStep);
+            // Fill the imported placeholder in-place, preserving PostSteps.
+            var placeholder = testSet.TestObjectives[webImportedPlaceholderIdx];
+            var existingPostSteps = placeholder.WebUiSteps.Count == 1
+                ? placeholder.WebUiSteps[0].PostSteps
+                : new List<AiTestCrew.Agents.AseXmlAgent.VerificationStep>();
+            uiStep.PostSteps.AddRange(existingPostSteps);
+            placeholder.WebUiSteps.Clear();
+            placeholder.WebUiSteps.Add(uiStep);
+            placeholder.Source = "ImportedFromXray+Recorded";
+            placeholder.AgentName = agentName;
+            _logger.LogInformation(
+                "Filled imported web UI placeholder '{Id}' in-place; preserved {N} post-step(s).",
+                placeholder.Id, existingPostSteps.Count);
         }
         else
         {
-            testSet.TestObjectives.Add(new TestObjective
+            var webExistingIdx = testSet.TestObjectives.FindIndex(o => o.Id == objectiveId);
+            if (webExistingIdx >= 0)
             {
-                Id              = objectiveId,
-                Name            = r.CaseName,
-                ParentObjective = r.CaseName,
-                AgentName       = agentName,
-                TargetType      = target,
-                Source          = "Recorded",
-                WebUiSteps      = [uiStep]
-            });
+                testSet.TestObjectives[webExistingIdx].WebUiSteps.Add(uiStep);
+            }
+            else
+            {
+                testSet.TestObjectives.Add(new TestObjective
+                {
+                    Id              = objectiveId,
+                    Name            = r.CaseName,
+                    ParentObjective = r.CaseName,
+                    AgentName       = agentName,
+                    TargetType      = target,
+                    Source          = "Recorded",
+                    WebUiSteps      = [uiStep]
+                });
+            }
         }
         if (!testSet.Objectives.Contains(r.CaseName, StringComparer.OrdinalIgnoreCase))
             testSet.Objectives.Add(r.CaseName);

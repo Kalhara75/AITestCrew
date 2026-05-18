@@ -288,21 +288,25 @@ export function TestSetDetailPage() {
               onTestCaseUpdated={handleTestCaseUpdated}
             />
           )}
-          {selectedObjective.webUiSteps.length > 0 && (
+          {(selectedObjective.webUiSteps.length > 0 ||
+            (selectedObjective.source === 'ImportedFromXray' && selectedObjective.desktopUiSteps.length === 0 && selectedObjective.apiSteps.length === 0)) && (
             <WebUiTestCaseTable
               objectives={[selectedObjective]}
               objectiveStatuses={testSet.objectiveStatuses}
               moduleId={moduleId}
               testSetId={id}
+              environmentKey={testSet.environmentKey}
               onTestCaseUpdated={handleTestCaseUpdated}
             />
           )}
-          {selectedObjective.desktopUiSteps?.length > 0 && (
+          {(selectedObjective.desktopUiSteps?.length > 0 ||
+            (selectedObjective.source === 'ImportedFromXray' && selectedObjective.targetType === 'UI_Desktop_WinForms')) && (
             <DesktopUiTestCaseTable
               objectives={[selectedObjective]}
               objectiveStatuses={testSet.objectiveStatuses}
               moduleId={moduleId}
               testSetId={id}
+              environmentKey={testSet.environmentKey}
               onTestCaseUpdated={handleTestCaseUpdated}
             />
           )}
@@ -453,6 +457,22 @@ function ObjectiveListTable({
                       background: '#fef3c7', color: '#92400e',
                       border: '1px solid #fde68a',
                     }}>Recorded</span>
+                  )}
+                  {(obj.source ?? '') === 'ImportedFromXray' && (
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, marginLeft: 8,
+                      padding: '1px 6px', borderRadius: 4,
+                      background: '#ede9fe', color: '#5b21b6',
+                      border: '1px solid #ddd6fe',
+                    }}>Xray — Pending Recording</span>
+                  )}
+                  {(obj.source ?? '').startsWith('ImportedFromXray+') && (
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, marginLeft: 8,
+                      padding: '1px 6px', borderRadius: 4,
+                      background: '#d1fae5', color: '#065f46',
+                      border: '1px solid #a7f3d0',
+                    }}>Xray + Recorded</span>
                   )}
                 </td>
                 <td style={{ ...tdStyle, textAlign: 'center', color: '#64748b' }}>

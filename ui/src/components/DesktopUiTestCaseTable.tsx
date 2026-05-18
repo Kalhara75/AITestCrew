@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { updateObjective, deleteObjective } from '../api/modules';
+import { startRecording } from '../api/recordings';
 import { EditDesktopUiTestCaseDialog } from './EditDesktopUiTestCaseDialog';
 import { PostStepsPanel } from './PostStepsPanel';
 import { StatusBadge } from './execution/StatusBadge';
@@ -10,6 +11,7 @@ interface Props {
   objectiveStatuses?: Record<string, ObjectiveStatus>;
   moduleId?: string;
   testSetId?: string;
+  environmentKey?: string | null;
   onTestCaseUpdated?: () => void;
 }
 
@@ -24,13 +26,20 @@ function selectorLabel(s: DesktopUiStep): string {
   return '(none)';
 }
 
-export function DesktopUiTestCaseTable({ objectives, objectiveStatuses, moduleId, testSetId, onTestCaseUpdated }: Props) {
+export function DesktopUiTestCaseTable({ objectives, objectiveStatuses, moduleId, testSetId, environmentKey, onTestCaseUpdated }: Props) {
   const [editing, setEditing] = useState<{
     objective: TestObjective;
     stepIndex: number;
   } | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
+  const [recordingPlaceholderId, setRecordingPlaceholderId] = useState<string | null>(null);
+
+  // Imported placeholders: source = 'ImportedFromXray' (not yet +Recorded) with empty desktop steps.
+  const importedPlaceholders = objectives.filter(o =>
+    o.source === 'ImportedFromXray' &&
+    (o.desktopUiSteps.length === 0 || (o.desktopUiSteps.length === 1 && o.desktopUiSteps[0].steps.length === 0))
+  );
 
   const allCases = objectives
     .filter(o => o.desktopUiSteps.length > 0)
@@ -64,7 +73,7 @@ export function DesktopUiTestCaseTable({ objectives, objectiveStatuses, moduleId
     }
   };
 
-  if (allCases.length === 0) {
+  if (allCases.length === 0 && importedPlaceholders.length === 0) {
     return <p style={{ color: '#94a3b8', fontSize: 14, padding: '8px 0' }}>No desktop UI test cases.</p>;
   }
 
@@ -203,6 +212,61 @@ export function DesktopUiTestCaseTable({ objectives, objectiveStatuses, moduleId
           />
         );
       })()}
+      {importedPlaceholders.length > 0 && editable && (
+        <div style={{ marginTop: 16, borderTop: '1px solid #f1f5f9', paddingTop: 12 }}>
+          <p style={{ fontSize: 12, color: '#64748b', marginBottom: 8, fontWeight: 600 }}>
+            Imported placeholders — ready to record
+          </p>
+          {importedPlaceholders.map(obj => (
+            <div
+              key={obj.id}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 12,
+                padding: '8px 14px', borderRadius: 6,
+                background: '#fefce8', border: '1px solid #fde68a',
+                marginBottom: 6,
+              }}
+            >
+              <span style={{ flex: 1, fontSize: 14, color: '#92400e', fontWeight: 500 }}>{obj.name}</span>
+              <span style={{
+                fontSize: 10, fontWeight: 600,
+                padding: '1px 6px', borderRadius: 4,
+                background: '#fef3c7', color: '#92400e',
+                border: '1px solid #fde68a',
+              }}>Imported — 0 steps</span>
+              <button
+                disabled={recordingPlaceholderId === obj.id}
+                onClick={async () => {
+                  if (!moduleId || !testSetId) return;
+                  setRecordingPlaceholderId(obj.id);
+                  try {
+                    await startRecording({
+                      kind: 'Record',
+                      target: 'UI_Desktop_WinForms',
+                      moduleId,
+                      testSetId,
+                      caseName: obj.name,
+                      ...(environmentKey ? { environmentKey } : {}),
+                    });
+                    onTestCaseUpdated?.();
+                  } finally {
+                    setRecordingPlaceholderId(null);
+                  }
+                }}
+                style={{
+                  padding: '4px 12px', fontSize: 12, fontWeight: 600,
+                  background: recordingPlaceholderId === obj.id ? '#d1d5db' : '#2563eb',
+                  color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {recordingPlaceholderId === obj.id ? 'Starting...' : 'Record this'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
     </div>
   );
 }
