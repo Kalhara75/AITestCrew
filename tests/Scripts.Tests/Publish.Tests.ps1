@@ -56,4 +56,18 @@ Describe 'publish.ps1 -Runner pack contents' {
         $info.branch | Should -Not -BeNullOrEmpty
     }
 
+    It 'pack appsettings.json carries WinForms window-normalization fields' {
+        # Why: desktop replay only reproduces recorded coordinates when the launched
+        # app's window matches the size used at recording time. If these fields are
+        # missing from the shipped pack, the installed agent silently falls back to
+        # the C# defaults (1600x900) and WinForms tests miss their click targets.
+        $f = Get-ChildItem $script:ExtractDir -Filter 'appsettings.json' -Recurse | Select-Object -First 1
+        $f | Should -Not -BeNullOrEmpty
+        $cfg = Get-Content $f.FullName -Raw | ConvertFrom-Json
+        $cfg.TestEnvironment.WinFormsNormalizeWindow   | Should -Not -BeNullOrEmpty
+        $cfg.TestEnvironment.WinFormsWindowWidth       | Should -BeGreaterThan 0
+        $cfg.TestEnvironment.WinFormsWindowHeight      | Should -BeGreaterThan 0
+        $cfg.TestEnvironment.WinFormsCloseAppBetweenTests | Should -Not -BeNullOrEmpty
+    }
+
 }

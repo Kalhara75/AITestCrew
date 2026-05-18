@@ -133,6 +133,25 @@ if ($Runner) {
     # strings from the server (dicts already blanked above, REQ-021).
     $te['EnvironmentResolutionMode'] = 'Auto'
 
+    # WinForms window-normalization knobs MUST ship in the pack — desktop replay only
+    # reproduces recorded coordinates when the launched app's window matches the size
+    # used at recording time. If the source admin config forgets these, fall back to
+    # the values the recorder team standardises on (mirrors appsettings.example.json
+    # and the dev Runner config). Without this, an installed agent silently uses the
+    # C# defaults (1600x900) and WinForms tests miss their click targets.
+    $winFormsDefaults = @{
+        'WinFormsCloseAppBetweenTests' = $true
+        'WinFormsNormalizeWindow'      = $true
+        'WinFormsWindowWidth'          = 2500
+        'WinFormsWindowHeight'         = 1300
+    }
+    foreach ($k in $winFormsDefaults.Keys) {
+        if (-not $te.ContainsKey($k) -or $null -eq $te[$k]) {
+            $te[$k] = $winFormsDefaults[$k]
+            Write-Host "Filled missing $k = $($winFormsDefaults[$k]) (admin config did not specify it)" -ForegroundColor Yellow
+        }
+    }
+
     # Per-env sanitisation — keep URLs / display names / storage state paths,
     # blank passwords + DB / Service Bus connection strings.
     if ($te.ContainsKey('Environments') -and $te.Environments -is [hashtable]) {
