@@ -2099,7 +2099,7 @@ Desktop test steps can be edited in the React web portal just like web UI steps.
 
 ---
 
-## Importing from Jira Xray (REQ-017)
+## Importing from Jira Xray (REQ-017, REQ-019)
 
 QA teams that maintain test cases in Jira Xray can import them directly into AITestCrew rather than re-typing each step.
 
@@ -2128,13 +2128,22 @@ Jira Xray credentials are configured **server-side only** — in the WebApi's `a
 
 3. **Mapping.** A second LLM pass maps each step fragment to an AITestCrew step kind:
    - `api` / `webUi` / `desktopUi` / `asexml` / `asexmlDelivery`
-   - `postStep` — DB Assert, Event Assert, or API post-step attached to a parent
+   - `postStep` — DB Assert, Event Assert, API post-step, or UI verification attached to a parent step. For `postStep` rows the LLM also returns `parentFragmentIndex` (the 0-based index of the parent fragment in the same objective) and `parentKind` (expected kind of the parent).
    - `placeholder` — supported in principle but needs recording (creates a stub WebUiStep or DesktopUiStep)
    - `unsupported` — outside AITestCrew's current capabilities (triggers a gap-REQ stub)
 
-4. **Preview.** The result is returned as a preview — nothing is persisted until the QA confirms.
+4. **Authoring (REQ-019).** Each authorable fragment is passed to a thin LLM authoring service before persistence:
+   - `api` top-level rows → `IApiStepAuthoringService` produces a populated `ApiTestDefinition` (method, endpoint, assertions).
+   - `postStep / dbAssert` → `IDbCheckAuthoringService` drafts a `DbCheckStepDefinition` with connection key and SQL sketch.
+   - `postStep / eventAssert` → `IEventAssertAuthoringService` drafts an `EventAssertStepDefinition` with entity and criteria.
+   - `postStep / apiPostStep` → `IApiStepAuthoringService` again — same service, same authoring path as top-level API steps.
+   - `postStep / uiVerification` → wrapped as an empty WebUi placeholder (needs recording; no LLM authoring).
+   
+   If authoring fails (LLM unavailable, missing spec/config, transient error), the step is still created with an empty payload and the fragment as its description — the import never fails. The QA opens the editor to fill in details.
 
-5. **Confirm.** On confirmation, `TestObjective`s are persisted with `Source = "ImportedFromXray"`, `XrayTicketKey`, and `XrayObjectiveSlug` set. For unsupported steps, stub requirement files are written to `requirements/REQ-<next>-<slug>.md` on disk (not committed — for QA review).
+5. **Preview.** The result is returned as a preview — nothing is persisted until the QA confirms. The preview dialog renders post-steps nested under their parent row so the QA can see the pairing at a glance.
+
+6. **Confirm.** On confirmation, `TestObjective`s are persisted with `Source = "ImportedFromXray"`, `XrayTicketKey`, and `XrayObjectiveSlug` set. Post-steps are attached to their parent steps in the appropriate `PostSteps` list. For unsupported steps, stub requirement files are written to `requirements/REQ-<next>-<slug>.md` on disk (not committed — for QA review).
 
 ### Via the UI
 
@@ -2149,6 +2158,27 @@ The dialog shows:
 - **Import button label** — updates in real time to reflect the count of accepted, non-merged objectives (or "1 objective — collapsed" when collapse is on)
 - Gap-REQ warnings if any steps are unsupported
 - Success state listing persisted objective IDs and gap-REQ file paths
+
+### Post-step authoring (REQ-019)
+
+When the mapping LLM classifies a fragment as `postStep`, the importer uses a two-phase build:
+
+**Phase 1 — parent steps.** `webUi`, `placeholder`, `api`, `desktopUi`, `asexml`, and `asexmlDelivery` rows are materialised first. For `api` rows, `IApiStepAuthoringService` authors a populated `ApiTestDefinition` (method, endpoint, assertions, captures) from the fragment text.
+
+**Phase 2 — post-steps.** Each `postStep` row is attached to its parent, dispatched by `postStepType`:
+
+| postStepType | Target | Authored by |
+|---|---|---|
+| `dbAssert` | `Db_SqlServer` | `IDbCheckAuthoringService` — drafts SQL + column assertions |
+| `eventAssert` | `Event_AzureServiceBus` | `IEventAssertAuthoringService` — drafts entity + criteria |
+| `apiPostStep` | `API_REST` | `IApiStepAuthoringService` — same path as top-level API |
+| `uiVerification` | Parent's TargetType | Empty WebUi placeholder — needs recording |
+
+**Invalid parent handling.** If `parentFragmentIndex` is null, out-of-range, or points to a kind that cannot carry post-steps, the post-step is demoted to a `placeholder` WebUiStep so its description is preserved. A warning is logged; the import does not fail.
+
+**Idempotency.** Re-importing the same ticket clears each parent step's `PostSteps` list before re-attaching, so post-steps are replaced rather than duplicated.
+
+**Needs-filling indicator.** A post-step whose authoring fell back to an empty payload is created with `Description` set to the fragment. Open the editor (DB Assert, Event Assert, or API editor) to supply the missing table/endpoint/queue details.
 
 ### Via the CLI
 

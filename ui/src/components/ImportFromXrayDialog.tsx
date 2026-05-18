@@ -259,10 +259,36 @@ export function ImportFromXrayDialog({ open, moduleId, testSetId, onClose, onImp
                           <div style={{ fontSize: 12, color: '#64748b', marginTop: 3, paddingLeft: 24 }}>{obj.rationale}</div>
                         )}
 
+                        {obj.mappingRows.some(r => r.kind === 'postStep') && (
+                          <div style={{ paddingLeft: 24, marginTop: 4 }}>
+                            {obj.mappingRows.map((row, rowIdx) => {
+                              if (row.kind === 'postStep') {
+                                const parentRow = row.parentFragmentIndex != null ? obj.mappingRows[row.parentFragmentIndex] : null;
+                                return (
+                                  <div key={rowIdx} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                                    <span style={{ fontSize: 10, color: '#94a3b8' }}>{'└─'}</span>
+                                    <span style={{ fontSize: 11, color: '#475569', flex: 1 }} title={row.sourceFragment}>
+                                      {row.sourceFragment.length > 60 ? row.sourceFragment.slice(0, 60) + '…' : row.sourceFragment}
+                                    </span>
+                                    <span style={postStepKindBadgeStyle(row.postStepType ?? 'ui')}>{row.postStepType ?? 'ui'}</span>
+                                    {parentRow && (
+                                      <span style={{ fontSize: 10, color: '#94a3b8' }}>→ {parentRow.kind}</span>
+                                    )}
+                                  </div>
+                                );
+                              }
+                              return null;
+                            })}
+                          </div>
+                        )}
+
                         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4, paddingLeft: 24 }}>
                           <div style={{ fontSize: 11, color: '#94a3b8', flex: 1 }}>
-                            {obj.mappingRows.length} step{obj.mappingRows.length === 1 ? '' : 's'}:{' '}
-                            {[...new Set(obj.mappingRows.map(r => r.kind))].join(', ')}
+                            {obj.mappingRows.filter(r => r.kind !== 'postStep').length} parent step{obj.mappingRows.filter(r => r.kind !== 'postStep').length === 1 ? '' : 's'}
+                            {obj.mappingRows.some(r => r.kind === 'postStep') && (
+                              <span style={{ color: '#64748b' }}>, {obj.mappingRows.filter(r => r.kind === 'postStep').length} post-step{obj.mappingRows.filter(r => r.kind === 'postStep').length === 1 ? '' : 's'}</span>
+                            )}
+                            {' '}{[...new Set(obj.mappingRows.filter(r => r.kind !== 'postStep').map(r => r.kind))].join(', ')}
                           </div>
                           {i > 0 && (
                             <button
@@ -434,5 +460,20 @@ function undoMergeLinkStyle(disabled: boolean): React.CSSProperties {
     cursor: disabled ? 'not-allowed' : 'pointer',
     fontSize: 11, textDecoration: 'underline', padding: 0,
     opacity: disabled ? 0.5 : 1,
+  };
+}
+
+function postStepKindBadgeStyle(kind: string): React.CSSProperties {
+  const colorMap: Record<string, string> = {
+    dbAssert: '#0ea5e9',
+    eventAssert: '#8b5cf6',
+    apiPostStep: '#10b981',
+    uiVerification: '#f59e0b',
+  };
+  return {
+    fontSize: 10, fontWeight: 600, padding: '1px 5px',
+    borderRadius: 4, color: '#fff',
+    background: colorMap[kind] ?? '#64748b',
+    flexShrink: 0,
   };
 }

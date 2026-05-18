@@ -44,7 +44,10 @@ These are entry points — start here when navigating the codebase. For the full
 | `ui/src/contexts/ActiveRunContext.tsx` | Frontend run state: module + individual run tracking, polling, page-refresh recovery |
 | `src/AiTestCrew.Core/Models/` | `TestTask`, `TestStep`, `TestResult`, `TestSuiteResult`, `RunMode` |
 | `src/AiTestCrew.Core/Capabilities/CapabilityRegistry.cs` | Static catalog of AITestCrew step types, post-step types, assertion primitives + known-unsupported examples. Used as LLM ground truth in Xray import. Exposed via `GET /api/capabilities`. |
-| `src/AiTestCrew.WebApi/Services/XrayImportService.cs` | Two-pass Xray import: decompose ticket into N objectives (LLM), map each fragment to a step kind (LLM + capability registry), persist via `ConfirmAsync`. |
+| `src/AiTestCrew.WebApi/Services/XrayImportService.cs` | Two-pass Xray import: decompose ticket into N objectives (LLM), map each fragment to a step kind (LLM + capability registry), two-phase build in `MapRowsToObjectiveAsync` (Phase 1: parent steps; Phase 2: post-steps via authoring services), persist via `ConfirmAsync`. |
+| `src/AiTestCrew.WebApi/Services/ApiStepAuthoringService.cs` | Thin LLM wrapper — authors a populated `ApiTestDefinition` or API `VerificationStep` from a NL fragment. Used by Xray importer for `api` top-level rows and `apiPostStep` post-steps. |
+| `src/AiTestCrew.WebApi/Services/DbCheckAuthoringService.cs` | Thin LLM wrapper — authors a `DbCheckStepDefinition` wrapped in a `VerificationStep` from a NL fragment. Used by Xray importer for `dbAssert` post-steps. |
+| `src/AiTestCrew.WebApi/Services/EventAssertAuthoringService.cs` | Thin LLM wrapper — authors an `EventAssertStepDefinition` wrapped in a `VerificationStep` from a NL fragment. Used by Xray importer for `eventAssert` post-steps. |
 | `src/AiTestCrew.WebApi/Services/GapRequirementWriter.cs` | Scans `requirements/` for the highest REQ number, writes stub `.md` files for unsupported Xray steps — not committed, for QA review. |
 | `src/AiTestCrew.WebApi/Integrations/JiraXray/` | `IJiraXrayClient` + Cloud/Server implementations. Normalises Jira Xray REST response (ADF or wiki markup) to `XrayTestDto` with `ParsedDescription`. |
 
