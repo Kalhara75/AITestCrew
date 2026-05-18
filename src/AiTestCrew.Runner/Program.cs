@@ -546,8 +546,42 @@ builder.Services.AddSingleton(kernel);
 // HttpClient factory + environment resolver + API target resolver + ApiTestAgent
 builder.Services.AddHttpClient();
 builder.Services.AddHttpClient("llm");
-builder.Services.AddSingleton<IEnvironmentResolver>(sp =>
-    new AiTestCrew.Agents.Environment.EnvironmentResolver(sp.GetRequiredService<TestEnvironmentConfig>()));
+builder.Services.AddHttpClient("env-resolver");
+
+// IEnvironmentResolver: three-way wiring mirroring the LLM proxy pattern (REQ-021).
+// Auto (default): use RemoteEnvironmentResolver when ServerUrl+ApiKey are set AND local
+//   DbConnections/ServiceBusConnections are empty; otherwise use local EnvironmentResolver.
+// Local: always use local EnvironmentResolver.
+// RemoteProxy: always use RemoteEnvironmentResolver.
+{
+    var envResMode = envConfig.EnvironmentResolutionMode ?? "Auto";
+    var hasServer  = !string.IsNullOrWhiteSpace(envConfig.ServerUrl)
+                  && !string.IsNullOrWhiteSpace(envConfig.ApiKey);
+
+    var useRemoteEnvResolver = envResMode switch
+    {
+        "RemoteProxy" => true,
+        "Local"       => false,
+        _             => hasServer && !AnyDbConnectionConfigured(envConfig),
+    };
+
+    if (useRemoteEnvResolver)
+    {
+        AnsiConsole.MarkupLine($"[grey]EnvResolver: RemoteProxy â {Markup.Escape(envConfig.ServerUrl)}/api/environments[/]");
+        builder.Services.AddSingleton<IEnvironmentResolver>(sp =>
+            new AiTestCrew.Agents.Environment.RemoteEnvironmentResolver(
+                new AiTestCrew.Agents.Environment.EnvironmentResolver(sp.GetRequiredService<TestEnvironmentConfig>()),
+                sp.GetRequiredService<IHttpClientFactory>().CreateClient("env-resolver"),
+                envConfig.ServerUrl,
+                envConfig.ApiKey,
+                sp.GetRequiredService<ILogger<AiTestCrew.Agents.Environment.RemoteEnvironmentResolver>>()));
+    }
+    else
+    {
+        builder.Services.AddSingleton<IEnvironmentResolver>(sp =>
+            new AiTestCrew.Agents.Environment.EnvironmentResolver(sp.GetRequiredService<TestEnvironmentConfig>()));
+    }
+}
 builder.Services.AddSingleton<IApiTargetResolver>(sp => new ApiTargetResolver(
     sp.GetRequiredService<TestEnvironmentConfig>(),
     sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
@@ -1102,6 +1136,15 @@ if (cli.Mode is RunMode.Normal or RunMode.Rebaseline)
 }
 
 // ── Local functions ──
+
+static bool AnyDbConnectionConfigured(TestEnvironmentConfig cfg)
+{
+    if (cfg.DbConnections.Count > 0) return true;
+    if (cfg.Environments.Values.Any(e => e.DbConnections.Count > 0)) return true;
+    if (cfg.ServiceBusConnections.Count > 0) return true;
+    if (cfg.Environments.Values.Any(e => e.ServiceBusConnections.Count > 0)) return true;
+    return false;
+}
 
 static CliArgs ParseArgs(string[] args)
 {
