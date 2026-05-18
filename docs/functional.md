@@ -1558,6 +1558,7 @@ The test set detail page uses a **master-detail** pattern:
   - Execution history for that objective
   - For API steps: HTTP method (colour-coded), endpoint, test name, expected status code
   - For Web UI steps: test name, start URL, step count, screenshot-on-failure flag
+- **Test Name rendering rule (REQ-022)** — The "Test Name" cell in each inner table shows the step's own `description` field when non-empty (trimmed); it falls back to the parent objective's name when blank. This means single-step objectives with no description render identically to before, while multi-step objectives (e.g. an Xray-imported objective with three recorded sub-cases) each show a distinct label. To set a per-step description, open the step's Edit dialog and fill in the **Description** field. Editing the Description does not affect the outer "TEST CASE" cell, which always shows the objective name.
 - **AI Edit Test Cases button** — opens the AI patch panel for natural language corrections (see [Editing Test Cases](#editing-test-cases))
 - **Execution history** — all previous runs with status, pass/fail counts, duration, and date
 - **Trigger buttons** — "Re-run Tests" (reuse mode) at the test set level; "Run" and "Rebaseline" per objective
