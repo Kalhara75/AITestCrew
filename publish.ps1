@@ -129,6 +129,9 @@ if ($Runner) {
     # Explicitly set LlmMode=Auto so the agent routes through the proxy when no local
     # LlmApiKey is present (the sanitiser already blanked LlmApiKey above).
     $te['LlmMode'] = 'Auto'
+    # Explicitly set EnvironmentResolutionMode=Auto so agent fetches DB/SB connection
+    # strings from the server (dicts already blanked above, REQ-021).
+    $te['EnvironmentResolutionMode'] = 'Auto'
 
     # Per-env sanitisation — keep URLs / display names / storage state paths,
     # blank passwords + DB / Service Bus connection strings.
