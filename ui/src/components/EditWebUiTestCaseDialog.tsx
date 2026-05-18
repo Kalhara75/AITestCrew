@@ -2,13 +2,17 @@ import { useState } from 'react';
 import type { WebUiTestDefinition, WebUiStep } from '../types';
 
 const ACTIONS = [
-  'navigate', 'click', 'fill', 'select', 'check', 'uncheck', 'hover', 'press',
+  'navigate', 'click', 'click-icon', 'fill', 'type', 'select', 'check', 'uncheck', 'hover', 'press',
   'assert-url-contains', 'assert-title-contains', 'assert-text',
-  'assert-visible', 'assert-hidden', 'wait',
+  'assert-visible', 'assert-hidden', 'wait', 'wait-for-stable',
 ];
 
 // Actions where selector is not applicable
-const NO_SELECTOR = new Set(['navigate', 'assert-url-contains', 'assert-title-contains', 'wait']);
+// click-icon resolves its target via the SVG path stored in value, so no selector is used.
+// wait-for-stable polls the whole document, so no selector is used.
+const NO_SELECTOR = new Set([
+  'navigate', 'click-icon', 'assert-url-contains', 'assert-title-contains', 'wait', 'wait-for-stable',
+]);
 
 // Actions where "match first" is applicable (assertions that target an element locator)
 const MATCH_FIRST_APPLICABLE = new Set(['assert-text', 'assert-visible', 'assert-hidden']);

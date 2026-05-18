@@ -252,25 +252,42 @@ public static class PlaywrightRecorder
                 const type = (el.getAttribute('type') || '').toLowerCase();
                 const title = el.getAttribute('title');
 
-                // 1. Stable IDs (skip dynamic/stateful Kendo IDs like _pb_active, _dd_123)
-                const dynamicIdPattern = /(_active|_selected|_current|_focused|_hover|_open|_collapsed|_expanded|_pb_|_dd_|_wnd_|\d{4,}|^[0-9a-f-]{36}$)/i;
+                // 1. Stable IDs (skip dynamic/stateful Kendo IDs like _pb_active, _dd_123;
+                //    also skip MudBlazor's Identifier.NewId() output: id="mudinput0nxtyclt",
+                //    "mudselectXyz", "checkboxAbc", "popover-<guid>" — all regenerated on
+                //    every render and useless on replay).
+                const dynamicIdPattern = /(_active|_selected|_current|_focused|_hover|_open|_collapsed|_expanded|_pb_|_dd_|_wnd_|\d{4,}|^[0-9a-f-]{36}$|^mudinput|^mudselect|^mudcheckbox|^mudswitch|^mudradio|^mudslider|^mudpicker|^checkbox[a-z0-9]{6,}|^popover-)/i;
                 if (id && !dynamicIdPattern.test(id)) return '#' + id;
 
                 // 2. name attribute (form fields)
                 if (name) return tag + '[name="' + name + '"]';
 
-                // 3. type-based (submit inputs only — type="button" is too generic,
-                //    especially in MudBlazor where every button has it)
+                // 3. type-based — submit is always uniquely a primary action.
+                //    Other types (text, search, email, password, ...) only qualify if
+                //    they're the only one of their kind on the page; otherwise the
+                //    selector matches every text input on the page.
                 if (type === 'submit') return tag + '[type="submit"]';
-                if (type && tag === 'input' && type !== 'button') return 'input[type="' + type + '"]';
+                if (type && tag === 'input' && type !== 'button') {
+                    var typeSel = 'input[type="' + type + '"]';
+                    if (document.querySelectorAll(typeSel).length === 1) return typeSel;
+                    // Otherwise fall through — let placeholder / label-walk-up / etc. resolve it.
+                }
 
                 // 4a. aria-controls — Kendo widget triggers (ComboBox arrow, DatePicker
                 //     calendar icon, etc.) set this to the popup's stable id (e.g.
                 //     "Endpoint_listbox", "CreatedFromDate_dateview"). Preferred over
                 //     aria-label because ARIA labels like "select" or "Open the date view"
                 //     are usually shared across every widget of the same type on the page.
+                //
+                //     Skip Blazor's auto-generated random ids (e.g. MudNavGroup, MudMenu,
+                //     MudPopover use Identifier.NewId() → strings like "a2hdz3kzj" that
+                //     change on every render and break replay). Kendo's stable ids contain
+                //     a descriptive segment + "_" separator; if the value is bare lowercase
+                //     alphanumeric with no separator, treat as dynamic and fall through.
                 var ariaControls = el.getAttribute('aria-controls');
+                var looksLikeBlazorDynamicId = ariaControls && /^[a-z0-9]+$/.test(ariaControls);
                 if (ariaControls && ariaControls.length > 0 && ariaControls.length <= 80
+                    && !looksLikeBlazorDynamicId
                     && document.querySelectorAll(tag + '[aria-controls="' + ariaControls + '"]').length === 1) {
                     return tag + '[aria-controls="' + ariaControls + '"]';
                 }
@@ -280,6 +297,17 @@ public static class PlaywrightRecorder
                 if (ariaLabel && ariaLabel.length <= 60
                     && !/^toggle /i.test(ariaLabel)) { // skip "Toggle CRM" etc. — use text instead
                     return tag + '[aria-label="' + ariaLabel + '"]';
+                }
+
+                // 4c. placeholder — MudAutocomplete and search boxes often set a
+                //     descriptive placeholder ("Type to search tariff codes...") that's
+                //     stable across renders. Skip generic 1-word values like "Search".
+                if ((tag === 'input' || tag === 'textarea')) {
+                    var placeholder = el.getAttribute('placeholder');
+                    if (placeholder && placeholder.length >= 5 && placeholder.length <= 80) {
+                        var phSel = tag + '[placeholder="' + placeholder.replace(/"/g, '\\"') + '"]';
+                        if (document.querySelectorAll(phSel).length === 1) return phSel;
+                    }
                 }
 
                 // 5. title attribute — Kendo PanelBar child items have title="NMI Search" etc.
@@ -307,6 +335,42 @@ public static class PlaywrightRecorder
                         if (mt && mt.length > 1 && mt.length <= 50) {
                             return 'text="' + mt + '"';
                         }
+                    }
+                }
+
+                // 7b. Labeled input — find the input's visible label by walking up the
+                //     ancestor chain and inspecting each level's previous-sibling for
+                //     short text. Handles Brave Cloud's MudBlazor layout where labels
+                //     are <p class="mud-typography...">Identifier</p> placed above a
+                //     row container, NOT inside .mud-input-control as a real <label>.
+                //
+                //     Resulting selector uses Playwright's text engine to anchor on the
+                //     label, then the XPath following:: axis to find the next matching
+                //     input element. Works for plain MudTextField and MudAutocomplete.
+                //
+                //     Skips hidden mud-input-slot siblings (the inner div with
+                //     display:none that MudBlazor renders next to every input).
+                if ((tag === 'input' || tag === 'textarea') && el.classList.contains('mud-input-slot')) {
+                    var node = el;
+                    for (var lvl = 0; lvl < 8 && node && node.tagName !== 'BODY'; lvl++) {
+                        var prev = node.previousElementSibling;
+                        while (prev) {
+                            // Skip MudBlazor's hidden duplicate slot and empty comment placeholders
+                            if (prev.tagName && prev.style && prev.style.display === 'none') {
+                                prev = prev.previousElementSibling;
+                                continue;
+                            }
+                            var ptxt = (prev.innerText || '').trim();
+                            if (ptxt && ptxt.length > 0 && ptxt.length < 60 && ptxt.indexOf('\n') === -1) {
+                                var safeText = ptxt.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+                                // Pin the anchor to the actual tag of the label element (e.g. p, label, h2)
+                                // so we don't accidentally match a table-column header with the same text.
+                                var anchorTag = prev.tagName.toLowerCase();
+                                return anchorTag + ':text-is("' + safeText + '") >> xpath=following::input[contains(@class,"mud-input-slot")][1]';
+                            }
+                            prev = prev.previousElementSibling;
+                        }
+                        node = node.parentElement;
                     }
                 }
 
@@ -706,8 +770,25 @@ public static class PlaywrightRecorder
                 }
 
                 // ── Special case: MudBlazor nav links / buttons / tree items ──
-                // When the click lands on or inside a .mud-nav-link-text or .mud-button-label,
-                // use the text directly — this avoids the walk-up finding a wrong <button>.
+                // When the click lands anywhere inside a .mud-nav-link button — including
+                // the leading module icon SVG or the trailing expand chevron SVG (siblings
+                // of .mud-nav-link-text, not ancestors) — resolve to the text selector.
+                // Without this lookup the fallback walks up to the <button> and bestSelector
+                // returns its dynamic aria-controls (e.g. "a2hdz3kzj"), which is regenerated
+                // on every Blazor render and breaks replay.
+                var mudNavLink = target.closest('.mud-nav-link');
+                if (mudNavLink) {
+                    var navTextEl = mudNavLink.querySelector('.mud-nav-link-text');
+                    if (navTextEl) {
+                        var nlt = navTextEl.textContent.trim();
+                        if (nlt && nlt.length > 1 && nlt.length <= 50) {
+                            send({ action: 'click', selector: 'text="' + nlt + '"', value: null, timeoutMs: 15000 });
+                            return;
+                        }
+                    }
+                }
+
+                // Other MudBlazor click targets: button labels, treeview item bodies.
                 var mudClickText = target.closest('.mud-nav-link-text, .mud-button-label, .mud-treeview-item-body');
                 if (!mudClickText && target.querySelector) {
                     mudClickText = target.querySelector('.mud-nav-link-text, .mud-button-label');

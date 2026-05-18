@@ -46,10 +46,11 @@ Base URL: `https://sumo-dev.braveenergy.com.au/ui/` (trailing slash matters for 
 
 | What | Correct selector | Why |
 |---|---|---|
-| Group header click | `text="Security"` | Recorder shortcut detects `.mud-nav-link-text` and uses text directly |
+| Group header click (any spot) | `text="Security"` | Recorder shortcut walks up to `.mud-nav-link` and reads its `.mud-nav-link-text` child — works for clicks on the text, the leading module icon, or the trailing expand chevron (all siblings inside the same button) |
 | Child nav link | `text="Users"` | Same shortcut — text from `.mud-nav-link-text` |
 | **Never** use | `button[type="button"]` | Every MudBlazor button has this — matches dozens of elements |
 | **Never** use | `aria-label="Toggle Security"` | Excluded in bestSelector (prefix "Toggle") |
+| **Never** use | `button[aria-controls="aai1ro3ql"]` | MudNavGroup's aria-controls is a Blazor `Identifier.NewId()` value — regenerated on every render. `bestSelector` priority 4a skips bare lowercase alphanumeric values for this reason |
 | **Avoid** | `a[href*="/ui/Security/UserSearch"]` | Blazor renders relative hrefs (`./Security/UserSearch`); CSS `[href*=]` matches raw attribute, not resolved URL |
 
 ---
@@ -138,6 +139,55 @@ The value is: `<SVG path prefix (30 chars)>|<occurrence index>`. The replay engi
 | Column options | `button[aria-label="Column options"]` | Has aria-label |
 | Cell text | `td[data-label="User Code"]` | `data-label` is stable |
 | **Never** use | bare `button` inside `<td>` | Matches every action button in every row |
+
+---
+
+## MudTextField / MudAutocomplete inputs — the dynamic-id trap
+
+**Inputs do NOT carry a stable id, name, label, or aria-label.** Verified live on `sumo-dev`:
+
+```html
+<!-- The visible "Identifier" label is a SIBLING of the input wrapper, NOT inside it -->
+<div class="d-flex flex-column gap-0">
+  <p class="mud-typography mud-typography-body2 mud-primary-text">Identifier</p>
+  <div class="d-flex flex-row gap-0">
+    <div class="mud-input-control mud-input-control-margin-dense mud-input-input-control">
+      <div class="mud-input-control-input-container">
+        <div class="mud-input mud-input-text ...">
+          <input id="mudinput0nxtyclt" type="text"
+                 class="mud-input-slot mud-input-root mud-input-root-text" />
+          <!-- a hidden duplicate <div class="mud-input-slot ..." style="display:none"> -->
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+```
+
+What's stable on the input itself:
+- `id` — **NO**. MudBlazor's `Identifier.NewId()` regenerates `mudinputXXXXXXXX` on every render.
+- `name` — **NO** (empty by default).
+- `placeholder` — **only on MudAutocomplete-style inputs** (e.g. `"Type to search tariff codes..."`).
+- `aria-label` / `aria-describedby` — **NO** (empty by default).
+
+So selectors must anchor on the visible heading text (the `<p>` sibling) and traverse to the input. The recorder emits:
+
+```text
+p:text-is("Identifier") >> xpath=following::input[contains(@class,"mud-input-slot")][1]
+```
+
+Why this works:
+- Pinning the anchor to `p` (not `:text-is(...)` bare) avoids matching the same word in a grid column header lower on the page.
+- `following::input[contains(@class,"mud-input-slot")][1]` walks document order to the next visible MudBlazor input. The hidden duplicate slot is a `<div>` so it doesn't match.
+
+### Selector rules
+
+| What | Correct selector | Why |
+|---|---|---|
+| MudTextField with `<p>` label above it | `p:text-is("Identifier") >> xpath=following::input[contains(@class,"mud-input-slot")][1]` | Recorder priority 7b — works for Brave Cloud's `<div class="d-flex flex-column"><p>Label</p><input/></div>` layout |
+| MudAutocomplete with placeholder | `input[placeholder="Type to search tariff codes..."]` | Recorder priority 4c — only when the placeholder is unique on the page |
+| **Never** use | `#mudinput0nxtyclt` | MudBlazor's `Identifier.NewId()` — regenerated every render. Blocked by `bestSelector` priority 1's `dynamicIdPattern` |
+| **Never** use | `input[type="text"]` | The page typically has many; priority 3 now skips this unless `querySelectorAll` returns exactly one |
 
 ---
 
@@ -264,3 +314,8 @@ Blazor uses client-side routing — clicking a nav link does NOT trigger a full 
 9. **Trailing slash matters** — `https://host/ui/` and `https://host/ui` are different URLs for Blazor routing. Don't `TrimEnd('/')` on subpaths.
 10. **NEVER put MutationObserver in the recording init script** — Playwright's `AddInitScriptAsync` runs before `document.documentElement` exists. Calling `.observe(document.documentElement, ...)` throws and silently crashes the entire IIFE, killing the overlay and all event listeners. MutationObservers belong in the replay path only — inject via a separate `page.AddInitScriptAsync` call after `context.NewPageAsync()` in `BaseWebUiTestAgent`, where the page has a real document.
 11. **Recording viewport must be `NoViewport`** — a fixed viewport (e.g. 1920×1080) pushes the `position:fixed` overlay off-screen on monitors smaller than that resolution. Always use `ViewportSize.NoViewport` (maximized window) for recording. The 1920×1080 viewport is only for headless replay (`BraveCloudUiTestAgent.BuildContextOptions`).
+12. **Blazor's `aria-controls` is dynamic** — MudNavGroup, MudMenu, MudPopover use `Identifier.NewId()` which returns short lowercase alphanumeric strings (e.g. `a2hdz3kzj`) that regenerate on every render. They look stable but break on replay. `bestSelector` priority 4a now skips bare lowercase alphanumeric `aria-controls` values; Kendo's `Endpoint_listbox` / `CreatedFromDate_dateview` still match (separator + descriptive segment). If you add a new selector heuristic that reads `aria-controls`, mirror this guard.
+13. **`.mud-nav-link-text` is a sibling of icon and chevron SVGs, not their ancestor** — when the user clicks the expand chevron on a MudNavGroup header, `target.closest('.mud-nav-link-text')` returns `null` and so does `target.querySelector('.mud-nav-link-text')` (the SVG has no descendants with that class). The recorder shortcut must first walk up to `.mud-nav-link`, then look *inside* it for the text element. Same pattern applies for any "find the label by walking up to the component root."
+14. **UI editor action dropdown is a silent corruption hazard** — if `EditWebUiTestCaseDialog.tsx`'s `ACTIONS` list is missing an action the recorder produces (e.g. `click-icon`, `type`, `wait-for-stable`), the `<select>` falls back to the first option (`navigate`) when rendering the existing value. Editing and saving then writes the wrong action to disk. When you add a new replay action in `BaseWebUiTestAgent.ExecuteUiStepAsync`, also add it to `ACTIONS` (and `NO_SELECTOR` if it doesn't take a selector).
+15. **Don't trust an input's `id`, `name`, or `aria-*`** — MudBlazor renders inputs with `id="mudinputXXXXXXXX"` (regenerated every render), no `name`, no `aria-label`. The visible label is a `<p>` sibling above the wrapper, not a `<label>` inside `.mud-input-control`. `bestSelector` walks up to 8 levels looking for a previous-sibling element with short text, and emits a Playwright `tag:text-is("Label") >> xpath=following::input[contains(@class,"mud-input-slot")][1]` selector. Pin the anchor to the actual tag — grid column headers often duplicate the label text.
+16. **Input `type` alone is not unique** — `input[type="text"]` matches every text input on the page. Priority 3 returns it only when `querySelectorAll` count is 1. Otherwise it falls through to placeholder / label-walk-up.
