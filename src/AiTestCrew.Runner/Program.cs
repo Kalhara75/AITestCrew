@@ -567,7 +567,7 @@ builder.Services.AddHttpClient("env-resolver");
 
     if (useRemoteEnvResolver)
     {
-        AnsiConsole.MarkupLine($"[grey]EnvResolver: RemoteProxy â {Markup.Escape(envConfig.ServerUrl)}/api/environments[/]");
+        AnsiConsole.MarkupLine($"[grey]EnvResolver: RemoteProxy → {Markup.Escape(envConfig.ServerUrl)}/api/environments[/]");
         builder.Services.AddSingleton<IEnvironmentResolver>(sp =>
             new AiTestCrew.Agents.Environment.RemoteEnvironmentResolver(
                 new AiTestCrew.Agents.Environment.EnvironmentResolver(sp.GetRequiredService<TestEnvironmentConfig>()),
