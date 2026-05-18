@@ -118,4 +118,14 @@ public class EnvironmentConfig
     /// historical rows exist in <c>agent_auth_state</c>.
     /// </summary>
     public bool AuthHealthEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Controls whether agents running in remote mode can resolve DB and Service Bus
+    /// connection strings for this environment via the server endpoint
+    /// (<c>GET /api/environments/{envKey}/connections/db/{key}</c> etc.).
+    /// Default <c>true</c> — set to <c>false</c> on environments where you want
+    /// to prevent any remote agent from accessing connection strings at all. When
+    /// <c>false</c>, the resolve endpoint returns 403 with a descriptive message.
+    /// </summary>
+    public bool AllowAgentConnectionResolution { get; set; } = true;
 }

@@ -23,6 +23,13 @@ public class TestEnvironmentConfig
     // "Local": always use the local LlmApiKey, even when a server is configured.
     // "RemoteProxy": always route LLM calls to the server's /api/llm/chat endpoint.
     public string LlmMode { get; set; } = "Auto";
+    // EnvironmentResolutionMode controls how the Runner resolves DB and Service Bus
+    // connection strings when running in --agent mode.
+    // "Auto" (default): use local dictionaries if any connection string is configured;
+    //   fall back to RemoteProxy when ServerUrl + ApiKey are set and local dicts are empty.
+    // "Local": always use the local dictionaries, even when a server is configured.
+    // "RemoteProxy": always resolve connection strings through the server endpoint (REQ-021).
+    public string EnvironmentResolutionMode { get; set; } = "Auto";
     // Note: For Claude, use a proxy like LiteLLM that exposes
     // an OpenAI-compatible endpoint pointing to Anthropic's API.
     // Or use the Anthropic SK connector (community package).
