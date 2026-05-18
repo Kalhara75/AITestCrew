@@ -2214,6 +2214,50 @@ Imported objectives appear in the existing editor dialogs unchanged. The `Precon
 
 `--rebaseline` refuses to run on imported objectives: the source of truth is Xray + the user's recording, not the LLM that mapped them. Re-import from Xray instead.
 
+### Recording into an imported placeholder (REQ-020)
+
+When an Xray ticket maps to a Web UI or Desktop UI test case, the importer creates a placeholder objective with `Source = "ImportedFromXray"` and an empty step list. To make the test executable, a QA records the UI interactions into that placeholder.
+
+**One-click flow (UI)**
+
+In the Test Set detail page, expand the imported objective. The "Web UI Test Cases" or "Desktop UI Test Cases" panel shows a yellow banner row for each imported placeholder, labelled "Imported — 0 steps". Click the **Record this** button. The recorder launches against the environment configured on the test set, and the QA drives the application normally. On save, the recorded steps fill the placeholder **in-place** — the objective keeps its Xray metadata and any post-steps authored by the Xray importer.
+
+**Chat flow**
+
+Ask the assistant: _"record actions for the imported test case 'Network Tariff Code Search Screen Functionality'"_. The assistant emits `confirmRecord` with `recordingKind: Record` (not `RecordVerification`). The recorder fills the placeholder by the same slug-match mechanism.
+
+**CLI flow**
+
+```bash
+dotnet run --project src/AiTestCrew.Runner -- --record --module billing --testset invoicing   --case-name "Network Tariff Code Search Screen Functionality" --target UI_Web_Blazor
+```
+
+No extra flags needed. The slug of `caseName` matches the imported objective's id; the recorder fills it in-place rather than creating a `recorded-{slug}` sibling.
+
+**What happens during fill**
+
+1. `RecordingService.RecordCaseAsync` first looks for an objective with `Source = "ImportedFromXray"`, `Id == slug(caseName)`, and an empty step list.
+2. If found, the recorded `WebUiTestDefinition` (or `DesktopUiTestDefinition`) replaces the empty placeholder entry. Any `PostSteps` already on `WebUiSteps[0]` (e.g. DB checks or event assertions authored by REQ-019) are **carried over** to the new entry.
+3. `Source` is updated to `"ImportedFromXray+Recorded"`. The "Record this" button disappears; the objective shows a green "Xray + Recorded" badge.
+4. `XrayTicketKey`, `XrayObjectiveSlug`, `Preconditions`, `TestDataNotes`, and `ParentObjective` are preserved unchanged.
+
+**Fallback**
+
+If no matching imported placeholder exists (the caseName slug does not match any objective, or all matching objectives already have steps), the recorder falls back to creating a `recorded-{slug}` sibling exactly as before. Existing recording workflows are unaffected.
+
+**Re-import after recording**
+
+Re-importing the same Xray ticket after the placeholder has been recorded is safe. The importer skips the `WebUiSteps.Clear()` / `DesktopUiSteps.Clear()` for any objective whose `Source` ends with `"+Recorded"`, so the recorded steps and their post-steps survive the re-import. Xray metadata and non-recorded step lists (API, aseXML) are still refreshed normally.
+
+**Source field state machine**
+
+| Initial source | Action | Resulting source |
+|---|---|---|
+| `ImportedFromXray` | recorder fills empty step list | `ImportedFromXray+Recorded` |
+| `ImportedFromXray+Recorded` | re-record (overwrite) | `ImportedFromXray+Recorded` (unchanged) |
+| `Recorded` | re-record | `Recorded` (unchanged — existing behaviour) |
+| `Generated` | rebaseline | `Generated` (unchanged — AI regeneration, not recording) |
+
 
 ---
 

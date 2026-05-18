@@ -218,7 +218,9 @@ BaseTestAgent  (LLM, AskLlmAsync/AskLlmForJsonAsync)
 
 `TargetType` (string, default `"API_REST"`) is also stored so the orchestrator can reconstruct tasks with the correct `TestTargetType` on reuse.
 
-`Source` (string, default `"Generated"`) tracks how the objective was created: `"Generated"` for AI/LLM-created objectives or `"Recorded"` for objectives captured via `--record`. Rebaseline is only available for generated objectives. Legacy JSON files without the field are backfilled in `MigrateLegacyObjective()` using the `recorded-` ID prefix heuristic.
+`Source` (string, default `"Generated"`) tracks how the objective was created: `"Generated"` for AI/LLM-created objectives, `"Recorded"` for objectives captured via `--record`, `"ImportedFromXray"` for objectives produced by the Xray importer (REQ-017), or `"ImportedFromXray+Recorded"` for Xray-imported objectives subsequently filled by a recording (REQ-020). Rebaseline is only available for `Generated` objectives. Legacy JSON files without the field are backfilled in `MigrateLegacyObjective()` using the `recorded-` ID prefix heuristic.
+
+The `+Recorded` suffix is the canonical marker that an imported placeholder has been made executable. `RecordingService.RecordCaseAsync` sets it when it fills a placeholder in-place. `XrayImportService.ConfirmAsync` skips clearing the step list when `Source.EndsWith("+Recorded")` so recorded work survives re-import.
 
 #### Desktop UI Agent
 
@@ -2919,14 +2921,14 @@ Re-import also clears each parent step's `PostSteps` list before re-attaching po
 
 ### Persistence schema additions (additive, no migration needed)
 
-`TestObjective` gains five optional fields:
-- `Source = "ImportedFromXray"` — new allowed value alongside `"Generated"` / `"Recorded"`
+`TestObjective` gains five optional fields (all additive; missing fields deserialise as null/empty):
+- `Source = "ImportedFromXray"` — new allowed value alongside `"Generated"` / `"Recorded"`. After a recording fills the placeholder, `RecordingService` sets it to `"ImportedFromXray+Recorded"` (REQ-020).
 - `XrayTicketKey` — back-link to the originating Jira ticket
 - `XrayObjectiveSlug` — stable slug for the decomposed slice (idempotency key with `XrayTicketKey`)
 - `Preconditions: List<string>` — bullet list from the Xray Description's Preconditions section
 - `TestDataNotes: string?` — from the Xray Description's Test Data section
 
-All fields are additive; missing fields on old objectives deserialise as null/empty.
+`IsImportedPlaceholder(isDesktop)` is a helper method on `TestObjective` that returns true when `Source` starts with `"ImportedFromXray"` (not yet `+Recorded`) and the relevant step list is empty or contains a single entry with zero steps. `RecordingService` uses it for the two-step lookup that drives in-place fill.
 
 ### Layer constraints
 
