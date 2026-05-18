@@ -41,6 +41,8 @@ The dashboard server can run API and aseXML tests on its own. **Web UI and deskt
    ```json
    "ApiKey": "atc_8f3a9b7c..."
    ```
+
+   > **Connection strings are handled by the server (REQ-021).** Your agent pack has empty `DbConnections` and `ServiceBusConnections` by design. The agent fetches SQL and Service Bus connection strings from the server at job time using your `ApiKey`. You never need to configure database or message-bus credentials locally.
    That's it. `ServerUrl` is already pre-filled, every team environment (URLs, AAD accounts, storage state paths) is baked in, and all secrets the admin had locally (passwords, DB connection strings, Service Bus keys, LLM API keys) have been **stripped** before the zip was built. Your agent's LLM calls (test generation, run summaries) are routed through the server — **you do not need an LLM API key**. The agent talks to the server over HTTP and authenticates browser sessions interactively in Step 3.
 
    **Optional — only if you'll run desktop (WinForms) tests:** find the env you'll use under `Environments` and point `WinFormsAppPath` at where the desktop app is installed on **your** machine, e.g.:

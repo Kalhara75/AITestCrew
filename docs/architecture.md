@@ -1481,6 +1481,46 @@ Distributed agents run from a sanitised pack that strips `LlmApiKey` along with 
 
 The `Auto` default means **the server and dev box behaviour is unchanged** (they have `LlmApiKey` populated). Sanitised agent packs have no `LlmApiKey`, so `Auto` automatically selects `RemoteProxy`.
 
+## Remote DB + Service Bus Connection Resolution (REQ-021)
+
+Sanitised agent packs have empty `DbConnections` and `ServiceBusConnections` (blanked by `publish.ps1`). Before REQ-021, this caused DB Assert steps, Bravo teardown, Data Pack scripts, and aseXML delivery endpoint lookups to fail on remote QA machines with a config-error banner. REQ-021 extends the REQ-011 proxy pattern to SQL and Service Bus credentials.
+
+### Server endpoints
+
+`GET /api/environments/{envKey}/connections/db/{connectionKey}` — resolves a SQL connection string for the requested (env, key) pair using the server's own `IEnvironmentResolver`. Returns 200 + `{connectionKey, connectionString, source}` on success; 404 for unknown key; 403 when `AllowAgentConnectionResolution = false` on the env.
+
+`GET /api/environments/{envKey}/connections/servicebus/{connectionKey}` — same shape; returns `{connectionKey, authMode, connectionString, fullyQualifiedNamespace, managedIdentityClientId}`. For `AzureAd` auth mode, `connectionString` is `null` — the agent creates `DefaultAzureCredential` itself using only the namespace.
+
+Both endpoints are authenticated by `X-Api-Key`. The connection string value is **never logged** on either server or agent side. Implemented in `src/AiTestCrew.WebApi/Endpoints/AgentConfigEndpoints.cs`.
+
+### Agent side — `RemoteEnvironmentResolver`
+
+`src/AiTestCrew.Agents/Environment/RemoteEnvironmentResolver.cs` implements `IEnvironmentResolver` by wrapping the local `EnvironmentResolver`:
+
+- All non-secret methods (URL, username, flag resolution) delegate to the inner resolver — they keep working from local config.
+- `ResolveDbConnectionString` and `ResolveServiceBusConnection` are **local-first**: if the local resolver returns a value, the server is never called. Only on null does it call the server.
+- Results are cached per `(envKey, connectionKey)` in a `ConcurrentDictionary` for the process lifetime (no TTL; rotate on server + bounce agents).
+- Network errors and 403/404 responses return `null` and log at Warning — callers surface this as a `TestStatus.Error` step result, not a crash.
+- Uses `HttpClient.Send` (sync-over-async, accepted for v1 since the interface is synchronous and each call happens once per step).
+
+### Mode selection — `EnvironmentResolutionMode` in `TestEnvironmentConfig`
+
+| Value | Behaviour |
+|---|---|
+| `Auto` (default) | Use local config when any DB or Service Bus connection string is configured locally; fall back to `RemoteProxy` when local dicts are empty and `ServerUrl`+`ApiKey` are set. |
+| `Local` | Always use the local `EnvironmentResolver` — even when a server is configured. |
+| `RemoteProxy` | Always route through the server — useful for testing the proxy from a dev box. |
+
+`publish.ps1` injects `EnvironmentResolutionMode = \Auto\` into every sanitised pack. Since the pack has empty local dicts, `Auto` automatically selects `RemoteProxy`. Dev boxes with full local config see no behaviour change — `Auto` stays local.
+
+### Per-env opt-out
+
+`EnvironmentConfig.AllowAgentConnectionResolution` (default `true`) — set to `false` on a specific env to prevent remote agents from fetching its connection strings. Returns 403 with a clear message; agents surface it as a config-error step result.
+
+### WebApi never proxies
+
+The WebApi always wires `EnvironmentResolver` directly (never `RemoteEnvironmentResolver`). This prevents circular resolution and keeps the server as the single source of truth.
+
 ## Deferred Post-Delivery Verification
 
 aseXML delivery objectives frequently attach a UI verification that only becomes meaningful after Bravo has processed the uploaded file — typically a 60–180 s delay. Running that delay inline with `Task.Delay` would hold the executing agent slot open for the whole period; with `MaxParallelAgents = 4` and many concurrent deliveries, most slots would spend their time sleeping. Deferred verification decouples the wait from the executing thread: after a delivery uploads, its verifications are queued with a future claim time and the agent slot is freed immediately. When the due time arrives, any compatible agent on its existing poll loop claims and runs the verification. Failed attempts re-enqueue (instead of in-handler polling) so the agent slot is held only during an actual attempt — ~10–30 s — not across the entire wait window.
