@@ -289,7 +289,8 @@ export function TestSetDetailPage() {
             />
           )}
           {(selectedObjective.webUiSteps.length > 0 ||
-            (selectedObjective.source === 'ImportedFromXray' && selectedObjective.desktopUiSteps.length === 0 && selectedObjective.apiSteps.length === 0)) && (
+            (selectedObjective.source === 'ImportedFromXray' &&
+             (selectedObjective.targetType === 'UI_Web_Blazor' || selectedObjective.targetType === 'UI_Web_MVC'))) && (
             <WebUiTestCaseTable
               objectives={[selectedObjective]}
               objectiveStatuses={testSet.objectiveStatuses}
