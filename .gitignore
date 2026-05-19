@@ -26,6 +26,11 @@ appsettings.json
 # belong in .claude/settings.json which IS committed.
 .claude/settings.local.json
 
+# Claude Code worktrees — each EnterWorktree creates an isolated checkout here.
+# These are independent working trees of this same repo; never commit them as
+# untracked files into a parent branch.
+.claude/worktrees/
+
 # Deployment output
 publish/
 **/wwwroot/
