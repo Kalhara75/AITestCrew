@@ -1,0 +1,24 @@
+{
+  "templateId": "SFN-Standard",
+  "transactionType": "SharedFuseNotification",
+  "transactionGroup": "OWNX",
+  "description": "Shared Fuse Notification — DNSP-initiated one-way notification to a FRMP flagging that a NMI sits behind a shared isolation point (shared fuse), so any planned outage requires multi-party coordination.",
+  "fields": {
+    "From":                     { "source": "const", "value": "ENERGYAP" },
+    "To":                       { "source": "const", "value": "SPARQ" },
+    "TransactionGroup":         { "source": "const", "value": "OWNX" },
+    "Priority":                 { "source": "const", "value": "Medium" },
+    "SecurityContext":          { "source": "const", "value": "" },
+    "Market":                   { "source": "const", "value": "NEM" },
+
+    "MessageID":                { "source": "auto", "generator": "messageId",     "pattern": "MSRINB-SFN-{rand8}-DD" },
+    "MessageDate":              { "source": "auto", "generator": "nowOffset",     "offset": "+10:00" },
+    "TransactionDate":          { "source": "auto", "generator": "nowOffset",     "offset": "+10:00" },
+    "TransactionID":            { "source": "auto", "generator": "transactionId", "pattern": "AURORAP-TXN-BE-{rand8}" },
+
+    "NMI":                      { "source": "user", "required": true, "example": "4103035611" },
+    "NMIChecksum":              { "source": "user", "required": true, "example": "3" },
+    "IdentifiedDate":           { "source": "user", "required": true, "example": "2026-05-15" },
+    "SharedIsolationPointFlag": { "source": "user", "required": true, "example": "Yes" }
+  }
+}
