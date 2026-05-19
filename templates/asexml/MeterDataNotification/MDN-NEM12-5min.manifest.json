@@ -4,8 +4,8 @@
   "transactionGroup": "MTRD",
   "description": "Inbound Meter Data Notification (MDN) carrying NEM12 interval data at 5-minute intervals (288 values per 300 record). Matches the MDP header shape that includes company-name descriptions and a batch security context (e.g. ACUMEMDP, VECTOMDP -> SPARQ): <From description='...'>, <To description='...'>, <SecurityContext>..BATCH</SecurityContext>. Use this template when the objective mentions 5-minute reads, smart-meter high-resolution data, or explicitly names an MDP whose B2B header includes a company description.",
   "fields": {
-    "To":               { "source": "const", "value": "SPARQ" },
-    "ToDescription":    { "source": "const", "value": "Sumo Power" },
+    "To":               { "source": "user", "required": true, "example": "SPARQ" },
+    "ToDescription":    { "source": "user", "required": true, "example": "Sumo Power" },
     "TransactionGroup": { "source": "const", "value": "MTRD" },
     "Priority":         { "source": "const", "value": "Low" },
     "Market":           { "source": "const", "value": "NEM" },

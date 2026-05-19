@@ -4,7 +4,7 @@
   "transactionGroup": "MTRD",
   "description": "Inbound Meter Data Notification (MDN) carrying NEM12 interval data at 30-minute intervals (48 values per 300 record). Matches the plain MDP header shape used by DNSP-style metering providers (e.g. POWERMDP -> SPARQ): no <From description='...'> attribute, no <SecurityContext>, ParticipantRole/Role=FRMP. Use this template when the objective mentions 30-minute reads, multi-NMI batches, or MDPs whose B2B header omits descriptions.",
   "fields": {
-    "To":               { "source": "const", "value": "SPARQ" },
+    "To":               { "source": "user", "required": true, "example": "SPARQ" },
     "TransactionGroup": { "source": "const", "value": "MTRD" },
     "Priority":         { "source": "const", "value": "Medium" },
     "Market":           { "source": "const", "value": "NEM" },

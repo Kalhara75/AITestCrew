@@ -4,8 +4,8 @@
   "transactionGroup": "OWNX",
   "description": "Shared Fuse Notification — DNSP-initiated one-way notification to a FRMP flagging that a NMI sits behind a shared isolation point (shared fuse), so any planned outage requires multi-party coordination.",
   "fields": {
-    "From":                     { "source": "const", "value": "ENERGYAP" },
-    "To":                       { "source": "const", "value": "SPARQ" },
+    "From":                     { "source": "user", "required": true, "example": "ENERGYAP" },
+    "To":                       { "source": "user", "required": true, "example": "SPARQ" },
     "TransactionGroup":         { "source": "const", "value": "OWNX" },
     "Priority":                 { "source": "const", "value": "Medium" },
     "SecurityContext":          { "source": "const", "value": "" },
