@@ -63,6 +63,7 @@ Adding a new transaction type is a content change, not a code change: drop a new
 |---|---|---|
 | `MeterFaultAndIssueNotification` (MFN) | `MFN-OneInAllIn` | DNSP-initiated outage notification to a FRMP. |
 | `MeterDataNotification` (MDN) | `MDN-NEM12-30min`, `MDN-NEM12-5min` | MDP-initiated NEM12 interval data delivery. The `CsvIntervalData` user field carries the NEM12 CSV body (100/200/300/400/500/900 records) and is grammar-validated post-render via `Nem12CsvValidator` — malformed CSV fails the render step with a line-level diagnostic. The 30-min variant matches the plain MDP header shape (no `description` attr, no `SecurityContext`); the 5-min variant matches MDPs that include descriptions + `SecurityContext`. |
+| `SharedFuseNotification` (SFN) | `SFN-Standard` | DNSP-initiated one-way notification to a FRMP flagging that a NMI sits behind a shared isolation point (shared fuse) — so any planned outage requires multi-party coordination. User fields: `NMI`, `NMIChecksum`, `IdentifiedDate`, `SharedIsolationPointFlag`. |
 
 Rendered XML is written to `output/asexml/{timestamp}_{taskId}/{NN}-{caseName}.xml`. The delivery agent (`AseXml_Deliver`) renders the XML, uploads it via SFTP/FTP to a Bravo endpoint, and optionally runs post-delivery UI verifications with `{{Token}}` substitution from each run's context.
 
