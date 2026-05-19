@@ -29,7 +29,7 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObject
   // Any individual run is in progress (disable other run buttons)
   const anyRunning = !!individualRun;
 
-  const isRecorded = source === 'Recorded';
+  const canRebaseline = source === 'Generated';
 
   const fireRun = async (mode: 'Reuse' | 'Rebaseline' | 'VerifyOnly') => {
     setError(null);
@@ -145,7 +145,7 @@ export function TriggerObjectiveRunButton({ testSetId, objectiveId, parentObject
           Verify
         </button>
       )}
-      {!isRecorded && (
+      {canRebaseline && (
         <button
           onClick={handleRebaseline}
           disabled={disabled || anyRunning}

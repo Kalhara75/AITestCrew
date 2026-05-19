@@ -475,6 +475,14 @@ function ObjectiveListTable({
                       border: '1px solid #a7f3d0',
                     }}>Xray + Recorded</span>
                   )}
+                  {(obj.source ?? '').startsWith('Generated+') && (
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, marginLeft: 8,
+                      padding: '1px 6px', borderRadius: 4,
+                      background: '#ede9fe', color: '#4338ca',
+                      border: '1px solid #c7d2fe',
+                    }}>AI + Recorded</span>
+                  )}
                 </td>
                 <td style={{ ...tdStyle, textAlign: 'center', color: '#64748b' }}>
                   {obj.stepCount}

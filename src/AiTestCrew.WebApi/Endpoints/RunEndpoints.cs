@@ -56,7 +56,7 @@ public static class RunEndpoints
                     : await tsRepo.LoadAsync(request.TestSetId!);
             }
 
-            // Recorded objectives cannot be rebaselined
+            // Only AI-generated objectives can be rebaselined — recorded/imported/hybrid variants would lose their recorded steps
             if (mode == RunMode.Rebaseline && !string.IsNullOrWhiteSpace(request.ObjectiveId))
             {
                 if (testSet is null)
@@ -64,8 +64,8 @@ public static class RunEndpoints
                 var obj = testSet.TestObjectives.Find(o => o.Id == request.ObjectiveId);
                 if (obj is null)
                     return Results.NotFound(new { error = $"Objective '{request.ObjectiveId}' not found in test set" });
-                if (obj.Source == "Recorded")
-                    return Results.BadRequest(new { error = "Recorded objectives cannot be rebaselined — only AI-generated objectives support rebaseline" });
+                if (obj.Source != "Generated")
+                    return Results.BadRequest(new { error = "Only AI-generated objectives can be rebaselined — Recorded / ImportedFromXray / Generated+Recorded variants would lose their recorded steps." });
             }
 
             // Prevent running the same test set concurrently (different test sets can run in parallel)

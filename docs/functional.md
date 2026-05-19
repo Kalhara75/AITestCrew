@@ -2258,7 +2258,24 @@ Re-importing the same Xray ticket after the placeholder has been recorded is saf
 | `ImportedFromXray+Recorded` | re-record (overwrite) | `ImportedFromXray+Recorded` (unchanged) |
 | `Recorded` | re-record | `Recorded` (unchanged — existing behaviour) |
 | `Generated` | rebaseline | `Generated` (unchanged — AI regeneration, not recording) |
+| `Generated` | recorder appends step(s) | `Generated+Recorded` (REQ-023) |
+| `Generated+Recorded` | recorder appends further step(s) | `Generated+Recorded` (unchanged) |
+| Any non-`Generated` | rebaseline attempt | Rejected — only `Generated` objectives can be rebaselined |
 
+---
+
+### General-purpose extend-or-fork rule (REQ-023)
+
+The recorder uses a generalised lookup whenever a recording session ends:
+
+1. **Name + target-type match** — `RecordingService` scans all objectives in the test set for one whose slugified `Name` matches the recording's `caseName` slug **and** whose target type matches the recording's target (`UI_Web_*` or `UI_Desktop_*`). The match succeeds regardless of `Source` — `Generated`, `Recorded`, `ImportedFromXray`, and `Generated+Recorded` are all eligible.
+2. **If a match is found** — the new recorded step is appended to the matched objective's step list and `Source` is updated:
+   - `Generated` → `Generated+Recorded`
+   - `ImportedFromXray` (empty) → `ImportedFromXray+Recorded` (existing REQ-020 path)
+   - Any source already ending in `+Recorded` → unchanged (the `+Recorded` suffix is idempotent)
+3. **If no match is found** — the recorder falls through to the original behaviour: a fresh `recorded-{slug}` sibling objective is created with `Source = "Recorded"`. All existing recording workflows are unaffected.
+
+This means a QA can record supplementary UI steps directly into an AI-generated objective without losing the generated API/aseXML steps, and without having to create a separate sibling. The "AI + Recorded" badge (indigo) in the Test Set detail page marks these hybrid objectives.
 
 ---
 

@@ -218,9 +218,21 @@ BaseTestAgent  (LLM, AskLlmAsync/AskLlmForJsonAsync)
 
 `TargetType` (string, default `"API_REST"`) is also stored so the orchestrator can reconstruct tasks with the correct `TestTargetType` on reuse.
 
-`Source` (string, default `"Generated"`) tracks how the objective was created: `"Generated"` for AI/LLM-created objectives, `"Recorded"` for objectives captured via `--record`, `"ImportedFromXray"` for objectives produced by the Xray importer (REQ-017), or `"ImportedFromXray+Recorded"` for Xray-imported objectives subsequently filled by a recording (REQ-020). Rebaseline is only available for `Generated` objectives. Legacy JSON files without the field are backfilled in `MigrateLegacyObjective()` using the `recorded-` ID prefix heuristic.
+`Source` (string, default `"Generated"`) tracks how the objective was created: `"Generated"` for AI/LLM-created objectives, `"Recorded"` for objectives captured via `--record`, `"ImportedFromXray"` for objectives produced by the Xray importer (REQ-017), `"ImportedFromXray+Recorded"` for Xray-imported objectives subsequently filled by a recording (REQ-020), or `"Generated+Recorded"` for AI-generated objectives that have been extended with a recording (REQ-023). Rebaseline is only available for `"Generated"` objectives — the gate uses a strict equality check (`Source != "Generated"`), so `Generated+Recorded`, `Recorded`, `ImportedFromXray`, and `ImportedFromXray+Recorded` all block rebaseline to prevent loss of recorded steps. Legacy JSON files without the field are backfilled in `MigrateLegacyObjective()` using the `recorded-` ID prefix heuristic.
 
-The `+Recorded` suffix is the canonical marker that an imported placeholder has been made executable. `RecordingService.RecordCaseAsync` sets it when it fills a placeholder in-place. `XrayImportService.ConfirmAsync` skips clearing the step list when `Source.EndsWith("+Recorded")` so recorded work survives re-import.
+The `+Recorded` suffix is the canonical marker that an objective contains recorded steps. `RecordingService.RecordCaseAsync` sets it when it fills a placeholder in-place (Xray import path) or appends to an existing AI-generated objective (REQ-023 extend path). `XrayImportService.ConfirmAsync` skips clearing the step list when `Source.EndsWith("+Recorded")` so recorded work survives re-import.
+
+**Source field state machine (full):**
+
+| Initial source | Action | Resulting source |
+|---|---|---|
+| `Generated` | recorder appends step(s) | `Generated+Recorded` |
+| `Generated+Recorded` | recorder appends further step(s) | `Generated+Recorded` (unchanged) |
+| `ImportedFromXray` | recorder fills empty placeholder | `ImportedFromXray+Recorded` |
+| `ImportedFromXray+Recorded` | re-record (overwrite) | `ImportedFromXray+Recorded` (unchanged) |
+| `Recorded` | re-record | `Recorded` (unchanged — existing behaviour) |
+| `Generated` | rebaseline | `Generated` (unchanged — AI regeneration, not recording) |
+| Any non-`Generated` | rebaseline attempt | Rejected — `Source != "Generated"` gate blocks it |
 
 #### Desktop UI Agent
 
