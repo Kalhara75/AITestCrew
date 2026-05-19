@@ -253,7 +253,17 @@ builder.Services.AddSingleton<IRunTracker, RunTracker>();
 builder.Services.AddSingleton<IModuleRunTracker, ModuleRunTracker>();
 
 // ── Chat intent service (LLM-backed natural-language → structured action) ──
-builder.Services.AddSingleton<IChatIntentService, ChatIntentService>();
+builder.Services.AddSingleton<IChatIntentService>(sp => new ChatIntentService(
+    sp.GetRequiredService<Kernel>(),
+    sp.GetRequiredService<IModuleRepository>(),
+    sp.GetRequiredService<ITestSetRepository>(),
+    sp.GetRequiredService<IEnvironmentResolver>(),
+    sp.GetRequiredService<IEndpointResolver>(),
+    sp.GetRequiredService<TestEnvironmentConfig>(),
+    sp.GetRequiredService<ILogger<ChatIntentService>>(),
+    sp.GetRequiredService<TemplateRegistry>(),
+    sp.GetService<IAgentRepository>(),
+    sp.GetService<IChatConversationRepository>()));
 
 // ── DB dry-run rate limiter (per-user token bucket; janitor sweep on the heartbeat tick) ──
 builder.Services.AddSingleton<DbDryRunRateLimiter>(_ => new DbDryRunRateLimiter());

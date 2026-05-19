@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using AiTestCrew.Agents.AseXmlAgent;
+using AiTestCrew.Agents.AseXmlAgent.Templates;
 using AiTestCrew.Agents.Base;
 using AiTestCrew.Agents.Persistence;
 using AiTestCrew.Core.Configuration;
@@ -34,6 +35,7 @@ public class ChatIntentService : IChatIntentService
     private readonly ILogger<ChatIntentService> _logger;
     private readonly IAgentRepository? _agentRepo;
     private readonly IChatConversationRepository? _convRepo;
+    private readonly TemplateRegistry _templateRegistry;
 
     public ChatIntentService(
         Kernel kernel,
@@ -43,6 +45,7 @@ public class ChatIntentService : IChatIntentService
         IEndpointResolver endpointResolver,
         TestEnvironmentConfig cfg,
         ILogger<ChatIntentService> logger,
+        TemplateRegistry templateRegistry,
         IAgentRepository? agentRepo = null,
         IChatConversationRepository? convRepo = null)
     {
@@ -55,6 +58,7 @@ public class ChatIntentService : IChatIntentService
         _logger = logger;
         _agentRepo = agentRepo;
         _convRepo = convRepo;
+        _templateRegistry = templateRegistry;
     }
 
     public async Task<ChatResponse> ProcessAsync(ChatRequest request, string? userId, CancellationToken ct = default)
@@ -321,6 +325,7 @@ public class ChatIntentService : IChatIntentService
             }
         }
 
+        var aseXmlCatalog = BuildAseXmlTemplateCatalog(_templateRegistry);
         return new
         {
             modules = moduleList,
@@ -331,10 +336,52 @@ public class ChatIntentService : IChatIntentService
             defaultModule = _cfg.DefaultApiModule,
             endpointsByEnv,
             serviceBusConnectionsByEnv,
+            aseXmlTransactionTypes = aseXmlCatalog.TransactionTypes,
+            aseXmlTemplates = aseXmlCatalog.Templates,
             agents,
             currentTestSet,
             postStepConfig
         };
+    }
+
+    private static (object[] TransactionTypes, object[] Templates) BuildAseXmlTemplateCatalog(TemplateRegistry registry)
+    {
+        var all = registry.All()
+            .OrderBy(t => t.Manifest.TransactionType, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(t => t.Manifest.TemplateId, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var templates = all
+            .Select(t => (object)new
+            {
+                templateId = t.Manifest.TemplateId,
+                transactionType = t.Manifest.TransactionType,
+                transactionGroup = t.Manifest.TransactionGroup,
+                description = t.Manifest.Description,
+                userFields = t.Manifest.Fields
+                    .Where(kvp => string.Equals(kvp.Value.Source, "user", StringComparison.OrdinalIgnoreCase))
+                    .ToDictionary(
+                        kvp => kvp.Key,
+                        kvp => (object)new
+                        {
+                            required = kvp.Value.Required,
+                            example = kvp.Value.Example,
+                            description = kvp.Value.Description,
+                            format = kvp.Value.Format
+                        },
+                        StringComparer.OrdinalIgnoreCase)
+            })
+            .ToArray();
+
+        var transactionTypes = all
+            .Select(t => t.Manifest.TransactionType)
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
+            .Cast<object>()
+            .ToArray();
+
+        return (transactionTypes, templates);
     }
 
     /// <summary>
@@ -853,6 +900,15 @@ public class ChatIntentService : IChatIntentService
             - If endpointsByEnv["<envKey>"] is null, that environment's Bravo DB is unreachable or unconfigured — say so plainly rather than falling back to another env's list.
             - When picking an endpointCode for a confirmRun / confirmRecord / confirmCreatePostStep against a specific env, only use codes that appear in endpointsByEnv for that env.
             - catalog.serviceBusConnectionsByEnv is the Service Bus equivalent — same per-env map shape, listing logical connection keys configured under TestEnvironment.Environments.<env>.ServiceBusConnections (or top-level fallback). Same rules: only use keys that appear literally; null means unconfigured for that env.
+
+            aseXML template catalog rules:
+            - catalog.aseXmlTransactionTypes is the deduplicated list of supported aseXML transaction types — the answer to "what transaction types are supported?", "what MIL transaction types do we have?", or "what B2B transaction types can I generate?". These three phrasings are equivalent in this codebase; "MIL transaction types" refers to the aseXML types that flow through the MIL endpoint catalog.
+            - catalog.aseXmlTemplates is the per-template detail: each entry has templateId, transactionType, transactionGroup, description, and userFields (the user-supplied fields with required/example/description/format). Auto-generated and constant fields are intentionally omitted.
+            - When the user asks "what templates exist for <transactionType>?", filter catalog.aseXmlTemplates by transactionType (case-insensitive).
+            - When the user asks "what fields does template <templateId> need?", read userFields from the matching template entry. List required fields first.
+            - When authoring an aseXml / aseXmlDeliver post-step via confirmCreatePostStep, only use a templateId that appears literally in catalog.aseXmlTemplates. Only fill keys that appear in that template’s userFields — never invent additional fields, never re-emit auto/const fields.
+            - If catalog.aseXmlTransactionTypes is empty, no templates are installed on this server. Tell the user plainly rather than guessing; suggest they ask an operator to add templates under templates/asexml/.
+            - "MIL endpoints" (catalog.endpointsByEnv) and "MIL transaction types" (catalog.aseXmlTransactionTypes) are different things — endpoints are per-env delivery destinations (from Bravo DB), transaction types are the aseXML payload schemas (from templates/asexml/). Don't conflate them.
 
             Universal rules:
             - Only use ids/keys/codes that appear literally in the catalog. Never invent values.
