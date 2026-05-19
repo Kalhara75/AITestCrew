@@ -92,8 +92,11 @@ public class RecordingService : IRecordingService
 
             var step = DesktopUiTestDefinition.FromTestCase(recorded);
 
-            // Two-step lookup: (1) find an imported placeholder with matching slug;
-            // (2) fall back to the recorded-{slug} id (existing re-record path).
+            // Three-step lookup (REQ-020 + REQ-023):
+            // (1) imported placeholder with matching slug — fill in-place;
+            // (2) any extensible objective matching by name + target — append;
+            // (3) fall back to recorded-{slug} id (existing re-record path) — append;
+            // (4) create a brand-new recorded-{slug} sibling.
             var caseSlug = SlugHelper.ToSlug(r.CaseName);
             var importedPlaceholderIdx = testSet.TestObjectives.FindIndex(o =>
                 o.Id == caseSlug && o.IsImportedPlaceholder(isDesktop: true));
@@ -115,23 +118,36 @@ public class RecordingService : IRecordingService
             }
             else
             {
-                var existingIdx = testSet.TestObjectives.FindIndex(o => o.Id == objectiveId);
-                if (existingIdx >= 0)
+                var extensibleIdx = FindExtensibleObjective(testSet.TestObjectives, r.CaseName, caseSlug, target, isDesktop: true);
+                if (extensibleIdx >= 0)
                 {
-                    testSet.TestObjectives[existingIdx].DesktopUiSteps.Add(step);
+                    var extensible = testSet.TestObjectives[extensibleIdx];
+                    extensible.DesktopUiSteps.Add(step);
+                    extensible.Source = MarkRecorded(extensible.Source);
+                    _logger.LogInformation(
+                        "Appended desktop step to existing objective '{Id}' (Source now '{Source}'); list now has {N} step(s).",
+                        extensible.Id, extensible.Source, extensible.DesktopUiSteps.Count);
                 }
                 else
                 {
-                    testSet.TestObjectives.Add(new TestObjective
+                    var existingIdx = testSet.TestObjectives.FindIndex(o => o.Id == objectiveId);
+                    if (existingIdx >= 0)
                     {
-                        Id              = objectiveId,
-                        Name            = r.CaseName,
-                        ParentObjective = r.CaseName,
-                        AgentName       = "WinForms Desktop UI Agent",
-                        TargetType      = target,
-                        Source          = "Recorded",
-                        DesktopUiSteps  = [step]
-                    });
+                        testSet.TestObjectives[existingIdx].DesktopUiSteps.Add(step);
+                    }
+                    else
+                    {
+                        testSet.TestObjectives.Add(new TestObjective
+                        {
+                            Id              = objectiveId,
+                            Name            = r.CaseName,
+                            ParentObjective = r.CaseName,
+                            AgentName       = "WinForms Desktop UI Agent",
+                            TargetType      = target,
+                            Source          = "Recorded",
+                            DesktopUiSteps  = [step]
+                        });
+                    }
                 }
             }
             if (!testSet.Objectives.Contains(r.CaseName, StringComparer.OrdinalIgnoreCase))
@@ -172,8 +188,11 @@ public class RecordingService : IRecordingService
                         ? "Brave Cloud UI Agent" : "Legacy Web UI Agent";
         var uiStep = WebUiTestDefinition.FromTestCase(webRecorded);
 
-        // Two-step lookup: (1) find an imported placeholder with matching slug;
-        // (2) fall back to the recorded-{slug} id (existing re-record path).
+        // Three-step lookup (REQ-020 + REQ-023):
+        // (1) imported placeholder with matching slug — fill in-place;
+        // (2) any extensible objective matching by name + target — append;
+        // (3) fall back to recorded-{slug} id (existing re-record path) — append;
+        // (4) create a brand-new recorded-{slug} sibling.
         var webCaseSlug = SlugHelper.ToSlug(r.CaseName);
         var webImportedPlaceholderIdx = testSet.TestObjectives.FindIndex(o =>
             o.Id == webCaseSlug && o.IsImportedPlaceholder(isDesktop: false));
@@ -196,23 +215,38 @@ public class RecordingService : IRecordingService
         }
         else
         {
-            var webExistingIdx = testSet.TestObjectives.FindIndex(o => o.Id == objectiveId);
-            if (webExistingIdx >= 0)
+            var webExtensibleIdx = FindExtensibleObjective(testSet.TestObjectives, r.CaseName, webCaseSlug, target, isDesktop: false);
+            if (webExtensibleIdx >= 0)
             {
-                testSet.TestObjectives[webExistingIdx].WebUiSteps.Add(uiStep);
+                var extensible = testSet.TestObjectives[webExtensibleIdx];
+                extensible.WebUiSteps.Add(uiStep);
+                extensible.Source = MarkRecorded(extensible.Source);
+                if (string.IsNullOrWhiteSpace(extensible.AgentName))
+                    extensible.AgentName = agentName;
+                _logger.LogInformation(
+                    "Appended web UI step to existing objective '{Id}' (Source now '{Source}'); list now has {N} step(s).",
+                    extensible.Id, extensible.Source, extensible.WebUiSteps.Count);
             }
             else
             {
-                testSet.TestObjectives.Add(new TestObjective
+                var webExistingIdx = testSet.TestObjectives.FindIndex(o => o.Id == objectiveId);
+                if (webExistingIdx >= 0)
                 {
-                    Id              = objectiveId,
-                    Name            = r.CaseName,
-                    ParentObjective = r.CaseName,
-                    AgentName       = agentName,
-                    TargetType      = target,
-                    Source          = "Recorded",
-                    WebUiSteps      = [uiStep]
-                });
+                    testSet.TestObjectives[webExistingIdx].WebUiSteps.Add(uiStep);
+                }
+                else
+                {
+                    testSet.TestObjectives.Add(new TestObjective
+                    {
+                        Id              = objectiveId,
+                        Name            = r.CaseName,
+                        ParentObjective = r.CaseName,
+                        AgentName       = agentName,
+                        TargetType      = target,
+                        Source          = "Recorded",
+                        WebUiSteps      = [uiStep]
+                    });
+                }
             }
         }
         if (!testSet.Objectives.Contains(r.CaseName, StringComparer.OrdinalIgnoreCase))
@@ -571,4 +605,49 @@ public class RecordingService : IRecordingService
     }
 
     private static RecordingResult Fail(string reason) => new(false, reason, 0, reason);
+
+    /// <summary>
+    /// REQ-023 — find an objective in the test set that can accept an appended
+    /// recorded step. Match priority:
+    ///   1. id == "&lt;slug&gt;"               — Xray-imported objective ids and any bare-slug shape.
+    ///   2. id == "recorded-&lt;slug&gt;"      — existing recorded objective re-record path.
+    ///   3. case-insensitive Name match — slug-drift fallback (punctuation differences).
+    /// In all three the candidate must pass <see cref="TestObjective.IsExtensibleByRecording"/>
+    /// — same TargetType as the recording, and the relevant step list already
+    /// contains at least one real definition.
+    /// </summary>
+    private static int FindExtensibleObjective(
+        List<TestObjective> objectives,
+        string caseName,
+        string slug,
+        string target,
+        bool isDesktop)
+    {
+        var recordedId = $"recorded-{slug}";
+        int idx;
+
+        idx = objectives.FindIndex(o => o.Id == slug && o.IsExtensibleByRecording(target, isDesktop));
+        if (idx >= 0) return idx;
+
+        idx = objectives.FindIndex(o => o.Id == recordedId && o.IsExtensibleByRecording(target, isDesktop));
+        if (idx >= 0) return idx;
+
+        idx = objectives.FindIndex(o =>
+            o.Name.Equals(caseName, StringComparison.OrdinalIgnoreCase)
+            && o.IsExtensibleByRecording(target, isDesktop));
+        return idx;
+    }
+
+    /// <summary>
+    /// REQ-023 Source state machine — flips the objective's Source to its
+    /// "+Recorded" suffix when a recording extends an AI-generated or Xray-imported
+    /// objective. Idempotent: re-applying to an already-"+Recorded" Source is a no-op.
+    /// </summary>
+    private static string MarkRecorded(string source)
+    {
+        if (string.IsNullOrWhiteSpace(source)) return "Recorded";
+        if (source.EndsWith("+Recorded", StringComparison.Ordinal)) return source;
+        if (source.Equals("Recorded", StringComparison.Ordinal)) return source;
+        return source + "+Recorded";
+    }
 }

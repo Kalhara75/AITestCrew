@@ -120,6 +120,26 @@ public class TestObjective
     }
 
     /// <summary>
+    /// True when this objective can accept an additional recorded step of the given
+    /// target type (REQ-023). Requires the objective's <see cref="TargetType"/> to
+    /// match the recording target AND the relevant step list to already contain at
+    /// least one real definition (i.e., NOT an empty placeholder — that case is
+    /// handled by <see cref="IsImportedPlaceholder"/> + REQ-020). Cross-kind
+    /// extension (e.g. recording UI into an API-only Generated objective) returns
+    /// false — those cases fall through to sibling creation.
+    /// </summary>
+    /// <param name="recordingTarget">The recorder's target string — UI_Web_Blazor, UI_Web_MVC, or UI_Desktop_WinForms.</param>
+    /// <param name="isDesktop">True when the recording target is a desktop kind; otherwise web.</param>
+    public bool IsExtensibleByRecording(string recordingTarget, bool isDesktop)
+    {
+        if (!string.Equals(TargetType, recordingTarget, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (isDesktop)
+            return DesktopUiSteps.Count > 0 && DesktopUiSteps[0].Steps.Count > 0;
+        return WebUiSteps.Count > 0 && WebUiSteps[0].Steps.Count > 0;
+    }
+
+    /// <summary>
     /// Environment keys this objective is allowed to run on (e.g. "sumo-retail").
     /// Empty list means "default environment only" â€” legacy objectives created
     /// before the multi-env feature are treated this way by the orchestrator.
